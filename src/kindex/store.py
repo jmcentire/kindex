@@ -1,0 +1,429 @@
+"""SQLite store — primary persistence layer for Kindex."""
+
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import sqlite3
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+
+def _json_default(obj):
+    if isinstance(obj, (_dt.date, _dt.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Not JSON serializable: {type(obj)}")
+
+
+def _jdumps(obj):
+    return json.dumps(obj, default=_json_default)
+
+from .config import Config
+from .schema import CREATE_TABLES, SCHEMA_VERSION
+
+
+def _now() -> str:
+    return datetime.now(tz=None).isoformat(timespec="seconds")
+
+
+def _uuid() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+class Store:
+    """SQLite-backed knowledge graph with FTS5 full-text search.
+
+    This is the primary query engine. Markdown files remain as
+    human-readable canonical source; the store indexes them.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+                # Support both kindex.db (new) and conv.db (legacy)
+        new_db = config.data_path / "kindex.db"
+        old_db = config.data_path / "conv.db"
+        self.db_path = old_db if old_db.exists() and not new_db.exists() else new_db
+        self._conn: sqlite3.Connection | None = None
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self.config.data_path.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._init_schema()
+        return self._conn
+
+    def _init_schema(self) -> None:
+        self.conn.executescript(CREATE_TABLES)
+        # Set schema version if not present
+        cur = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'")
+        row = cur.fetchone()
+        if row is None:
+            self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            self.conn.commit()
+        else:
+            self._migrate_schema(int(row["value"]))
+
+    def _migrate_schema(self, current_version: int) -> None:
+        """Apply incremental schema migrations."""
+        if current_version < 2:
+            # v2: add audience column
+            try:
+                self.conn.execute("ALTER TABLE nodes ADD COLUMN audience TEXT NOT NULL DEFAULT 'private'")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_audience ON nodes(audience)")
+                self.conn.commit()
+            except Exception:
+                pass  # column already exists
+            self.conn.execute(
+                "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                (str(SCHEMA_VERSION),),
+            )
+            self.conn.commit()
+
+    def close(self) -> None:
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    # ── Node operations ────────────────────────────────────────────────
+
+    def add_node(
+        self,
+        title: str,
+        content: str = "",
+        *,
+        node_id: str | None = None,
+        node_type: str = "concept",
+        aka: list[str] | None = None,
+        intent: str = "",
+        domains: list[str] | None = None,
+        status: str = "active",
+        audience: str = "private",
+        weight: float = 0.5,
+        prov_who: list[str] | None = None,
+        prov_activity: str = "",
+        prov_why: str = "",
+        prov_source: str = "",
+        extra: dict | None = None,
+    ) -> str:
+        """Insert a node. Returns its ID."""
+        nid = node_id or _uuid()
+        now = _now()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO nodes
+               (id, type, title, content, aka, intent,
+                prov_who, prov_when, prov_activity, prov_why, prov_source,
+                weight, domains, status, audience,
+                created_at, updated_at, last_accessed, extra)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (nid, node_type, title, content,
+             _jdumps(aka or []), intent,
+             _jdumps(prov_who or []), now, prov_activity, prov_why, prov_source,
+             weight, _jdumps(domains or []), status, audience,
+             now, now, now, _jdumps(extra or {})),
+        )
+        self.conn.commit()
+        return nid
+
+    def get_node(self, node_id: str) -> dict | None:
+        """Fetch a node by ID, updating last_accessed."""
+        row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        if row is None:
+            return None
+        self.conn.execute(
+            "UPDATE nodes SET last_accessed = ? WHERE id = ?", (_now(), node_id))
+        self.conn.commit()
+        return self._row_to_dict(row)
+
+    def get_node_by_title(self, title: str) -> dict | None:
+        """Fuzzy match by title (case-insensitive)."""
+        row = self.conn.execute(
+            "SELECT * FROM nodes WHERE lower(title) = lower(?)", (title,)).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def update_node(self, node_id: str, **fields) -> None:
+        """Update specific fields on a node."""
+        allowed = {"title", "content", "aka", "intent", "weight", "domains",
+                   "status", "audience", "prov_who", "prov_activity", "prov_why", "prov_source", "extra"}
+        updates = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if isinstance(v, (list, dict)):
+                v = _jdumps(v)
+            updates[k] = v
+
+        if not updates:
+            return
+
+        updates["updated_at"] = _now()
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        vals = list(updates.values()) + [node_id]
+        self.conn.execute(f"UPDATE nodes SET {sets} WHERE id = ?", vals)
+        self.conn.commit()
+
+    def delete_node(self, node_id: str) -> None:
+        self.conn.execute("DELETE FROM edges WHERE from_id = ? OR to_id = ?",
+                          (node_id, node_id))
+        self.conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+        self.conn.commit()
+
+    def all_nodes(self, node_type: str | None = None,
+                  status: str | None = None,
+                  audience: str | None = None,
+                  limit: int = 500) -> list[dict]:
+        """List nodes with optional type/status/audience filters."""
+        q = "SELECT * FROM nodes WHERE 1=1"
+        params: list = []
+        if node_type:
+            q += " AND type = ?"
+            params.append(node_type)
+        if status:
+            q += " AND status = ?"
+            params.append(status)
+        if audience:
+            q += " AND audience = ?"
+            params.append(audience)
+        q += " ORDER BY weight DESC, updated_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(q, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def recent_nodes(self, n: int = 20) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM nodes ORDER BY updated_at DESC LIMIT ?", (n,)
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    # ── Edge operations ────────────────────────────────────────────────
+
+    def add_edge(self, from_id: str, to_id: str, edge_type: str = "relates_to",
+                 weight: float = 0.5, provenance: str = "",
+                 bidirectional: bool = True) -> None:
+        """Add an edge. Bidirectional by default (enforces graph invariant)."""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO edges (from_id, to_id, type, weight, provenance)
+               VALUES (?, ?, ?, ?, ?)""",
+            (from_id, to_id, edge_type, weight, provenance),
+        )
+        if bidirectional:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO edges (from_id, to_id, type, weight, provenance)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (to_id, from_id, edge_type, weight * 0.8, provenance),
+            )
+        self.conn.commit()
+
+    def edges_from(self, node_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT e.*, n.title as to_title FROM edges e
+               JOIN nodes n ON n.id = e.to_id
+               WHERE e.from_id = ? ORDER BY e.weight DESC""",
+            (node_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def edges_to(self, node_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT e.*, n.title as from_title FROM edges e
+               JOIN nodes n ON n.id = e.from_id
+               WHERE e.to_id = ? ORDER BY e.weight DESC""",
+            (node_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def orphans(self) -> list[dict]:
+        """Nodes with no edges (violates graph health invariant)."""
+        rows = self.conn.execute(
+            """SELECT * FROM nodes WHERE id NOT IN
+               (SELECT from_id FROM edges UNION SELECT to_id FROM edges)"""
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    # ── FTS5 search ────────────────────────────────────────────────────
+
+    def fts_search(self, query: str, limit: int = 20) -> list[dict]:
+        """Full-text search using FTS5 BM25 ranking."""
+        # Escape special FTS5 characters
+        safe_query = query.replace('"', '""')
+        try:
+            rows = self.conn.execute(
+                """SELECT n.*, rank FROM nodes_fts
+                   JOIN nodes n ON n.id = nodes_fts.id
+                   WHERE nodes_fts MATCH ?
+                   ORDER BY rank LIMIT ?""",
+                (f'"{safe_query}" OR {safe_query}', limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Fallback: simple LIKE search if FTS query syntax fails
+            rows = self.conn.execute(
+                """SELECT *, 0 as rank FROM nodes
+                   WHERE title LIKE ? OR content LIKE ?
+                   ORDER BY weight DESC LIMIT ?""",
+                (f"%{query}%", f"%{query}%", limit),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    # ── Weight decay ───────────────────────────────────────────────────
+
+    def apply_weight_decay(self, node_half_life_days: int = 90,
+                           edge_half_life_days: int = 30) -> int:
+        """Decay weights based on last access time. Returns count of affected nodes."""
+        now = datetime.now()
+
+        # Node decay
+        rows = self.conn.execute("SELECT id, weight, last_accessed FROM nodes").fetchall()
+        count = 0
+        for row in rows:
+            try:
+                last = datetime.fromisoformat(row["last_accessed"])
+            except (ValueError, TypeError):
+                continue
+            days_since = (now - last).days
+            if days_since <= 0:
+                continue
+            decay = 0.5 ** (days_since / node_half_life_days)
+            new_weight = max(0.01, row["weight"] * decay)
+            if abs(new_weight - row["weight"]) > 0.001:
+                self.conn.execute(
+                    "UPDATE nodes SET weight = ? WHERE id = ?",
+                    (round(new_weight, 4), row["id"]),
+                )
+                count += 1
+
+        # Edge decay
+        edge_rows = self.conn.execute("SELECT id, weight, created_at FROM edges").fetchall()
+        for row in edge_rows:
+            try:
+                created = datetime.fromisoformat(row["created_at"])
+            except (ValueError, TypeError):
+                continue
+            days_since = (now - created).days
+            if days_since <= 0:
+                continue
+            decay = 0.5 ** (days_since / edge_half_life_days)
+            new_weight = max(0.01, row["weight"] * decay)
+            if abs(new_weight - row["weight"]) > 0.001:
+                self.conn.execute(
+                    "UPDATE edges SET weight = ? WHERE id = ?",
+                    (round(new_weight, 4), row["id"]),
+                )
+
+        self.conn.commit()
+        return count
+
+    # ── Operational node queries ────────────────────────────────────────
+
+    def nodes_by_trigger(self, trigger: str, node_type: str | None = None) -> list[dict]:
+        """Find operational nodes (constraints, checkpoints) matching a trigger.
+
+        Trigger is stored in extra JSON: {"trigger": "pre-deploy"}.
+        """
+        q = "SELECT * FROM nodes WHERE extra LIKE ?"
+        params: list = [f'%"trigger"%{trigger}%']
+        if node_type:
+            q += " AND type = ?"
+            params.append(node_type)
+        q += " AND status = 'active' ORDER BY weight DESC"
+        rows = self.conn.execute(q, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def nodes_by_owner(self, owner: str, node_type: str | None = None) -> list[dict]:
+        """Find nodes owned by a specific person (watches, directives)."""
+        q = "SELECT * FROM nodes WHERE extra LIKE ?"
+        params: list = [f'%"owner"%"{owner}"%']
+        if node_type:
+            q += " AND type = ?"
+            params.append(node_type)
+        q += " AND status = 'active' ORDER BY weight DESC"
+        rows = self.conn.execute(q, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def active_watches(self) -> list[dict]:
+        """Get all active watches that haven't expired."""
+        now = _now()[:10]  # YYYY-MM-DD
+        rows = self.conn.execute(
+            """SELECT * FROM nodes WHERE type = 'watch' AND status = 'active'
+               ORDER BY weight DESC"""
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = self._row_to_dict(r)
+            expires = (d.get("extra") or {}).get("expires", "")
+            # Include if no expiry or not yet expired
+            if not expires or expires >= now:
+                result.append(d)
+        return result
+
+    def active_constraints(self, trigger: str | None = None) -> list[dict]:
+        """Get active constraints, optionally filtered by trigger."""
+        if trigger:
+            return self.nodes_by_trigger(trigger, node_type="constraint")
+        return self.all_nodes(node_type="constraint", status="active")
+
+    def active_checkpoints(self, trigger: str | None = None) -> list[dict]:
+        """Get active checkpoints, optionally filtered by trigger."""
+        if trigger:
+            return self.nodes_by_trigger(trigger, node_type="checkpoint")
+        return self.all_nodes(node_type="checkpoint", status="active")
+
+    def operational_summary(self, trigger: str | None = None,
+                            owner: str | None = None) -> dict:
+        """Summary of all active operational nodes."""
+        constraints = self.active_constraints(trigger)
+        checkpoints = self.active_checkpoints(trigger)
+        watches = self.active_watches()
+        directives = self.all_nodes(node_type="directive", status="active")
+
+        if owner:
+            watches = [w for w in watches if (w.get("extra") or {}).get("owner") == owner]
+            directives = [d for d in directives if (d.get("extra") or {}).get("owner") == owner]
+
+        return {
+            "constraints": constraints,
+            "checkpoints": checkpoints,
+            "watches": watches,
+            "directives": directives,
+        }
+
+    # ── Stats ──────────────────────────────────────────────────────────
+
+    def stats(self) -> dict:
+        node_count = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edge_count = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        orphan_count = len(self.orphans())
+        type_counts = {}
+        for row in self.conn.execute("SELECT type, COUNT(*) as c FROM nodes GROUP BY type"):
+            type_counts[row["type"]] = row["c"]
+        return {
+            "nodes": node_count,
+            "edges": edge_count,
+            "orphans": orphan_count,
+            "types": type_counts,
+        }
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _row_to_dict(self, row: sqlite3.Row) -> dict:
+        d = dict(row)
+        for key in ("aka", "domains", "prov_who", "extra"):
+            if key in d and isinstance(d[key], str):
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+    def node_ids(self) -> list[str]:
+        """All node IDs."""
+        return [r[0] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]

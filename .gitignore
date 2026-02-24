@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+
+# Databases (user data, not shipped)
+*.db
+
+# User config (not shipped)
+conv.yaml
+kin.yaml
+
+# Working dirs
+.tmp/
+.conv/
+.kin/
+
+# OS
+.DS_Store

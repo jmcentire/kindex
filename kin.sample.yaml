@@ -1,0 +1,33 @@
+# Kindex configuration
+# Copy to kin.yaml, or place at ~/.config/kindex/kin.yaml
+# Or use: kin config set <key> <value>
+
+# Where your knowledge lives on disk
+data_dir: ~/.kindex
+
+# Directories to scan for projects (kin ingest projects)
+project_dirs:
+  - ~/Code
+  - ~/Personal
+
+# Claude Code data directory (for session scanning)
+claude_dir: ~/.claude
+
+# LLM integration (optional — improves extraction and search)
+llm:
+  enabled: false
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  api_key_env: ANTHROPIC_API_KEY
+
+# Budget limits for LLM calls (USD)
+budget:
+  daily: 0.50
+  weekly: 2.00
+  monthly: 5.00
+
+# Default search/traversal behavior
+defaults:
+  hops: 2
+  min_weight: 0.1
+  mode: bfs
