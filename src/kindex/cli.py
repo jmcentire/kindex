@@ -57,6 +57,13 @@ def cmd_search(args):
     from .retrieve import hybrid_search
     results = hybrid_search(store, query, top_k=args.top_k)
 
+    # --mine: filter to nodes owned by current user
+    if getattr(args, "mine", False):
+        cfg = _config(args)
+        me = cfg.current_user
+        results = [r for r in results if me in (r.get("prov_who") or [])
+                   or (r.get("extra") or {}).get("owner") == me]
+
     if not results:
         print("No results.", file=sys.stderr)
         return
@@ -146,6 +153,10 @@ def cmd_add(args):
     content = " ".join(args.note)
     node_type = args.type or "concept"
 
+    # Resolve current user for provenance
+    cfg = _config(args)
+    current_user = cfg.current_user
+
     # Operational types get direct creation with metadata
     operational = {"constraint", "directive", "checkpoint", "watch"}
     if node_type in operational:
@@ -170,6 +181,7 @@ def cmd_add(args):
             audience=args.audience or "private",
             prov_activity="manual-add",
             prov_source="cli",
+            prov_who=[current_user],
             extra=extra,
         )
         label = node_type.capitalize()
@@ -208,6 +220,7 @@ def cmd_add(args):
             domains=concept.get("domains", []),
             prov_activity="manual-add",
             prov_source="cli",
+            prov_who=[current_user],
         )
         created_ids.append(nid)
         print(f"  Created: {concept['title']} ({nid})")
@@ -220,6 +233,7 @@ def cmd_add(args):
         nid = store.add_node(
             title=title, content=content, node_type=node_type,
             prov_activity="manual-add", prov_source="cli",
+            prov_who=[current_user],
         )
         created_ids.append(nid)
         print(f"  Created: {title} ({nid})")
@@ -397,6 +411,13 @@ def cmd_list(args):
     store = _store(args)
     nodes = store.all_nodes(node_type=args.type, status=args.status, limit=args.limit or 100)
 
+    # --mine: filter to nodes owned by current user
+    if getattr(args, "mine", False):
+        cfg = _config(args)
+        me = cfg.current_user
+        nodes = [n for n in nodes if me in (n.get("prov_who") or [])
+                 or (n.get("extra") or {}).get("owner") == me]
+
     if args.json:
         print(_dumps([{"id": n["id"], "type": n["type"], "title": n["title"],
                         "weight": n["weight"], "status": n["status"]}
@@ -440,6 +461,11 @@ def cmd_status(args):
     trigger = getattr(args, "trigger", None)
     owner = getattr(args, "owner", None)
     filter_type = getattr(args, "type", None)
+
+    # --mine resolves to current user
+    if getattr(args, "mine", False) and not owner:
+        cfg = _config(args)
+        owner = cfg.current_user
 
     # If requesting operational status (trigger or specific operational type)
     operational_types = {"constraint", "directive", "checkpoint", "watch"}
@@ -655,23 +681,130 @@ def cmd_migrate(args):
 
 
 def cmd_doctor(args):
+    """Comprehensive health check with graph invariants."""
     store = _store(args)
     stats = store.stats()
     issues = []
+    warnings = []
+    fixes_applied = 0
+    do_fix = getattr(args, "fix", False)
 
+    # ── Basic health ──
+    if stats["nodes"] == 0:
+        issues.append("No nodes — run `kin migrate` or `kin add` to create knowledge")
+
+    # ── Orphan check ──
     orphans = store.orphans()
     if orphans:
-        issues.append(f"  {len(orphans)} orphan node(s) — run `kin orphans` to see them")
+        orphan_pct = len(orphans) / max(stats["nodes"], 1) * 100
+        if orphan_pct > 30:
+            issues.append(f"{len(orphans)} orphan nodes ({orphan_pct:.0f}%) — "
+                          f"run `kin orphans` then `kin link`")
+        elif orphan_pct > 10:
+            warnings.append(f"{len(orphans)} orphan nodes ({orphan_pct:.0f}%)")
 
-    if stats["nodes"] == 0:
-        issues.append("  No nodes — run `kin migrate` to import existing topics")
+    # ── Weight distribution ──
+    nodes = store.all_nodes(limit=10000)
+    if nodes:
+        weights = [n.get("weight", 0) for n in nodes]
+        avg_weight = sum(weights) / len(weights)
+        low_weight = sum(1 for w in weights if w < 0.1)
+        if low_weight > len(weights) * 0.5:
+            warnings.append(f"{low_weight}/{len(weights)} nodes have weight < 0.1 — "
+                            f"run `kin decay` or boost important nodes")
+        if avg_weight < 0.2:
+            warnings.append(f"Average weight is {avg_weight:.2f} — graph may be over-decayed")
 
-    if issues:
-        print(f"{len(issues)} issue(s):")
-        for i in issues:
-            print(i)
+    # ── Stale nodes (not accessed in 90+ days) ──
+    from datetime import datetime, timedelta
+    cutoff = (datetime.now() - timedelta(days=90)).isoformat()[:10]
+    stale = [n for n in nodes if (n.get("last_accessed") or "")[:10] < cutoff]
+    if stale and len(stale) > len(nodes) * 0.3:
+        warnings.append(f"{len(stale)} nodes not accessed in 90+ days")
+
+    # ── FTS5 sync check ──
+    try:
+        fts_count = store.conn.execute(
+            "SELECT COUNT(*) FROM nodes_fts").fetchone()[0]
+        node_count = stats["nodes"]
+        if fts_count != node_count:
+            issues.append(f"FTS5 index out of sync: {fts_count} indexed vs {node_count} nodes")
+            if do_fix:
+                store.conn.execute("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')")
+                store.conn.commit()
+                fixes_applied += 1
+                issues[-1] += " (FIXED: rebuilt FTS5)"
+    except Exception:
+        warnings.append("Could not check FTS5 index health")
+
+    # ── Dangling edges ──
+    dangling = store.conn.execute(
+        """SELECT COUNT(*) FROM edges WHERE
+           from_id NOT IN (SELECT id FROM nodes) OR
+           to_id NOT IN (SELECT id FROM nodes)"""
+    ).fetchone()[0]
+    if dangling:
+        issues.append(f"{dangling} dangling edge(s) pointing to deleted nodes")
+        if do_fix:
+            store.conn.execute(
+                """DELETE FROM edges WHERE
+                   from_id NOT IN (SELECT id FROM nodes) OR
+                   to_id NOT IN (SELECT id FROM nodes)""")
+            store.conn.commit()
+            fixes_applied += 1
+            issues[-1] += " (FIXED: removed)"
+
+    # ── Bidirectional invariant check ──
+    one_way = store.conn.execute(
+        """SELECT COUNT(*) FROM edges e1
+           WHERE NOT EXISTS (
+               SELECT 1 FROM edges e2
+               WHERE e2.from_id = e1.to_id AND e2.to_id = e1.from_id
+           )"""
+    ).fetchone()[0]
+    total_edges = stats["edges"]
+    if total_edges > 0 and one_way > total_edges * 0.3:
+        warnings.append(f"{one_way}/{total_edges} edges lack reverse — "
+                        f"consider re-adding with bidirectional=True")
+
+    # ── Empty content check ──
+    empty = sum(1 for n in nodes if not (n.get("content") or "").strip())
+    if empty > len(nodes) * 0.5 and len(nodes) > 5:
+        warnings.append(f"{empty}/{len(nodes)} nodes have empty content")
+
+    # ── Graph connectivity (bridge edges) ──
+    if stats["nodes"] >= 5 and stats["edges"] >= 4:
+        from .graph import store_stats as gstats
+        gs = gstats(store)
+        if gs["components"] > 1:
+            warnings.append(f"Graph has {gs['components']} disconnected components")
+
+    # ── Output ──
+    if args.json:
+        print(_dumps({
+            "healthy": not issues,
+            "issues": issues,
+            "warnings": warnings,
+            "stats": stats,
+            "fixes_applied": fixes_applied,
+        }, indent=2))
     else:
-        print(f"Healthy: {stats['nodes']} nodes, {stats['edges']} edges, 0 orphans")
+        if issues:
+            print(f"{len(issues)} issue(s):")
+            for i in issues:
+                print(f"  ✗ {i}")
+        if warnings:
+            print(f"\n{len(warnings)} warning(s):")
+            for w in warnings:
+                print(f"  ⚠ {w}")
+        if not issues and not warnings:
+            print(f"Healthy: {stats['nodes']} nodes, {stats['edges']} edges, 0 issues")
+        elif not issues:
+            print(f"\nNo critical issues. {stats['nodes']} nodes, {stats['edges']} edges.")
+        if fixes_applied:
+            print(f"\n{fixes_applied} fix(es) applied.")
+        if issues and not do_fix:
+            print(f"\nRun `kin doctor --fix` to auto-repair fixable issues.")
 
     store.close()
 
@@ -912,6 +1045,169 @@ def cmd_compact_hook(args):
         print(block)
 
     store.close()
+
+
+# ── log ───────────────────────────────────────────────────────────────
+
+def cmd_log(args):
+    """Show recent activity log."""
+    store = _store(args)
+    entries = store.recent_activity(limit=args.n)
+
+    if not entries:
+        print("No activity logged yet.")
+        store.close()
+        return
+
+    if args.json:
+        print(_dumps(entries, indent=2))
+    else:
+        for e in entries:
+            ts = (e.get("timestamp") or "")[:16]
+            action = e.get("action", "")
+            target = e.get("target_title") or e.get("target_id", "")
+            actor = e.get("actor", "")
+            actor_str = f" @{actor}" if actor else ""
+            print(f"  {ts}  {action:15s} {target[:45]}{actor_str}")
+
+    store.close()
+
+
+# ── graph ─────────────────────────────────────────────────────────────
+
+def cmd_graph(args):
+    """Graph analytics — stats, centrality, communities, bridges, trailheads."""
+    store = _store(args)
+
+    from .graph import (
+        store_bridges, store_centrality, store_communities,
+        store_stats, store_trailheads,
+    )
+
+    mode = args.graph_mode or "stats"
+
+    if mode == "stats":
+        stats = store_stats(store)
+        if args.json:
+            print(_dumps(stats, indent=2))
+        else:
+            print(f"Graph Statistics")
+            print(f"  Nodes:      {stats['nodes']}")
+            print(f"  Edges:      {stats['edges']}")
+            print(f"  Density:    {stats['density']}")
+            print(f"  Components: {stats['components']}")
+            print(f"  Avg degree: {stats['avg_degree']}")
+            if stats['max_degree_node']:
+                print(f"  Hub:        {stats['max_degree_node']} (degree {stats['max_degree']})")
+
+    elif mode == "centrality":
+        method = args.method or "betweenness"
+        results = store_centrality(store, method=method, top_k=args.top_k or 20)
+        if args.json:
+            print(_dumps([{"id": nid, "title": t, "score": s}
+                          for nid, t, s in results], indent=2))
+        else:
+            print(f"Centrality ({method})")
+            for nid, title, score in results:
+                bar = "█" * int(score * 40)
+                print(f"  {score:.4f} {bar:20s} {title[:50]}")
+
+    elif mode == "communities":
+        comms = store_communities(store)
+        if args.json:
+            print(_dumps(comms, indent=2))
+        else:
+            print(f"{len(comms)} communities detected")
+            for i, comm in enumerate(comms):
+                members = ", ".join(m["title"][:30] for m in comm[:5])
+                extra = f" +{len(comm)-5} more" if len(comm) > 5 else ""
+                print(f"  {i+1}. [{len(comm)} nodes] {members}{extra}")
+
+    elif mode == "bridges":
+        bridges = store_bridges(store, top_k=args.top_k or 10)
+        if args.json:
+            print(_dumps(bridges, indent=2))
+        else:
+            print("Bridge edges (critical connections)")
+            for b in bridges:
+                print(f"  {b['from_title'][:25]:25s} <-> {b['to_title'][:25]:25s}  "
+                      f"btw={b['betweenness']}")
+
+    elif mode == "trailheads":
+        trails = store_trailheads(store, top_k=args.top_k or 10)
+        if args.json:
+            print(_dumps(trails, indent=2))
+        else:
+            print("Trailheads (entry points)")
+            for t in trails:
+                print(f"  [{t['type'][:4]}] {t['title'][:40]:40s}  "
+                      f"score={t['score']}  out={t['out_degree']}  btw={t['betweenness']}")
+
+    store.close()
+
+
+# ── alias ─────────────────────────────────────────────────────────────
+
+def cmd_alias(args):
+    """Manage AKA/synonyms for a node.
+
+    kin alias <node> add <alias>    — add a synonym
+    kin alias <node> remove <alias> — remove a synonym
+    kin alias <node> list           — show all aliases
+    """
+    store = _store(args)
+    node = store.get_node(args.node_id) or store.get_node_by_title(args.node_id)
+
+    if not node:
+        print(f"Error: '{args.node_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    aka = list(node.get("aka") or [])
+    action = args.alias_action
+
+    if action == "list":
+        if aka:
+            print(f"Aliases for {node['title']}:")
+            for a in aka:
+                print(f"  - {a}")
+        else:
+            print(f"No aliases for {node['title']}.")
+        store.close()
+        return
+
+    if action == "add":
+        if not args.alias_value:
+            print("Error: kin alias <node> add <alias>", file=sys.stderr)
+            sys.exit(1)
+        new_alias = args.alias_value
+        if new_alias not in aka:
+            aka.append(new_alias)
+            store.update_node(node["id"], aka=aka)
+            print(f"Added alias '{new_alias}' to {node['title']}")
+        else:
+            print(f"'{new_alias}' is already an alias for {node['title']}")
+
+    elif action == "remove":
+        if not args.alias_value:
+            print("Error: kin alias <node> remove <alias>", file=sys.stderr)
+            sys.exit(1)
+        old_alias = args.alias_value
+        if old_alias in aka:
+            aka.remove(old_alias)
+            store.update_node(node["id"], aka=aka)
+            print(f"Removed alias '{old_alias}' from {node['title']}")
+        else:
+            print(f"'{old_alias}' is not an alias for {node['title']}")
+
+    store.close()
+
+
+# ── whoami ────────────────────────────────────────────────────────────
+
+def cmd_whoami(args):
+    """Show the current user identity used for --mine filtering."""
+    cfg = _config(args)
+    print(cfg.current_user)
 
 
 # ── embed ─────────────────────────────────────────────────────────────
@@ -1193,6 +1489,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("search", help="Hybrid search (FTS + graph)")
     s.add_argument("query", nargs="+")
     s.add_argument("--top-k", type=int, default=10)
+    s.add_argument("--mine", action="store_true", help="Only my nodes")
     _common(s)
     s.set_defaults(func=cmd_search)
 
@@ -1253,6 +1550,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--type")
     s.add_argument("--status")
     s.add_argument("--limit", type=int, default=100)
+    s.add_argument("--mine", action="store_true", help="Only my nodes")
     _common(s)
     s.set_defaults(func=cmd_list)
 
@@ -1272,6 +1570,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--type", help="Filter by node type (constraint, watch, etc.)")
     s.add_argument("--trigger", help="Filter operational nodes by trigger event")
     s.add_argument("--owner", help="Filter by owner")
+    s.add_argument("--mine", action="store_true", help="Filter by current user")
     _common(s)
     s.set_defaults(func=cmd_status)
 
@@ -1337,6 +1636,35 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Always emit executive context summary")
     _common(s)
     s.set_defaults(func=cmd_compact_hook)
+
+    # log
+    s = sub.add_parser("log", help="Show recent activity")
+    s.add_argument("--n", type=int, default=50, help="Number of entries")
+    _common(s)
+    s.set_defaults(func=cmd_log)
+
+    # graph
+    s = sub.add_parser("graph", help="Graph analytics dashboard")
+    s.add_argument("graph_mode", nargs="?", default="stats",
+                   choices=["stats", "centrality", "communities", "bridges", "trailheads"])
+    s.add_argument("--method", choices=["betweenness", "degree", "closeness"],
+                   help="Centrality method")
+    s.add_argument("--top-k", type=int, default=20, help="Number of results")
+    _common(s)
+    s.set_defaults(func=cmd_graph)
+
+    # alias
+    s = sub.add_parser("alias", help="Manage AKA/synonyms for a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("alias_action", choices=["add", "remove", "list"])
+    s.add_argument("alias_value", nargs="?", help="Alias to add/remove")
+    _common(s)
+    s.set_defaults(func=cmd_alias)
+
+    # whoami
+    s = sub.add_parser("whoami", help="Show current user identity")
+    _common(s)
+    s.set_defaults(func=cmd_whoami)
 
     # embed
     s = sub.add_parser("embed", help="Index all nodes for vector search")
