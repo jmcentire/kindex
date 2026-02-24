@@ -31,7 +31,7 @@ def data_dir(tmp_path):
 class TestVersion:
     def test_version(self):
         r = run("--version")
-        assert "0.2.0" in r.stdout
+        assert "0.3.0" in r.stdout
 
 
 class TestInit:

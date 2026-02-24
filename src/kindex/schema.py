@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Audience scopes for tenancy model
 AUDIENCES = ("private", "team", "public")
@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS activity_log (
 
 CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_log(action);
+
+-- Suggestions table for bridge opportunities
+CREATE TABLE IF NOT EXISTS suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    concept_a TEXT NOT NULL,
+    concept_b TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending/accepted/rejected
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS meta (
