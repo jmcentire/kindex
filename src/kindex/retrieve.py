@@ -79,9 +79,26 @@ def hybrid_search(
                     seen.add(target)
                     graph_ranked.append((target, edge["weight"] * fts_score))
 
+    # Mode 3: Vector search (if available)
+    vec_ranked: list[tuple[str, float]] = []
+    try:
+        from .vectors import is_available, vector_search
+        if is_available():
+            vec_results = vector_search(store, query, top_k=top_k)
+            vec_ranked = [(r["id"], 1.0 / (1.0 + r.get("vec_distance", 1.0)))
+                          for r in vec_results]
+    except Exception:
+        pass
+
     # Merge via RRF
+    ranked_lists = [fts_ranked]
     if graph_ranked:
-        merged = _rrf_merge(fts_ranked, graph_ranked)
+        ranked_lists.append(graph_ranked)
+    if vec_ranked:
+        ranked_lists.append(vec_ranked)
+
+    if len(ranked_lists) > 1:
+        merged = _rrf_merge(*ranked_lists)
     else:
         merged = fts_ranked
 

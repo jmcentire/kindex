@@ -914,6 +914,146 @@ def cmd_compact_hook(args):
     store.close()
 
 
+# ── embed ─────────────────────────────────────────────────────────────
+
+def cmd_embed(args):
+    """Index all nodes for vector similarity search.
+
+    Requires: pip install kindex[vectors]
+    """
+    store = _store(args)
+
+    try:
+        from .vectors import index_all_nodes
+        count = index_all_nodes(store, verbose=getattr(args, "verbose", False))
+        print(f"Embedded {count} nodes for vector search.")
+    except Exception as e:
+        print(f"Vector indexing failed: {e}", file=sys.stderr)
+        print("Install dependencies: pip install kindex[vectors]", file=sys.stderr)
+
+    store.close()
+
+
+# ── ask ───────────────────────────────────────────────────────────────
+
+def cmd_ask(args):
+    """Query the knowledge graph with natural language.
+
+    Uses LLM if available, otherwise falls back to search + context formatting.
+    """
+    store = _store(args)
+    question = " ".join(args.question)
+
+    from .retrieve import format_context_block, hybrid_search
+
+    results = hybrid_search(store, question, top_k=10)
+
+    if not results:
+        print("No relevant knowledge found.", file=sys.stderr)
+        store.close()
+        return
+
+    # Try LLM-powered answer
+    ledger, cfg = _ledger(args)
+    answer = _ask_llm(question, results, cfg, ledger)
+
+    if answer:
+        print(answer)
+    else:
+        # Fallback: just show the context
+        block = format_context_block(store, results, query=question, level="abridged")
+        print(f"(No LLM available — showing search results)\n")
+        print(block)
+
+    store.close()
+
+
+def _ask_llm(question: str, results: list[dict], config, ledger) -> str | None:
+    """Use LLM to answer a question given graph context."""
+    if not config.llm.enabled:
+        return None
+    if not ledger.can_spend():
+        return None
+
+    try:
+        import os
+        import anthropic
+        key = os.environ.get(config.llm.api_key_env)
+        if not key:
+            return None
+        client = anthropic.Anthropic(api_key=key)
+    except ImportError:
+        return None
+
+    # Build context from results
+    context_parts = []
+    for r in results[:5]:
+        title = r.get("title", r["id"])
+        content = (r.get("content") or "")[:500]
+        ntype = r.get("type", "concept")
+        context_parts.append(f"[{ntype}] {title}: {content}")
+
+    context = "\n\n".join(context_parts)
+
+    try:
+        response = client.messages.create(
+            model=config.llm.model,
+            max_tokens=500,
+            messages=[{"role": "user", "content": f"""Based on this knowledge graph context:
+
+{context}
+
+Answer this question concisely: {question}
+
+If the context doesn't contain enough information, say so honestly."""}],
+        )
+
+        cost_in = response.usage.input_tokens
+        cost_out = response.usage.output_tokens
+        pricing = {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000}
+        cost = cost_in * pricing["input"] + cost_out * pricing["output"]
+        ledger.record(cost, model=config.llm.model, purpose="ask",
+                      tokens_in=cost_in, tokens_out=cost_out)
+
+        return response.content[0].text
+    except Exception:
+        return None
+
+
+# ── register ─────────────────────────────────────────────────────────
+
+def cmd_register(args):
+    """Register a file path with a knowledge node.
+
+    Associates filesystem paths with nodes so Claude Code can find
+    the actual files that relate to a concept.
+    """
+    store = _store(args)
+    node = store.get_node(args.node_id) or store.get_node_by_title(args.node_id)
+
+    if not node:
+        print(f"Error: '{args.node_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    filepath = Path(args.filepath).expanduser().resolve()
+    if not filepath.exists():
+        print(f"Warning: '{filepath}' does not exist.", file=sys.stderr)
+
+    # Store file path in extra metadata
+    extra = node.get("extra") or {}
+    paths = extra.get("file_paths", [])
+    path_str = str(filepath)
+    if path_str not in paths:
+        paths.append(path_str)
+        extra["file_paths"] = paths
+        store.update_node(node["id"], extra=extra)
+        print(f"Registered: {filepath} -> {node['title']}")
+    else:
+        print(f"Already registered: {filepath} -> {node['title']}")
+
+    store.close()
+
+
 # ── config ────────────────────────────────────────────────────────────
 
 def cmd_config(args):
@@ -1071,7 +1211,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("add", help="Quick capture with auto-linking")
     s.add_argument("note", nargs="+")
     s.add_argument("--type", choices=["concept", "document", "decision",
-                                       "question", "skill", "artifact",
+                                       "question", "skill", "artifact", "person",
                                        "constraint", "directive", "checkpoint", "watch"])
     # Operational node metadata
     s.add_argument("--trigger", help="Trigger event (pre-commit, pre-deploy, etc.)")
@@ -1197,6 +1337,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Always emit executive context summary")
     _common(s)
     s.set_defaults(func=cmd_compact_hook)
+
+    # embed
+    s = sub.add_parser("embed", help="Index all nodes for vector search")
+    s.add_argument("--verbose", "-v", action="store_true")
+    _common(s)
+    s.set_defaults(func=cmd_embed)
+
+    # ask
+    s = sub.add_parser("ask", help="Query the knowledge graph")
+    s.add_argument("question", nargs="+")
+    _common(s)
+    s.set_defaults(func=cmd_ask)
+
+    # register
+    s = sub.add_parser("register", help="Associate a file path with a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("filepath", help="File path to register")
+    _common(s)
+    s.set_defaults(func=cmd_register)
 
     # config
     s = sub.add_parser("config", help="View or edit configuration")

@@ -26,7 +26,9 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = ["anthropic>=0.40"]
+vectors = ["sqlite-vec>=0.1", "sentence-transformers>=2.0"]
 dev = ["pytest>=7.0"]
+all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/jmcentire/kindex"

@@ -143,6 +143,45 @@ class TestContext:
         assert "Kindex" in r.stdout
 
 
+class TestAsk:
+    def test_ask_fallback(self, data_dir):
+        """Ask falls back to search results when no LLM."""
+        r = run("ask", "stigmergy", "--data-dir", data_dir)
+        assert r.returncode == 0
+        # Should show search results even without LLM
+        assert "stigmergy" in r.stdout.lower() or "search results" in r.stdout.lower()
+
+
+class TestRegister:
+    def test_register_file(self, data_dir, tmp_path):
+        # Create a temp file to register
+        f = tmp_path / "example.py"
+        f.write_text("# example")
+        # Get a node ID first
+        r = run("list", "--data-dir", data_dir)
+        lines = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
+        if lines:
+            nid = lines[0].split()[-1]
+            r2 = run("register", nid, str(f), "--data-dir", data_dir)
+            assert r2.returncode == 0
+            assert "Registered" in r2.stdout
+
+    def test_register_nonexistent_node(self, data_dir):
+        r = run("register", "nonexistent-id", "/tmp/foo.py", "--data-dir", data_dir)
+        assert r.returncode != 0
+
+
+class TestPersonNode:
+    def test_add_person(self, data_dir):
+        r = run("add", "Erik handles auth refactors", "--type", "person", "--data-dir", data_dir)
+        assert r.returncode == 0
+
+    def test_list_person_type(self, data_dir):
+        run("add", "Jeremy is the project lead", "--type", "person", "--data-dir", data_dir)
+        r = run("list", "--type", "person", "--data-dir", data_dir)
+        assert r.returncode == 0
+
+
 class TestConfig:
     def test_config_show(self, data_dir):
         r = run("config", "show", "--data-dir", data_dir)
