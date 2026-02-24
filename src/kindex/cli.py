@@ -923,6 +923,15 @@ def cmd_trail(args):
     edges_out = store.edges_from(node["id"])
     edges_in = store.edges_to(node["id"])
 
+    # Fetch activity log entries for this node
+    node_activity = store.activity_since("1970-01-01")
+    node_activity = [
+        e for e in node_activity
+        if e.get("target_id") == node["id"]
+        or (e.get("target_id") or "").startswith(node["id"] + "->")
+        or (e.get("target_id") or "").endswith("->" + node["id"])
+    ]
+
     if args.json:
         print(_dumps({
             "node": {"id": node["id"], "title": node["title"], "type": node["type"]},
@@ -943,6 +952,7 @@ def cmd_trail(args):
             "incoming": [{"from": e["from_id"], "title": e.get("from_title"),
                          "type": e["type"], "weight": e["weight"]}
                         for e in edges_in],
+            "activity_log": node_activity,
         }, indent=2))
     else:
         print(f"# Trail: {node['title']}")
@@ -964,6 +974,21 @@ def cmd_trail(args):
             print(f"\n  Incoming ({len(edges_in)}):")
             for e in edges_in:
                 print(f"    ← {e.get('from_title', e['from_id'])} [{e['type']}] w={e['weight']:.2f}")
+
+        if node_activity:
+            print(f"\n  Activity Log ({len(node_activity)} entries):")
+            for e in node_activity:
+                ts = (e.get("timestamp") or "")[:16]
+                action = e.get("action", "")
+                actor = e.get("actor", "")
+                details = e.get("details") or {}
+                actor_str = f" @{actor}" if actor else ""
+                detail_str = ""
+                if isinstance(details, dict):
+                    fields = details.get("fields", [])
+                    if fields:
+                        detail_str = f" ({', '.join(fields)})"
+                print(f"    {ts}  {action}{detail_str}{actor_str}")
 
     store.close()
 
@@ -1047,6 +1072,131 @@ def cmd_compact_hook(args):
     store.close()
 
 
+# ── prime ─────────────────────────────────────────────────────────────
+
+def cmd_prime(args):
+    """Generate context injection for Claude Code SessionStart hook.
+
+    kin prime [--topic TOPIC] [--tokens N] [--for hook|stdout]
+    """
+    store = _store(args)
+
+    from .hooks import prime_context
+
+    topic = getattr(args, "topic", None)
+    tokens = getattr(args, "tokens", 750) or 750
+    output_for = getattr(args, "output_for", "stdout") or "stdout"
+
+    block = prime_context(store, topic=topic, max_tokens=tokens)
+
+    if output_for == "hook":
+        # Just the context block, no header
+        print(block, end="")
+    else:
+        # Add a header for human-readable output
+        print("# Kindex Prime Context")
+        print(f"# Topic: {topic or '(auto-detected)'}")
+        print(f"# Max tokens: {tokens}")
+        print()
+        print(block)
+
+    store.close()
+
+
+# ── suggest ───────────────────────────────────────────────────────────
+
+def cmd_suggest(args):
+    """Show and manage bridge opportunity suggestions.
+
+    kin suggest [--accept ID] [--reject ID] [--limit N]
+    """
+    store = _store(args)
+
+    accept_id = getattr(args, "accept", None)
+    reject_id = getattr(args, "reject", None)
+    limit = getattr(args, "limit", 20) or 20
+
+    if accept_id is not None:
+        # Accept: create the edge between the two concepts
+        suggestions = store.pending_suggestions(limit=1000)
+        suggestion = None
+        for s in suggestions:
+            if s["id"] == accept_id:
+                suggestion = s
+                break
+
+        if not suggestion:
+            # Also check non-pending in case of confusion
+            print(f"Suggestion {accept_id} not found or already processed.", file=sys.stderr)
+            store.close()
+            return
+
+        # Resolve concept titles to nodes
+        node_a = store.get_node_by_title(suggestion["concept_a"])
+        node_b = store.get_node_by_title(suggestion["concept_b"])
+
+        if node_a and node_b:
+            store.add_edge(
+                node_a["id"], node_b["id"],
+                edge_type="relates_to",
+                provenance=f"suggestion: {suggestion.get('reason', '')}",
+            )
+            store.update_suggestion(accept_id, "accepted")
+            print(f"Accepted: {suggestion['concept_a']} <-> {suggestion['concept_b']}")
+            print(f"  Edge created: {node_a['title']} -> {node_b['title']}")
+        else:
+            missing = []
+            if not node_a:
+                missing.append(suggestion["concept_a"])
+            if not node_b:
+                missing.append(suggestion["concept_b"])
+            print(f"Cannot accept: node(s) not found: {', '.join(missing)}", file=sys.stderr)
+            print("Create the nodes first, then accept the suggestion.", file=sys.stderr)
+
+        store.close()
+        return
+
+    if reject_id is not None:
+        store.update_suggestion(reject_id, "rejected")
+        print(f"Rejected suggestion {reject_id}.")
+        store.close()
+        return
+
+    # List pending suggestions
+    suggestions = store.pending_suggestions(limit=limit)
+
+    if not suggestions:
+        print("No pending suggestions.")
+        store.close()
+        return
+
+    if args.json:
+        print(_dumps(suggestions, indent=2))
+    else:
+        print(f"# Bridge Opportunities ({len(suggestions)} pending)\n")
+        for s in suggestions:
+            sid = s["id"]
+            ca = s["concept_a"]
+            cb = s["concept_b"]
+            reason = s.get("reason", "")
+            source = s.get("source", "")
+            created = (s.get("created_at") or "")[:16]
+
+            print(f"  [{sid}] {ca} <-> {cb}")
+            if reason:
+                print(f"       Why: {reason}")
+            if source:
+                print(f"       Source: {source}")
+            if created:
+                print(f"       Created: {created}")
+            print()
+
+        print(f"Accept: kin suggest --accept <ID>")
+        print(f"Reject: kin suggest --reject <ID>")
+
+    store.close()
+
+
 # ── log ───────────────────────────────────────────────────────────────
 
 def cmd_log(args):
@@ -1069,6 +1219,108 @@ def cmd_log(args):
             actor = e.get("actor", "")
             actor_str = f" @{actor}" if actor else ""
             print(f"  {ts}  {action:15s} {target[:45]}{actor_str}")
+
+    store.close()
+
+
+# ── changelog ─────────────────────────────────────────────────────────
+
+def cmd_changelog(args):
+    """Show what changed in the graph since a date or over the last N days."""
+    store = _store(args)
+
+    # Determine the since timestamp
+    if args.since:
+        since_iso = args.since
+    else:
+        days = args.days or 7
+        since_dt = datetime.datetime.now() - datetime.timedelta(days=days)
+        since_iso = since_dt.isoformat(timespec="seconds")
+
+    # Fetch activity, optionally filtered by actor
+    if args.actor:
+        entries = store.activity_by_actor(args.actor)
+        # Further filter by timestamp
+        entries = [e for e in entries if (e.get("timestamp") or "") >= since_iso]
+    else:
+        entries = store.activity_since(since_iso)
+
+    if not entries:
+        if args.json:
+            print(_dumps({"since": since_iso, "groups": {}, "total": 0}))
+        else:
+            days_label = args.days or 7
+            if args.since:
+                print(f"# Changelog (since {args.since})\n\nNo activity found.")
+            else:
+                print(f"# Changelog (last {days_label} days)\n\nNo activity found.")
+        store.close()
+        return
+
+    # Group entries by action type, mapping to display categories
+    action_map = {
+        "add_node": "Added",
+        "update_node": "Updated",
+        "delete_node": "Deleted",
+        "add_edge": "Linked",
+    }
+    groups: dict[str, list[dict]] = {}
+    for e in entries:
+        action = e.get("action", "unknown")
+        label = action_map.get(action, action)
+        groups.setdefault(label, []).append(e)
+
+    if args.json:
+        print(_dumps({
+            "since": since_iso,
+            "actor": args.actor or None,
+            "groups": {k: v for k, v in groups.items()},
+            "total": len(entries),
+        }, indent=2))
+    else:
+        days_label = args.days or 7
+        if args.since:
+            print(f"# Changelog (since {args.since})")
+        else:
+            print(f"# Changelog (last {days_label} days)")
+        if args.actor:
+            print(f"  Actor: {args.actor}")
+        print()
+
+        # Display order: Added, Updated, Deleted, Linked, then anything else
+        display_order = ["Added", "Updated", "Deleted", "Linked"]
+        all_labels = display_order + [k for k in groups if k not in display_order]
+
+        for label in all_labels:
+            if label not in groups:
+                continue
+            items = groups[label]
+            # Determine count label
+            if label in ("Linked",):
+                count_label = f"{len(items)} edges"
+            else:
+                count_label = f"{len(items)} nodes"
+
+            print(f"## {label} ({count_label})")
+            for e in items:
+                ts = (e.get("timestamp") or "")[:10]
+                target_title = e.get("target_title") or e.get("target_id", "")
+                details = e.get("details") or {}
+
+                if label == "Linked":
+                    # Show edge details: from -> to [type]
+                    edge_type = details.get("type", "relates_to")
+                    target = e.get("target_id", "")
+                    print(f"  {ts}  {target} [{edge_type}]")
+                elif label == "Updated":
+                    fields = details.get("fields", [])
+                    field_str = f" ({', '.join(fields)})" if fields else ""
+                    print(f"  {ts}  Updated{field_str}: {target_title}")
+                else:
+                    ntype = details.get("type", "")
+                    type_str = f"[{ntype}] " if ntype else ""
+                    print(f"  {ts}  {type_str}{target_title}")
+            print()
 
     store.close()
 
@@ -1348,6 +1600,250 @@ def cmd_register(args):
         print(f"Already registered: {filepath} -> {node['title']}")
 
     store.close()
+
+
+# ── skills ─────────────────────────────────────────────────────────────
+
+def cmd_skills(args):
+    """Show skill profile for a person."""
+    store = _store(args)
+    cfg = _config(args)
+
+    person_name = args.person or cfg.current_user
+    person = store.get_node_by_title(person_name) or store.get_node(person_name)
+
+    if not person:
+        # Try to find any person node that matches
+        persons = store.all_nodes(node_type="person", limit=100)
+        for p in persons:
+            if person_name.lower() in p["title"].lower():
+                person = p
+                break
+
+    if not person:
+        print(f"No person node found for '{person_name}'.", file=sys.stderr)
+        print("Create one with: kin add --type person <name>", file=sys.stderr)
+        store.close()
+        return
+
+    # Find skill edges (demonstrates)
+    edges = store.edges_from(person["id"])
+    skill_edges = [e for e in edges if e.get("type") == "demonstrates"]
+
+    # Also find context_of edges to skill nodes
+    for e in edges:
+        if e.get("type") != "demonstrates":
+            target = store.get_node(e["to_id"])
+            if target and target.get("type") == "skill":
+                skill_edges.append(e)
+
+    if args.json:
+        skills = []
+        for e in skill_edges:
+            target = store.get_node(e["to_id"])
+            if target:
+                skills.append({
+                    "title": target["title"],
+                    "weight": target["weight"],
+                    "edge_weight": e["weight"],
+                    "provenance": e.get("provenance", ""),
+                    "last_updated": target.get("updated_at", ""),
+                })
+        print(_dumps({"person": person["title"], "skills": skills}, indent=2))
+    else:
+        print(f"# Skills: {person['title']}\n")
+        if not skill_edges:
+            print("  No skills recorded yet.")
+            print("  Record with: kin add --type skill '<skill name>'")
+        else:
+            for e in skill_edges:
+                target = store.get_node(e["to_id"])
+                if target:
+                    when = (target.get("updated_at") or "")[:10]
+                    prov = e.get("provenance", "")[:40]
+                    print(f"  {target['title'][:40]:40s} w={target['weight']:.2f}  {when}  {prov}")
+
+    store.close()
+
+
+# ── import ─────────────────────────────────────────────────────────────
+
+def cmd_import_graph(args):
+    """Import nodes and edges from a JSON or JSONL file."""
+    store = _store(args)
+    filepath = Path(args.filepath)
+
+    if not filepath.exists():
+        print(f"Error: '{filepath}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    text = filepath.read_text()
+    if filepath.suffix == ".jsonl" or args.format == "jsonl":
+        items = [json.loads(line) for line in text.strip().split("\n") if line.strip()]
+    else:
+        data = json.loads(text)
+        items = data if isinstance(data, list) else [data]
+
+    dry_run = getattr(args, "dry_run", False)
+    merge = getattr(args, "mode", "merge") == "merge"
+    created = updated = edges_created = skipped = 0
+
+    for item in items:
+        title = item.get("title", "")
+        node_id = item.get("id", "")
+
+        if not title and not node_id:
+            skipped += 1
+            continue
+
+        existing = None
+        if node_id:
+            existing = store.get_node(node_id)
+        if not existing and title:
+            existing = store.get_node_by_title(title)
+
+        if existing:
+            if merge:
+                # Merge: update content if new content is provided
+                new_content = item.get("content", "")
+                old_content = existing.get("content", "")
+                if new_content and new_content != old_content:
+                    if not dry_run:
+                        combined = old_content + "\n\n" + new_content if old_content else new_content
+                        store.update_node(existing["id"], content=combined)
+                    updated += 1
+                    if dry_run:
+                        print(f"  Would update: {title}")
+                else:
+                    skipped += 1
+            else:
+                # Replace
+                if not dry_run:
+                    store.update_node(existing["id"],
+                                      title=title,
+                                      content=item.get("content", ""),
+                                      weight=item.get("weight", existing["weight"]))
+                updated += 1
+                if dry_run:
+                    print(f"  Would replace: {title}")
+        else:
+            if not dry_run:
+                store.add_node(
+                    title=title,
+                    content=item.get("content", ""),
+                    node_id=node_id or None,
+                    node_type=item.get("type", "concept"),
+                    domains=item.get("domains", []),
+                    weight=item.get("weight", 0.5),
+                    audience=item.get("audience", "private"),
+                    prov_activity="import",
+                    prov_source=str(filepath),
+                )
+            created += 1
+            if dry_run:
+                print(f"  Would create: {title}")
+
+        # Process edges
+        for edge in item.get("edges", []):
+            to_id = edge.get("to", "")
+            if not to_id:
+                continue
+            from_id = node_id or (existing["id"] if existing else "")
+            if not from_id:
+                continue
+            # Check if target exists
+            target = store.get_node(to_id) or store.get_node_by_title(to_id)
+            if target and not dry_run:
+                store.add_edge(from_id, target["id"],
+                               edge_type=edge.get("type", "relates_to"),
+                               weight=edge.get("weight", 0.5),
+                               provenance="import")
+                edges_created += 1
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    print(f"{prefix}Import complete: {created} created, {updated} updated, "
+          f"{edges_created} edges, {skipped} skipped")
+    store.close()
+
+
+# ── cron ──────────────────────────────────────────────────────────────
+
+def cmd_cron(args):
+    """Run one-shot maintenance cycle (designed for crontab)."""
+    store = _store(args)
+    cfg = _config(args)
+    verbose = getattr(args, "verbose", False)
+
+    from .daemon import cron_run
+
+    results = cron_run(cfg, store, verbose=verbose)
+
+    if args.json:
+        print(_dumps(results, indent=2))
+    else:
+        print("Cron maintenance complete:")
+        print(f"  Projects scanned:  {results.get('projects', 0)}")
+        print(f"  .kin updates:      {results.get('kin_updates', 0)}")
+        print(f"  Sessions ingested: {results.get('sessions', 0)}")
+        print(f"  Inbox processed:   {results.get('inbox', 0)}")
+        print(f"  Nodes decayed:     {results.get('decayed', 0)}")
+        stats = results.get("stats", {})
+        print(f"  Graph: {stats.get('nodes', 0)} nodes, "
+              f"{stats.get('edges', 0)} edges, "
+              f"{results.get('orphan_count', 0)} orphans")
+
+    store.close()
+
+
+# ── watch ─────────────────────────────────────────────────────────────
+
+def cmd_watch(args):
+    """Watch for new sessions and ingest them (long-running)."""
+    import time
+
+    store = _store(args)
+    cfg = _config(args)
+    interval = getattr(args, "interval", 60) or 60
+    verbose = getattr(args, "verbose", False)
+
+    from .daemon import find_new_sessions, incremental_ingest, set_run_marker
+
+    # Start from now (or last run marker)
+    from .daemon import last_run_marker as _last_run
+    since = _last_run(cfg)
+    if not since:
+        import datetime as _dt
+        since = _dt.datetime.now(tz=None).isoformat(timespec="seconds")
+
+    print(f"Watching for new sessions (every {interval}s). Ctrl+C to stop.")
+    print(f"  Since: {since}")
+
+    try:
+        while True:
+            new_files = find_new_sessions(cfg, since)
+            if new_files:
+                count = incremental_ingest(cfg, store, since, verbose=verbose)
+                if count > 0:
+                    print(f"  [{_now_short()}] Ingested {count} new session(s)")
+                    set_run_marker(store)
+
+                # Update the since marker to now
+                import datetime as _dt
+                since = _dt.datetime.now(tz=None).isoformat(timespec="seconds")
+            elif verbose:
+                print(f"  [{_now_short()}] No new sessions")
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nWatch stopped.")
+    finally:
+        store.close()
+
+
+def _now_short() -> str:
+    """Short timestamp for watch output."""
+    import datetime as _dt
+    return _dt.datetime.now(tz=None).strftime("%H:%M:%S")
 
 
 # ── config ────────────────────────────────────────────────────────────
@@ -1637,11 +2133,36 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_compact_hook)
 
+    # prime
+    s = sub.add_parser("prime", help="Generate context for SessionStart hook")
+    s.add_argument("--topic", help="Topic to prime (auto-detects from $PWD if omitted)")
+    s.add_argument("--tokens", type=int, default=750, help="Max token budget (default 750)")
+    s.add_argument("--for", dest="output_for", choices=["hook", "stdout"], default="stdout",
+                   help="Output mode: hook (raw block) or stdout (with header)")
+    _common(s)
+    s.set_defaults(func=cmd_prime)
+
+    # suggest
+    s = sub.add_parser("suggest", help="Review bridge opportunity suggestions")
+    s.add_argument("--accept", type=int, metavar="ID", help="Accept suggestion by ID")
+    s.add_argument("--reject", type=int, metavar="ID", help="Reject suggestion by ID")
+    s.add_argument("--limit", type=int, default=20, help="Max suggestions to show")
+    _common(s)
+    s.set_defaults(func=cmd_suggest)
+
     # log
     s = sub.add_parser("log", help="Show recent activity")
     s.add_argument("--n", type=int, default=50, help="Number of entries")
     _common(s)
     s.set_defaults(func=cmd_log)
+
+    # changelog
+    s = sub.add_parser("changelog", help="Show what changed in the graph")
+    s.add_argument("--since", help="ISO date/timestamp (e.g. 2026-02-20)")
+    s.add_argument("--days", type=int, help="Look back N days (default 7)")
+    s.add_argument("--actor", help="Filter by actor")
+    _common(s)
+    s.set_defaults(func=cmd_changelog)
 
     # graph
     s = sub.add_parser("graph", help="Graph analytics dashboard")
@@ -1694,6 +2215,38 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("value", nargs="?", help="Value to set")
     _common(s)
     s.set_defaults(func=cmd_config)
+
+    # skills
+    s = sub.add_parser("skills", help="Show skill profile for a person")
+    s.add_argument("person", nargs="?", help="Person name/ID (default: current user)")
+    _common(s)
+    s.set_defaults(func=cmd_skills)
+
+    # import (named import-graph to avoid Python keyword)
+    s = sub.add_parser("import", help="Import nodes/edges from JSON/JSONL")
+    s.add_argument("filepath", help="Path to JSON or JSONL file")
+    s.add_argument("--mode", choices=["merge", "replace"], default="merge",
+                   help="Merge (default) or replace existing nodes")
+    s.add_argument("--format", choices=["json", "jsonl"],
+                   help="Force format (auto-detects from extension)")
+    s.add_argument("--dry-run", action="store_true",
+                   help="Show what would be imported without making changes")
+    _common(s)
+    s.set_defaults(func=cmd_import_graph)
+
+    # cron
+    s = sub.add_parser("cron", help="One-shot maintenance cycle (for crontab)")
+    s.add_argument("--verbose", "-v", action="store_true", help="Detailed logging")
+    _common(s)
+    s.set_defaults(func=cmd_cron)
+
+    # watch
+    s = sub.add_parser("watch", help="Watch for new sessions and ingest them")
+    s.add_argument("--interval", type=int, default=60,
+                   help="Check interval in seconds (default: 60)")
+    s.add_argument("--verbose", "-v", action="store_true", help="Detailed logging")
+    _common(s)
+    s.set_defaults(func=cmd_watch)
 
     return p
 

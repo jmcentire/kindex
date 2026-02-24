@@ -105,6 +105,25 @@ class Store:
             except Exception:
                 pass
 
+        if current_version < 4:
+            # v4: add suggestions table
+            try:
+                self.conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS suggestions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        concept_a TEXT NOT NULL,
+                        concept_b TEXT NOT NULL,
+                        reason TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
+                """)
+                self.conn.commit()
+            except Exception:
+                pass
+
         if current_version < SCHEMA_VERSION:
             self.conn.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'",
@@ -153,6 +172,96 @@ class Store:
         except Exception:
             return []
 
+    # ── Temporal queries ───────────────────────────────────────────────
+
+    def activity_since(self, since_iso: str, action: str | None = None) -> list[dict]:
+        """Get activity log entries since a timestamp, optionally filtered by action type."""
+        try:
+            q = "SELECT * FROM activity_log WHERE timestamp >= ? "
+            params: list = [since_iso]
+            if action:
+                q += "AND action = ? "
+                params.append(action)
+            q += "ORDER BY timestamp DESC"
+            rows = self.conn.execute(q, params).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("details"), str):
+                    try:
+                        d["details"] = json.loads(d["details"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                result.append(d)
+            return result
+        except Exception:
+            return []
+
+    def nodes_changed_since(self, since_iso: str) -> list[dict]:
+        """Get nodes that were updated since a timestamp."""
+        rows = self.conn.execute(
+            "SELECT * FROM nodes WHERE updated_at >= ? ORDER BY updated_at DESC",
+            (since_iso,),
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def activity_by_actor(self, actor: str, limit: int = 50) -> list[dict]:
+        """Get activity by a specific actor."""
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM activity_log WHERE actor = ? ORDER BY timestamp DESC LIMIT ?",
+                (actor, limit),
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("details"), str):
+                    try:
+                        d["details"] = json.loads(d["details"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                result.append(d)
+            return result
+        except Exception:
+            return []
+
+    # ── Suggestions ───────────────────────────────────────────────────
+
+    def add_suggestion(self, concept_a: str, concept_b: str,
+                       reason: str = "", source: str = "") -> int:
+        """Add a bridge opportunity suggestion. Returns the suggestion ID."""
+        cur = self.conn.execute(
+            """INSERT INTO suggestions (concept_a, concept_b, reason, source)
+               VALUES (?, ?, ?, ?)""",
+            (concept_a, concept_b, reason, source),
+        )
+        self.conn.commit()
+        self._log("add_suggestion", f"{concept_a}->{concept_b}", "",
+                  details={"reason": reason, "source": source})
+        return cur.lastrowid
+
+    def pending_suggestions(self, limit: int = 20) -> list[dict]:
+        """Get pending suggestions (bridge opportunities)."""
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM suggestions WHERE status = 'pending' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def update_suggestion(self, suggestion_id: int, status: str) -> None:
+        """Update suggestion status (accepted/rejected)."""
+        self.conn.execute(
+            "UPDATE suggestions SET status = ? WHERE id = ?",
+            (status, suggestion_id),
+        )
+        self.conn.commit()
+        self._log("update_suggestion", str(suggestion_id), "",
+                  details={"status": status})
+
     # ── Node operations ────────────────────────────────────────────────
 
     def add_node(
@@ -194,6 +303,30 @@ class Store:
         actor = (prov_who or [""])[0] if prov_who else ""
         self._log("add_node", nid, title, actor,
                   {"type": node_type, "activity": prov_activity})
+
+        # Auto-create person nodes from prov_who entries
+        if prov_who and node_type != "person" and prov_activity not in ("auto-created", ""):
+            for person_name in prov_who:
+                if not person_name:
+                    continue
+                existing_person = self.get_node_by_title(person_name)
+                if existing_person is None:
+                    existing_person = self.get_node(person_name)
+                if existing_person is None:
+                    self.add_node(
+                        person_name,
+                        node_type="person",
+                        prov_activity="auto-created",
+                        prov_why=f"Referenced in prov_who of '{title}'",
+                    )
+                    existing_person = self.get_node_by_title(person_name)
+                if existing_person:
+                    self.add_edge(nid, existing_person["id"],
+                                  edge_type="context_of",
+                                  weight=0.4,
+                                  provenance="auto-linked from prov_who",
+                                  bidirectional=False)
+
         return nid
 
     def get_node(self, node_id: str) -> dict | None:
@@ -475,6 +608,108 @@ class Store:
             "watches": watches,
             "directives": directives,
         }
+
+    # ── Meta key-value ────────────────────────────────────────────────
+
+    def get_meta(self, key: str) -> str | None:
+        """Read a value from the meta table. Returns None if not found."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row["value"]
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Write a value to the meta table (upsert)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self.conn.commit()
+
+    # ── Skill tracking ─────────────────────────────────────────────────
+
+    def record_skill_evidence(self, person_id: str, skill_title: str,
+                              evidence: str, source: str = "") -> None:
+        """Record evidence of a person demonstrating a skill.
+
+        - Find or create the person node
+        - Find or create the skill node
+        - Add/update a 'demonstrates' edge from person to skill
+        - Store evidence in edge provenance
+        - Boost the skill node weight by 0.05 per evidence (cap at 1.0)
+        """
+        # Find or create person node
+        person_node = self.get_node(person_id)
+        if person_node is None:
+            person_node = self.get_node_by_title(person_id)
+        if person_node is None:
+            person_id = self.add_node(
+                person_id,
+                node_type="person",
+                prov_activity="skill-tracking",
+                prov_why="Auto-created for skill evidence",
+            )
+        else:
+            person_id = person_node["id"]
+
+        # Find or create skill node
+        skill_node = self.get_node_by_title(skill_title)
+        if skill_node is None:
+            skill_id = self.add_node(
+                skill_title,
+                node_type="skill",
+                weight=0.5,
+                prov_activity="skill-tracking",
+                prov_why="Auto-created for skill evidence",
+            )
+        else:
+            skill_id = skill_node["id"]
+
+        # Build evidence record
+        now = _now()
+
+        # Check for existing demonstrates edge
+        existing = self.conn.execute(
+            """SELECT id, provenance FROM edges
+               WHERE from_id = ? AND to_id = ? AND type = 'demonstrates'""",
+            (person_id, skill_id),
+        ).fetchone()
+
+        if existing:
+            # Append evidence to existing provenance
+            try:
+                prev = json.loads(existing["provenance"])
+                if isinstance(prev, list):
+                    prev.append({"evidence": evidence, "source": source, "recorded_at": now})
+                else:
+                    prev = [prev, {"evidence": evidence, "source": source, "recorded_at": now}]
+            except (json.JSONDecodeError, TypeError):
+                prev = [{"evidence": evidence, "source": source, "recorded_at": now}]
+            self.conn.execute(
+                "UPDATE edges SET provenance = ? WHERE id = ?",
+                (_jdumps(prev), existing["id"]),
+            )
+            self.conn.commit()
+        else:
+            # Create new demonstrates edge (unidirectional — person -> skill)
+            prov_list = [{"evidence": evidence, "source": source, "recorded_at": now}]
+            self.conn.execute(
+                """INSERT OR REPLACE INTO edges (from_id, to_id, type, weight, provenance)
+                   VALUES (?, ?, 'demonstrates', 0.5, ?)""",
+                (person_id, skill_id, _jdumps(prov_list)),
+            )
+            self.conn.commit()
+
+        # Boost skill weight by 0.05, capped at 1.0
+        skill_node = self.get_node(skill_id)
+        if skill_node:
+            new_weight = min(1.0, skill_node["weight"] + 0.05)
+            self.update_node(skill_id, weight=new_weight)
+
+        self._log("record_skill_evidence", skill_id, skill_title, person_id,
+                  {"evidence": evidence, "source": source})
 
     # ── Stats ──────────────────────────────────────────────────────────
 
