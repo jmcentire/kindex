@@ -40,11 +40,19 @@ class DefaultsConfig(BaseModel):
 
 class Config(BaseModel):
     data_dir: str = "~/.kindex"
+    user: str = ""  # current user identity (auto-detected if empty)
     project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal", "~/WanderRepos"])
     claude_dir: str = "~/.claude"
     llm: LLMConfig = Field(default_factory=LLMConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+
+    @property
+    def current_user(self) -> str:
+        """Resolve current user identity. Config > git > OS."""
+        if self.user:
+            return self.user
+        return _detect_user()
 
     @property
     def data_path(self) -> Path:
@@ -77,6 +85,23 @@ class Config(BaseModel):
     @property
     def resolved_project_dirs(self) -> list[Path]:
         return [Path(d).expanduser().resolve() for d in self.project_dirs]
+
+
+def _detect_user() -> str:
+    """Auto-detect user identity from git config or OS username."""
+    import subprocess
+    # Try git config
+    try:
+        result = subprocess.run(
+            ["git", "config", "--global", "user.name"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().lower().replace(" ", "-")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # Fall back to OS username
+    return os.environ.get("USER", os.environ.get("USERNAME", "unknown"))
 
 
 def load_config(config_path: str | Path | None = None) -> Config:

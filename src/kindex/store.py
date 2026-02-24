@@ -84,6 +84,28 @@ class Store:
                 self.conn.commit()
             except Exception:
                 pass  # column already exists
+
+        if current_version < 3:
+            # v3: add activity_log table
+            try:
+                self.conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS activity_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                        action TEXT NOT NULL,
+                        target_id TEXT NOT NULL DEFAULT '',
+                        target_title TEXT NOT NULL DEFAULT '',
+                        actor TEXT NOT NULL DEFAULT '',
+                        details TEXT NOT NULL DEFAULT ''
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_log(action);
+                """)
+                self.conn.commit()
+            except Exception:
+                pass
+
+        if current_version < SCHEMA_VERSION:
             self.conn.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
@@ -94,6 +116,42 @@ class Store:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+    # ── Activity logging ─────────────────────────────────────────────
+
+    def _log(self, action: str, target_id: str = "", target_title: str = "",
+             actor: str = "", details: dict | None = None) -> None:
+        """Record an action in the activity log."""
+        try:
+            self.conn.execute(
+                """INSERT INTO activity_log (action, target_id, target_title, actor, details)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (action, target_id, target_title, actor,
+                 _jdumps(details or {})),
+            )
+            self.conn.commit()
+        except Exception:
+            pass  # don't let logging break operations
+
+    def recent_activity(self, limit: int = 50) -> list[dict]:
+        """Get recent activity log entries."""
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("details"), str):
+                    try:
+                        d["details"] = json.loads(d["details"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                result.append(d)
+            return result
+        except Exception:
+            return []
 
     # ── Node operations ────────────────────────────────────────────────
 
@@ -133,6 +191,9 @@ class Store:
              now, now, now, _jdumps(extra or {})),
         )
         self.conn.commit()
+        actor = (prov_who or [""])[0] if prov_who else ""
+        self._log("add_node", nid, title, actor,
+                  {"type": node_type, "activity": prov_activity})
         return nid
 
     def get_node(self, node_id: str) -> dict | None:
@@ -146,10 +207,21 @@ class Store:
         return self._row_to_dict(row)
 
     def get_node_by_title(self, title: str) -> dict | None:
-        """Fuzzy match by title (case-insensitive)."""
+        """Match by title or AKA (case-insensitive)."""
+        # Exact title match
         row = self.conn.execute(
             "SELECT * FROM nodes WHERE lower(title) = lower(?)", (title,)).fetchone()
-        return self._row_to_dict(row) if row else None
+        if row:
+            return self._row_to_dict(row)
+        # AKA match: search JSON array for alias
+        lower = title.lower()
+        rows = self.conn.execute(
+            "SELECT * FROM nodes WHERE aka != '[]' AND aka != ''").fetchall()
+        for r in rows:
+            d = self._row_to_dict(r)
+            if any(a.lower() == lower for a in (d.get("aka") or [])):
+                return d
+        return None
 
     def update_node(self, node_id: str, **fields) -> None:
         """Update specific fields on a node."""
@@ -171,12 +243,18 @@ class Store:
         vals = list(updates.values()) + [node_id]
         self.conn.execute(f"UPDATE nodes SET {sets} WHERE id = ?", vals)
         self.conn.commit()
+        self._log("update_node", node_id, "",
+                  details={"fields": list(fields.keys())})
 
     def delete_node(self, node_id: str) -> None:
+        # Capture title before deletion for logging
+        row = self.conn.execute("SELECT title FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        title = row["title"] if row else node_id
         self.conn.execute("DELETE FROM edges WHERE from_id = ? OR to_id = ?",
                           (node_id, node_id))
         self.conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
         self.conn.commit()
+        self._log("delete_node", node_id, title)
 
     def all_nodes(self, node_type: str | None = None,
                   status: str | None = None,
@@ -223,6 +301,8 @@ class Store:
                 (to_id, from_id, edge_type, weight * 0.8, provenance),
             )
         self.conn.commit()
+        self._log("add_edge", f"{from_id}->{to_id}", "",
+                  details={"type": edge_type, "weight": weight})
 
     def edges_from(self, node_id: str) -> list[dict]:
         rows = self.conn.execute(

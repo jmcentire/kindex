@@ -177,3 +177,147 @@ def communities(vault: Vault) -> list[set[str]]:
         return []
     U = G.to_undirected()
     return list(nx.community.greedy_modularity_communities(U, weight="weight"))
+
+
+# ── Store-based graph algorithms ─────────────────────────────────────
+
+def build_nx_from_store(store) -> nx.DiGraph:
+    """Build a NetworkX directed graph from the Store."""
+    G = nx.DiGraph()
+
+    for node in store.all_nodes(limit=10000):
+        G.add_node(node["id"], title=node["title"], type=node["type"],
+                   weight=node.get("weight", 0.5),
+                   domains=node.get("domains", []))
+
+    for nid in list(G.nodes()):
+        for edge in store.edges_from(nid):
+            if edge["to_id"] in G:
+                G.add_edge(nid, edge["to_id"],
+                           weight=edge["weight"],
+                           type=edge["type"],
+                           provenance=edge.get("provenance", ""))
+
+    return G
+
+
+def store_stats(store) -> dict:
+    """Compute graph statistics from Store."""
+    G = build_nx_from_store(store)
+    if not G:
+        return {"nodes": 0, "edges": 0, "density": 0, "components": 0,
+                "avg_degree": 0, "max_degree_node": "", "max_degree": 0}
+
+    degrees = dict(G.degree())
+    mx = max(degrees, key=degrees.get) if degrees else ""
+    return {
+        "nodes": G.number_of_nodes(),
+        "edges": G.number_of_edges(),
+        "density": round(nx.density(G), 4),
+        "components": nx.number_weakly_connected_components(G),
+        "avg_degree": round(sum(degrees.values()) / len(degrees), 2) if degrees else 0,
+        "max_degree_node": mx,
+        "max_degree": degrees.get(mx, 0),
+    }
+
+
+def store_centrality(store, method: str = "betweenness",
+                     top_k: int = 20) -> list[tuple[str, str, float]]:
+    """Compute centrality from Store. Returns [(id, title, score)]."""
+    G = build_nx_from_store(store)
+    if not G:
+        return []
+
+    fn = {
+        "betweenness": lambda: nx.betweenness_centrality(G, weight="weight"),
+        "degree": lambda: nx.degree_centrality(G),
+        "closeness": lambda: nx.closeness_centrality(G),
+    }
+    scores = fn.get(method, fn["betweenness"])()
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+    result = []
+    for nid, score in ranked:
+        title = G.nodes[nid].get("title", nid)
+        result.append((nid, title, round(score, 4)))
+    return result
+
+
+def store_communities(store) -> list[list[dict]]:
+    """Detect communities from Store. Returns list of communities (each a list of {id, title})."""
+    G = build_nx_from_store(store)
+    if not G or G.number_of_nodes() < 2:
+        return []
+
+    U = G.to_undirected()
+    comms = nx.community.greedy_modularity_communities(U, weight="weight")
+    result = []
+    for comm in comms:
+        members = []
+        for nid in comm:
+            title = G.nodes[nid].get("title", nid)
+            members.append({"id": nid, "title": title})
+        result.append(sorted(members, key=lambda m: m["title"]))
+    return result
+
+
+def store_bridges(store, top_k: int = 10) -> list[dict]:
+    """Find bridge edges — edges whose removal would disconnect components.
+
+    Returns edges sorted by importance (betweenness centrality).
+    """
+    G = build_nx_from_store(store)
+    if not G or G.number_of_edges() < 2:
+        return []
+
+    U = G.to_undirected()
+    edge_btw = nx.edge_betweenness_centrality(U, weight="weight")
+    ranked = sorted(edge_btw.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+    result = []
+    for (u, v), score in ranked:
+        u_title = G.nodes[u].get("title", u) if u in G else u
+        v_title = G.nodes[v].get("title", v) if v in G else v
+        result.append({
+            "from_id": u, "from_title": u_title,
+            "to_id": v, "to_title": v_title,
+            "betweenness": round(score, 4),
+        })
+    return result
+
+
+def store_trailheads(store, top_k: int = 10) -> list[dict]:
+    """Identify trailhead nodes — high-centrality entry points into the graph.
+
+    Trailheads are nodes with high betweenness centrality and multiple
+    outgoing edges, making them good starting points for exploration.
+    """
+    G = build_nx_from_store(store)
+    if not G:
+        return []
+
+    betweenness = nx.betweenness_centrality(G, weight="weight")
+    out_degrees = dict(G.out_degree())
+
+    # Score = betweenness * (1 + log(out_degree))
+    import math
+    scores = {}
+    for nid in G.nodes():
+        out = out_degrees.get(nid, 0)
+        btw = betweenness.get(nid, 0)
+        if out > 0:
+            scores[nid] = btw * (1 + math.log(1 + out))
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    result = []
+    for nid, score in ranked:
+        data = G.nodes[nid]
+        result.append({
+            "id": nid,
+            "title": data.get("title", nid),
+            "type": data.get("type", "concept"),
+            "score": round(score, 4),
+            "out_degree": out_degrees.get(nid, 0),
+            "betweenness": round(betweenness.get(nid, 0), 4),
+        })
+    return result

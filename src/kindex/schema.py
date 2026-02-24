@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Audience scopes for tenancy model
 AUDIENCES = ("private", "team", "public")
@@ -105,6 +105,20 @@ CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
 CREATE INDEX IF NOT EXISTS idx_nodes_updated ON nodes(updated_at);
 CREATE INDEX IF NOT EXISTS idx_nodes_weight ON nodes(weight DESC);
 CREATE INDEX IF NOT EXISTS idx_nodes_audience ON nodes(audience);
+
+-- Activity log for audit trail
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    action TEXT NOT NULL,             -- add_node, update_node, delete_node, add_edge, etc.
+    target_id TEXT NOT NULL DEFAULT '',  -- node or edge ID
+    target_title TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT '',    -- who performed the action
+    details TEXT NOT NULL DEFAULT ''   -- JSON with additional context
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_log(action);
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS meta (
