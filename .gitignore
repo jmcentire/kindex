@@ -20,3 +20,6 @@ kin.yaml
 
 # OS
 .DS_Store
+
+# MCP registry tokens
+.mcpregistry_*

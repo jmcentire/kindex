@@ -261,7 +261,7 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.4.0</span>
+      <span class="badge green">v0.4.1</span>
       <span class="badge orange">Claude Code Plugin</span>
       <span class="badge blue">12 MCP Tools</span>
       <span class="badge purple">42 CLI Commands</span>
@@ -297,6 +297,42 @@
         <p><code>.kin</code> inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- Real-world Demo -->
+<section>
+  <div class="container">
+    <h2>In Practice</h2>
+    <p>A 162-file fantasy novel vault &mdash; characters, locations, magic systems, plot outlines &mdash; ingested in one pass. Cross-referenced by content mentions. Searched in milliseconds.</p>
+    <div class="terminal mono">
+<span class="prompt">$</span> <span class="cmd">kin status</span>
+<span class="output">Nodes:     192</span>
+<span class="output">Edges:     11,802</span>
+<span class="output">Orphans:   3</span>
+
+<span class="prompt">$</span> <span class="cmd">time kin search</span> "the Baker"
+<span class="output"># Kindex: 10 results for "the Baker"</span>
+<span class="output"></span>
+<span class="output">## [document] The Baker - Hessa's Profile and Message Broker System (w=0.70)</span>
+<span class="output">  &rarr; Thieves Guild, Five Marks, Thieves Guild Operations</span>
+<span class="output"></span>
+<span class="output">## [document] Hessa the Baker's Story (w=0.70)</span>
+<span class="output">  &rarr; Mia -- Backstory, Mia -- Character Arc</span>
+<span class="output"></span>
+<span class="output">## [person] Mia and The Baker (Hessa) -- Relationship (w=0.70)</span>
+<span class="output">  &rarr; Sebastian and Mia, Mia -- Motivations and Goals</span>
+<span class="output"></span>
+<span class="output" style="color: var(--accent2);">0.142 total</span>
+
+<span class="prompt">$</span> <span class="cmd">kin graph stats</span>
+<span class="output">Nodes:      192</span>
+<span class="output">Edges:      11,802</span>
+<span class="output">Density:    0.3218</span>
+<span class="output">Components: 5</span>
+<span class="output">Avg degree: 122.94</span>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">192 nodes. 11,802 edges. 5 context tiers. Hybrid FTS5 + graph traversal in 142ms.</p>
   </div>
 </section>
 
@@ -576,7 +612,7 @@ inherits:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.4.0 &middot; Claude Code Plugin &middot; 12 MCP Tools &middot; 42 CLI Commands &middot; 373 Tests</p>
+    <p style="margin-top: 8px;">v0.4.1 &middot; Claude Code Plugin &middot; 12 MCP Tools &middot; 42 CLI Commands &middot; 373 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
   </div>
 </footer>
