@@ -1,0 +1,645 @@
+"""Kindex MCP Server — Claude Code plugin for the knowledge graph.
+
+Exposes Kindex tools, resources, and prompts via the Model Context Protocol.
+Run with: kin-mcp (stdio transport, for Claude Code integration)
+"""
+
+from __future__ import annotations
+
+import atexit
+import json
+import os
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP(
+    "kindex",
+    instructions=(
+        "Kindex is a persistent knowledge graph for AI-assisted workflows. "
+        "Use 'search' to find knowledge, 'add' to capture discoveries, "
+        "'context' for formatted context blocks, and 'status' for graph health. "
+        "Nodes have types (concept, decision, skill, person, project, constraint, etc.) "
+        "and are connected by weighted edges."
+    ),
+)
+
+# ── Lazy singleton ────────────────────────────────────────────────────
+
+_store = None
+_config = None
+
+
+def _get_store():
+    """Lazy-init Store and Config singletons."""
+    global _store, _config
+    if _store is None:
+        from .config import load_config
+        from .store import Store
+
+        _config = load_config()
+        _store = Store(_config)
+        atexit.register(_store.close)
+    return _store, _config
+
+
+def _json(obj: Any, **kw) -> str:
+    """JSON serialize with date/path handling."""
+    import datetime
+    from pathlib import Path
+
+    def default(o):
+        if isinstance(o, (datetime.date, datetime.datetime)):
+            return o.isoformat()
+        if isinstance(o, Path):
+            return str(o)
+        if isinstance(o, set):
+            return sorted(o)
+        raise TypeError(f"Not JSON serializable: {type(o)}")
+
+    return json.dumps(obj, default=default, **kw)
+
+
+def _node_summary(node: dict) -> str:
+    """One-line summary of a node."""
+    ntype = node.get("type", "concept")
+    title = node.get("title", node.get("id", "?"))
+    weight = node.get("weight", 0)
+    return f"[{ntype}] {title} (w={weight:.2f}, id={node['id']})"
+
+
+def _node_detail(store, node: dict) -> str:
+    """Multi-line detail view of a node with edges."""
+    lines = [
+        f"# {node.get('title', node['id'])}",
+        f"Type: {node.get('type', 'concept')}  |  Weight: {node.get('weight', 0):.2f}  |  "
+        f"Audience: {node.get('audience', 'private')}",
+        f"ID: {node['id']}",
+    ]
+    if node.get("domains"):
+        lines.append(f"Domains: {', '.join(node['domains'])}")
+    if node.get("aka"):
+        lines.append(f"AKA: {', '.join(node['aka'])}")
+    if node.get("content"):
+        lines.append(f"\n{node['content']}")
+
+    edges = store.edges_from(node["id"])
+    if edges:
+        lines.append(f"\n## Connections ({len(edges)})")
+        for e in edges[:20]:
+            lines.append(f"  -> {e.get('to_title', e['to_id'])} ({e['type']}, w={e['weight']:.2f})")
+
+    prov_parts = []
+    if node.get("prov_who"):
+        prov_parts.append(f"who={node['prov_who']}")
+    if node.get("prov_activity"):
+        prov_parts.append(f"activity={node['prov_activity']}")
+    if node.get("prov_source"):
+        prov_parts.append(f"source={node['prov_source']}")
+    if prov_parts:
+        lines.append(f"\nProvenance: {', '.join(prov_parts)}")
+
+    extra = node.get("extra")
+    if extra and isinstance(extra, dict):
+        state = extra.get("current_state")
+        if state:
+            lines.append(f"\nState: {_json(state)}")
+
+    return "\n".join(lines)
+
+
+# ── Tools ─────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def search(query: str, top_k: int = 10) -> str:
+    """Search the knowledge graph with hybrid FTS5 + graph traversal.
+
+    Uses Reciprocal Rank Fusion to merge full-text and graph results.
+    Returns ranked nodes with scores.
+    """
+    store, _ = _get_store()
+    from .retrieve import hybrid_search
+
+    results = hybrid_search(store, query, top_k=top_k)
+    if not results:
+        return "No results found."
+
+    lines = [f"Found {len(results)} results for '{query}':\n"]
+    for i, r in enumerate(results, 1):
+        score = r.get("rrf_score", 0)
+        lines.append(f"{i}. [{r.get('type', 'concept')}] {r.get('title', r['id'])} "
+                      f"(score={score:.3f}, id={r['id']})")
+        content = (r.get("content") or "")[:150]
+        if content:
+            lines.append(f"   {content}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def add(
+    text: str,
+    node_type: str = "concept",
+    domains: str = "",
+    audience: str = "private",
+) -> str:
+    """Add a knowledge node to the graph.
+
+    The text becomes the node's title and content. Auto-extracts concepts
+    and creates links to existing nodes when possible.
+
+    Args:
+        text: The knowledge to capture (used as both title and content).
+        node_type: Node type (concept, decision, question, skill, person, constraint, directive, watch).
+        domains: Comma-separated domain tags (e.g. "engineering,python").
+        audience: Visibility scope (private, team, org, public).
+    """
+    store, config = _get_store()
+    from .extract import keyword_extract
+
+    domain_list = [d.strip() for d in domains.split(",") if d.strip()] if domains else []
+
+    # Create the node
+    title = text[:60].strip()
+    nid = store.add_node(
+        title=title,
+        content=text,
+        node_type=node_type,
+        domains=domain_list,
+        audience=audience,
+        prov_activity="mcp-add",
+    )
+
+    # Try auto-linking
+    existing_titles = [n["title"] for n in store.all_nodes(limit=200)]
+    extraction = keyword_extract(text, existing_titles=existing_titles)
+    link_count = 0
+    for conn in extraction.get("connections", []):
+        target = store.get_node_by_title(conn.get("to_title", ""))
+        if target and target["id"] != nid:
+            store.add_edge(nid, target["id"], edge_type="relates_to", weight=0.4,
+                           provenance="auto-linked via MCP")
+            link_count += 1
+
+    return f"Created node: {nid} ({node_type})" + (
+        f" with {link_count} auto-link(s)" if link_count else ""
+    )
+
+
+@mcp.tool()
+def context(
+    topic: str = "",
+    level: str = "abridged",
+    max_tokens: int = 0,
+) -> str:
+    """Get a formatted context block for injection into conversation.
+
+    Args:
+        topic: Topic to search for (auto-detects from cwd if empty).
+        level: Context tier (full, abridged, summarized, executive, index).
+        max_tokens: Token budget (overrides level with auto-selection if set).
+    """
+    store, _ = _get_store()
+    from .retrieve import format_context_block, hybrid_search
+
+    if topic:
+        results = hybrid_search(store, topic, top_k=15)
+    else:
+        # Fall back to recent high-weight nodes
+        results = store.recent_nodes(n=15)
+
+    if not results:
+        return "No relevant knowledge found."
+
+    kwargs = {"level": level}
+    if max_tokens > 0:
+        kwargs = {"max_tokens_approx": max_tokens}
+
+    return format_context_block(store, results, query=topic, **kwargs)
+
+
+@mcp.tool()
+def show(node_id: str) -> str:
+    """Show full details of a node including edges and provenance.
+
+    Args:
+        node_id: Node ID or title to look up.
+    """
+    store, _ = _get_store()
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if not node:
+        return f"Node not found: {node_id}"
+    return _node_detail(store, node)
+
+
+@mcp.tool()
+def link(
+    node_a: str,
+    node_b: str,
+    relationship: str = "relates_to",
+    weight: float = 0.5,
+    reason: str = "",
+) -> str:
+    """Create an edge between two nodes.
+
+    Args:
+        node_a: Source node ID or title.
+        node_b: Target node ID or title.
+        relationship: Edge type (relates_to, answers, contradicts, implements, depends_on, etc.).
+        weight: Edge weight 0.0-1.0 (default 0.5).
+        reason: Why this connection exists.
+    """
+    store, _ = _get_store()
+    a = store.get_node(node_a) or store.get_node_by_title(node_a)
+    b = store.get_node(node_b) or store.get_node_by_title(node_b)
+    if not a:
+        return f"Source node not found: {node_a}"
+    if not b:
+        return f"Target node not found: {node_b}"
+
+    store.add_edge(a["id"], b["id"], edge_type=relationship, weight=weight,
+                   provenance=reason or "linked via MCP")
+    return f"Linked: {a['title']} -> {b['title']} ({relationship}, w={weight})"
+
+
+@mcp.tool()
+def list_nodes(
+    node_type: str = "",
+    status: str = "",
+    audience: str = "",
+    limit: int = 50,
+) -> str:
+    """List nodes in the knowledge graph with optional filters.
+
+    Args:
+        node_type: Filter by type (concept, decision, skill, person, project, etc.).
+        status: Filter by status (active, archived, deprecated).
+        audience: Filter by audience (private, team, org, public).
+        limit: Maximum number of nodes to return.
+    """
+    store, _ = _get_store()
+    nodes = store.all_nodes(
+        node_type=node_type or None,
+        status=status or None,
+        audience=audience or None,
+        limit=limit,
+    )
+    if not nodes:
+        return "No nodes found matching filters."
+
+    lines = [f"{len(nodes)} node(s):\n"]
+    for n in nodes:
+        lines.append(_node_summary(n))
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def status() -> str:
+    """Get knowledge graph health and statistics.
+
+    Returns node/edge counts, type distribution, orphan count,
+    and active operational nodes (constraints, watches, directives).
+    """
+    store, _ = _get_store()
+    stats = store.stats()
+    op = store.operational_summary()
+
+    lines = [
+        "# Kindex Status\n",
+        f"Nodes: {stats.get('node_count', 0)}",
+        f"Edges: {stats.get('edge_count', 0)}",
+        f"Orphans: {stats.get('orphan_count', 0)}",
+    ]
+
+    type_counts = stats.get("type_counts", {})
+    if type_counts:
+        lines.append("\n## Node Types")
+        for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"  {t}: {c}")
+
+    constraints = op.get("constraints", [])
+    if constraints:
+        lines.append(f"\n## Active Constraints ({len(constraints)})")
+        for c in constraints[:10]:
+            lines.append(f"  - {c.get('title', c['id'])}")
+
+    watches = op.get("watches", [])
+    if watches:
+        lines.append(f"\n## Active Watches ({len(watches)})")
+        for w in watches[:10]:
+            lines.append(f"  - {w.get('title', w['id'])}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def ask(question: str) -> str:
+    """Ask a question of the knowledge graph.
+
+    Classifies the question type (factual, procedural, decision, exploratory),
+    searches for relevant knowledge, and returns a formatted answer.
+
+    Args:
+        question: Natural language question.
+    """
+    store, config = _get_store()
+    from .retrieve import format_context_block, hybrid_search
+
+    # Simple question classification
+    q_lower = question.lower()
+    if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
+        qtype = "procedural"
+    elif any(p in q_lower for p in ["should i", "which is better", " vs ", "pros and cons"]):
+        qtype = "decision"
+    elif any(p in q_lower for p in ["what is", "who is", "when did", "define"]):
+        qtype = "factual"
+    else:
+        qtype = "exploratory"
+
+    top_k = {"factual": 5, "procedural": 8, "decision": 10, "exploratory": 12}.get(qtype, 10)
+    results = hybrid_search(store, question, top_k=top_k)
+
+    if not results:
+        return f"[{qtype}] No relevant knowledge found for: {question}"
+
+    level = "full" if qtype in ("procedural", "decision") else "abridged"
+    block = format_context_block(store, results, query=question, level=level)
+    return f"[{qtype} question]\n\n{block}"
+
+
+@mcp.tool()
+def suggest(limit: int = 10) -> str:
+    """Show pending bridge opportunity suggestions.
+
+    These are potential connections between concepts that Kindex detected
+    but hasn't confirmed yet.
+
+    Args:
+        limit: Maximum suggestions to show.
+    """
+    store, _ = _get_store()
+    suggestions = store.pending_suggestions(limit=limit)
+    if not suggestions:
+        return "No pending suggestions."
+
+    lines = [f"{len(suggestions)} pending suggestion(s):\n"]
+    for s in suggestions:
+        lines.append(f"  #{s['id']}: {s['concept_a']} <-> {s['concept_b']}")
+        if s.get("reason"):
+            lines.append(f"      Reason: {s['reason']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def learn(text: str) -> str:
+    """Extract knowledge from text and add it to the graph.
+
+    Analyzes the text for concepts, decisions, questions, and connections.
+    Creates nodes and links automatically.
+
+    Args:
+        text: Text to extract knowledge from (session notes, documentation, etc.).
+    """
+    store, config = _get_store()
+    from .budget import BudgetLedger
+    from .extract import extract
+
+    ledger = BudgetLedger(config.ledger_path, config.budget)
+    existing = [n["title"] for n in store.all_nodes(limit=200)]
+
+    extraction = extract(text, existing, config, ledger)
+
+    created = 0
+    linked = 0
+
+    for concept in extraction.get("concepts", [])[:10]:
+        existing_node = store.get_node_by_title(concept["title"])
+        if existing_node:
+            continue
+        store.add_node(
+            title=concept["title"],
+            content=concept.get("content", ""),
+            node_type=concept.get("type", "concept"),
+            domains=concept.get("domains", []),
+            prov_activity="mcp-learn",
+        )
+        created += 1
+
+    for conn in extraction.get("connections", []):
+        a = store.get_node_by_title(conn.get("from_title", ""))
+        b = store.get_node_by_title(conn.get("to_title", ""))
+        if a and b and a["id"] != b["id"]:
+            store.add_edge(a["id"], b["id"],
+                           edge_type=conn.get("type", "relates_to"),
+                           weight=0.4,
+                           provenance=conn.get("why", "extracted via MCP"))
+            linked += 1
+
+    decisions = extraction.get("decisions", [])
+    questions = extraction.get("questions", [])
+    bridges = extraction.get("bridge_opportunities", [])
+
+    # Store bridge suggestions
+    for bridge in bridges[:5]:
+        store.add_suggestion(
+            concept_a=bridge.get("concept_a", ""),
+            concept_b=bridge.get("concept_b", ""),
+            reason=bridge.get("potential_link", ""),
+            source="mcp-learn",
+        )
+
+    parts = [f"Extracted: {created} concept(s), {linked} link(s)"]
+    if decisions:
+        parts.append(f"{len(decisions)} decision(s)")
+    if questions:
+        parts.append(f"{len(questions)} question(s)")
+    if bridges:
+        parts.append(f"{len(bridges)} bridge suggestion(s)")
+    return ", ".join(parts)
+
+
+@mcp.tool()
+def graph_stats() -> str:
+    """Get graph analytics: density, components, centrality, and communities."""
+    store, _ = _get_store()
+    from .graph import store_bridges, store_centrality, store_communities, store_stats
+
+    stats = store_stats(store)
+    centrality = store_centrality(store, method="betweenness", top_k=5)
+    communities = store_communities(store)
+
+    lines = [
+        "# Graph Analytics\n",
+        f"Nodes: {stats.get('nodes', 0)}",
+        f"Edges: {stats.get('edges', 0)}",
+        f"Density: {stats.get('density', 0):.4f}",
+        f"Components: {stats.get('components', 0)}",
+        f"Avg Degree: {stats.get('avg_degree', 0):.1f}",
+    ]
+
+    if centrality:
+        lines.append("\n## Top Nodes (Betweenness Centrality)")
+        for nid, title, score in centrality:
+            lines.append(f"  {title}: {score:.4f}")
+
+    if communities:
+        lines.append(f"\n## Communities ({len(communities)})")
+        for i, comm in enumerate(communities[:5], 1):
+            members = ", ".join(n.get("title", n["id"]) for n in comm[:5])
+            lines.append(f"  Cluster {i} ({len(comm)} nodes): {members}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def changelog(since: str = "", days: int = 7) -> str:
+    """Show recent changes to the knowledge graph.
+
+    Args:
+        since: ISO date/timestamp to look back from (e.g. '2026-02-20').
+        days: Look back N days from now (default 7, ignored if 'since' is set).
+    """
+    store, _ = _get_store()
+    import datetime
+
+    if since:
+        since_iso = since
+    else:
+        dt = datetime.datetime.now(tz=None) - datetime.timedelta(days=days)
+        since_iso = dt.isoformat(timespec="seconds")
+
+    entries = store.activity_since(since_iso)
+    if not entries:
+        return f"No changes since {since_iso}."
+
+    lines = [f"{len(entries)} change(s) since {since_iso}:\n"]
+    for e in entries[:50]:
+        ts = e.get("timestamp", "?")[:19]
+        action = e.get("action", "?")
+        target = e.get("node_id", "?")
+        actor = e.get("actor", "")
+        detail = e.get("detail", "")
+        actor_str = f" by {actor}" if actor else ""
+        lines.append(f"  {ts} {action} {target}{actor_str}")
+        if detail:
+            lines.append(f"    {detail[:80]}")
+    return "\n".join(lines)
+
+
+# ── Resources ─────────────────────────────────────────────────────────
+
+
+@mcp.resource("kindex://status")
+def resource_status() -> str:
+    """Current knowledge graph statistics."""
+    store, _ = _get_store()
+    stats = store.stats()
+    return _json(stats, indent=2)
+
+
+@mcp.resource("kindex://node/{node_id}")
+def resource_node(node_id: str) -> str:
+    """Full details of a specific knowledge node."""
+    store, _ = _get_store()
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if not node:
+        return f"Node not found: {node_id}"
+    return _node_detail(store, node)
+
+
+@mcp.resource("kindex://recent")
+def resource_recent() -> str:
+    """Recently active nodes in the knowledge graph."""
+    store, _ = _get_store()
+    nodes = store.recent_nodes(n=20)
+    lines = [_node_summary(n) for n in nodes]
+    return "\n".join(lines) if lines else "No recent nodes."
+
+
+@mcp.resource("kindex://orphans")
+def resource_orphans() -> str:
+    """Nodes with no connections (candidates for linking or removal)."""
+    store, _ = _get_store()
+    orphans = store.orphans()
+    if not orphans:
+        return "No orphan nodes."
+    lines = [_node_summary(n) for n in orphans]
+    return f"{len(orphans)} orphan(s):\n" + "\n".join(lines)
+
+
+# ── Prompts ───────────────────────────────────────────────────────────
+
+
+@mcp.prompt()
+def prime(topic: str = "") -> str:
+    """Generate a full context priming block for the current session.
+
+    Args:
+        topic: Optional topic to focus on.
+    """
+    store, _ = _get_store()
+    from .retrieve import format_context_block, hybrid_search
+
+    if topic:
+        results = hybrid_search(store, topic, top_k=15)
+    else:
+        results = store.recent_nodes(n=15)
+
+    if not results:
+        return "No knowledge available for priming."
+
+    stats = store.stats()
+    header = (
+        f"# Kindex Context\n\n"
+        f"Graph: {stats.get('node_count', 0)} nodes, {stats.get('edge_count', 0)} edges\n\n"
+    )
+    block = format_context_block(store, results, query=topic, level="full")
+    return header + block
+
+
+@mcp.prompt()
+def orient() -> str:
+    """Quick orientation: graph stats, recent activity, and key nodes."""
+    store, _ = _get_store()
+    from .graph import store_stats
+
+    stats = store_stats(store)
+    recent = store.recent_nodes(n=10)
+    op = store.operational_summary()
+
+    lines = [
+        "# Kindex Orientation\n",
+        f"Graph: {stats.get('nodes', 0)} nodes, {stats.get('edges', 0)} edges, "
+        f"{stats.get('components', 0)} component(s)\n",
+    ]
+
+    if recent:
+        lines.append("## Recently Active")
+        for n in recent[:10]:
+            lines.append(f"  - {_node_summary(n)}")
+
+    constraints = op.get("constraints", [])
+    if constraints:
+        lines.append(f"\n## Active Constraints ({len(constraints)})")
+        for c in constraints[:5]:
+            lines.append(f"  - {c.get('title', c['id'])}")
+
+    watches = op.get("watches", [])
+    if watches:
+        lines.append(f"\n## Active Watches ({len(watches)})")
+        for w in watches[:5]:
+            lines.append(f"  - {w.get('title', w['id'])}")
+
+    return "\n".join(lines)
+
+
+# ── Entry point ───────────────────────────────────────────────────────
+
+
+def main():
+    """Run the Kindex MCP server (stdio transport)."""
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
