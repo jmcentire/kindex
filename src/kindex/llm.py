@@ -8,14 +8,28 @@ from __future__ import annotations
 from .budget import BudgetLedger
 from .config import Config
 
-# Haiku pricing per million tokens (as of 2025)
-_PRICING = {
-    "claude-haiku-4-5-20251001": {"input": 0.80 / 1_000_000, "output": 4.00 / 1_000_000},
+# Authoritative pricing per token (cache-aware)
+PRICING = {
+    "claude-haiku-4-5-20251001": {
+        "input": 0.80e-6, "output": 4.00e-6,
+        "cache_write": 1.00e-6, "cache_read": 0.08e-6,
+    },
+    "claude-sonnet-4-6": {
+        "input": 3.00e-6, "output": 15.00e-6,
+        "cache_write": 3.75e-6, "cache_read": 0.30e-6,
+    },
+    "claude-opus-4-6": {
+        "input": 15.00e-6, "output": 75.00e-6,
+        "cache_write": 18.75e-6, "cache_read": 1.50e-6,
+    },
 }
-_DEFAULT_PRICE = {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000}
+_DEFAULT_PRICE = {
+    "input": 1.00e-6, "output": 5.00e-6,
+    "cache_write": 1.25e-6, "cache_read": 0.10e-6,
+}
 
 
-def _get_client(config: Config):
+def get_client(config: Config):
     """Get anthropic client, or None if not available."""
     if not config.llm.enabled:
         return None
@@ -36,8 +50,35 @@ def _get_client(config: Config):
         return None
 
 
+# Backward-compatible alias
+_get_client = get_client
+
+
+def calculate_cost(model: str, usage) -> dict:
+    """Calculate cost from Anthropic response usage, cache-aware."""
+    p = PRICING.get(model, _DEFAULT_PRICE)
+    tokens_in = getattr(usage, "input_tokens", 0)
+    tokens_out = getattr(usage, "output_tokens", 0)
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0)
+    cache_read = getattr(usage, "cache_read_input_tokens", 0)
+    amount = (
+        tokens_in * p["input"]
+        + cache_write * p["cache_write"]
+        + cache_read * p["cache_read"]
+        + tokens_out * p["output"]
+    )
+    return {
+        "amount": round(amount, 8),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cache_creation_tokens": cache_write,
+        "cache_read_tokens": cache_read,
+    }
+
+
 def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    pricing = _PRICING.get(model, _DEFAULT_PRICE)
+    """Legacy cost estimation (no cache awareness)."""
+    pricing = PRICING.get(model, _DEFAULT_PRICE)
     return tokens_in * pricing["input"] + tokens_out * pricing["output"]
 
 

@@ -30,6 +30,9 @@ class LLMConfig(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-haiku-4-5-20251001"
     api_key_env: str = "ANTHROPIC_API_KEY"
+    cache_control: bool = True
+    codebook_min_weight: float = 0.5
+    tier2_max_tokens: int = 4000
 
 
 class BudgetConfig(BaseModel):

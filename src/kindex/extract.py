@@ -11,17 +11,7 @@ from typing import Any
 
 from .budget import BudgetLedger
 from .config import Config
-
-# Haiku pricing per million tokens
-_PRICING = {
-    "claude-haiku-4-5-20251001": {"input": 0.80 / 1_000_000, "output": 4.00 / 1_000_000},
-}
-_DEFAULT_PRICE = {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000}
-
-
-def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    p = _PRICING.get(model, _DEFAULT_PRICE)
-    return tokens_in * p["input"] + tokens_out * p["output"]
+from .llm import _estimate_cost
 
 
 def _get_client(config: Config):
