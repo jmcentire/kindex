@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .base import AdapterMeta, AdapterOption, IngestResult
+
 if TYPE_CHECKING:
     from ..store import Store
 
@@ -145,3 +147,31 @@ def ingest_directory(store: "Store", directory: str | Path,
             print(f"  File: {title} ({path.name})")
 
     return count
+
+
+# ── Adapter protocol wrapper ────────────────────────────────────────
+
+
+class FilesAdapter:
+    meta = AdapterMeta(
+        name="files",
+        description="Scan registered files for changes and ingest directories",
+        options=[
+            AdapterOption("directory", "Directory to ingest (optional; default scans registered files)"),
+        ],
+    )
+
+    def is_available(self) -> bool:
+        return True
+
+    def ingest(self, store, *, limit=50, since=None, verbose=False, **kwargs):
+        directory = kwargs.get("directory")
+        if directory:
+            created = ingest_directory(store, directory, verbose=verbose)
+            return IngestResult(created=created)
+        else:
+            updated = scan_registered_files(store, verbose=verbose)
+            return IngestResult(updated=updated)
+
+
+adapter = FilesAdapter()

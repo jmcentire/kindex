@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .base import AdapterMeta, AdapterOption, IngestResult
+
 if TYPE_CHECKING:
     from ..store import Store
     from ..config import Config
@@ -177,3 +179,35 @@ def _find_kin() -> str:
         return result.stdout.strip()
     import sys
     return f"{sys.executable} -m kindex.cli"
+
+
+# ── Adapter protocol wrapper ────────────────────────────────────────
+
+
+class CommitsAdapter:
+    meta = AdapterMeta(
+        name="commits",
+        description="Ingest recent commits from a local git repository",
+        options=[
+            AdapterOption("repo_path", "Local repository path", default="."),
+        ],
+    )
+
+    def is_available(self) -> bool:
+        try:
+            result = subprocess.run(
+                ["git", "--version"], capture_output=True, text=True, timeout=5
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    def ingest(self, store, *, limit=50, since=None, verbose=False, **kwargs):
+        repo_path = kwargs.get("repo_path", ".")
+        created = ingest_recent_commits(
+            store, repo_path=repo_path, limit=limit, verbose=verbose
+        )
+        return IngestResult(created=created)
+
+
+adapter = CommitsAdapter()

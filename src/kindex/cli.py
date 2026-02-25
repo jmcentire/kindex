@@ -1056,63 +1056,48 @@ def cmd_export(args):
 # ── ingest ────────────────────────────────────────────────────────────
 
 def cmd_ingest(args):
-    """Ingest knowledge from external sources (projects, sessions)."""
+    """Ingest knowledge from external sources via adapter protocol."""
+    from .adapters.pipeline import IngestConfig, run_adapter, run_all
+    from .adapters.registry import discover, get
+
     store = _store(args)
     cfg = _config(args)
     source = args.source
 
-    if source == "projects":
-        from .ingest import scan_kin_files, scan_projects
-        count = scan_projects(cfg, store, verbose=True)
-        conv_count = scan_kin_files(cfg, store, verbose=True)
-        print(f"\n{count} new project(s), {conv_count} .kin update(s).")
-    elif source == "sessions":
-        from .ingest import scan_sessions
-        limit = getattr(args, "limit", 10) or 10
-        count = scan_sessions(cfg, store, limit=limit, verbose=True)
-        print(f"\n{count} new session node(s) created.")
-    elif source == "all":
-        from .ingest import scan_kin_files, scan_projects, scan_sessions
-        pc = scan_projects(cfg, store, verbose=True)
-        cc = scan_kin_files(cfg, store, verbose=True)
-        sc = scan_sessions(cfg, store, limit=getattr(args, "limit", 10) or 10,
-                           verbose=True)
-        print(f"\n{pc} project(s), {cc} .kin update(s), {sc} session(s) ingested.")
-    elif source == "files":
-        from .adapters.files import scan_registered_files
-        count = scan_registered_files(store, verbose=True)
-        print(f"\n{count} file(s) updated from registered paths.")
-    elif source == "commits":
-        from .adapters.git_hooks import ingest_recent_commits
-        repo_path = getattr(args, "repo_path", ".") or "."
-        count = ingest_recent_commits(store, repo_path=repo_path,
-                                      limit=getattr(args, "limit", 20), verbose=True)
-        print(f"\n{count} commit(s) ingested.")
-    elif source == "github":
-        from .adapters.github import ingest_issues, ingest_prs, ingest_commits, is_gh_available
-        if not is_gh_available():
-            print("Error: gh CLI not available. Install from https://cli.github.com", file=sys.stderr)
-            sys.exit(1)
-        repo = getattr(args, "repo", None)
-        if not repo:
-            print("Error: --repo required for github ingest", file=sys.stderr)
-            sys.exit(1)
-        since = getattr(args, "since", None)
-        issue_count = ingest_issues(store, repo, since=since, verbose=True)
-        pr_count = ingest_prs(store, repo, since=since, verbose=True)
-        commit_count = ingest_commits(store, repo, since=since, verbose=True)
-        print(f"\nGitHub: {issue_count} issues, {pr_count} PRs, {commit_count} commits ingested.")
-    elif source == "linear":
-        from .adapters.linear import ingest_issues as linear_ingest, is_linear_available
-        if not is_linear_available():
-            print("Error: LINEAR_API_KEY not set.", file=sys.stderr)
-            sys.exit(1)
-        team = getattr(args, "team", None)
-        count = linear_ingest(store, team=team, verbose=True)
-        print(f"\nLinear: {count} issue(s) ingested.")
+    config = IngestConfig(
+        since=getattr(args, "since", None),
+        limit=getattr(args, "limit", 50) or 50,
+        verbose=True,
+    )
+
+    # Collect adapter-specific kwargs
+    extra = {}
+    for key in ("repo", "repo_path", "team", "directory"):
+        val = getattr(args, key, None)
+        if val is not None:
+            extra[key] = val
+    # Pass config for adapters that need it (projects, sessions)
+    extra["_config"] = cfg
+
+    if source == "all":
+        results = run_all(store, config, **extra)
+        total_created = sum(r.created for r in results.values())
+        total_updated = sum(r.updated for r in results.values())
+        print(f"\n{total_created} created, {total_updated} updated across {len(results)} adapter(s).")
     else:
-        print(f"Unknown source: {source}. Use: projects, sessions, files, commits, github, linear, all",
-              file=sys.stderr)
+        adapter = get(source)
+        if not adapter:
+            adapters = discover()
+            names = ", ".join(sorted(adapters.keys()))
+            print(f"Unknown adapter: {source}. Available: {names}, all",
+                  file=sys.stderr)
+            sys.exit(1)
+        result = run_adapter(adapter, store, config, **extra)
+        if result.errors:
+            for err in result.errors:
+                print(f"Error: {err}", file=sys.stderr)
+            sys.exit(1)
+        print(f"\n{adapter.meta.name}: {result}")
 
     store.close()
 
@@ -2645,13 +2630,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ingest
     s = sub.add_parser("ingest", help="Ingest from external sources")
-    s.add_argument("source", choices=["projects", "sessions", "files", "commits", "github", "linear", "all"])
-    s.add_argument("--limit", type=int, default=10, help="Max sessions to scan")
+    # Dynamic adapter discovery for choices
+    try:
+        from .adapters.registry import discover as _discover_adapters
+        _adapter_names = sorted(_discover_adapters().keys())
+    except Exception:
+        _adapter_names = ["projects", "sessions", "files", "commits", "github", "linear"]
+    s.add_argument("source", choices=_adapter_names + ["all"],
+                   help="Adapter name or 'all' for all available sources")
+    s.add_argument("--limit", type=int, default=50, help="Max items to ingest")
     s.add_argument("--repo", type=str, default=None, help="GitHub owner/repo (e.g. jmcentire/kindex)")
     s.add_argument("--repo-path", type=str, default=None,
                    help="Local repository path (for commits source)")
     s.add_argument("--since", type=str, default=None, help="ISO date to filter items created after")
     s.add_argument("--team", type=str, default=None, help="Linear team key (for linear source)")
+    s.add_argument("--directory", type=str, default=None, help="Directory to ingest (for files source)")
     _common(s)
     s.set_defaults(func=cmd_ingest)
 

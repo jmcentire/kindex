@@ -34,7 +34,7 @@ def kin_tree(tmp_path):
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     (project_dir / ".kin").write_text(
-        "name: wander-integrations\n"
+        "name: payments-service\n"
         "audience: team\n"
         "domains: [integrations, python]\n"
         f"inherits:\n  - {team_dir / '.kin'}\n"
@@ -73,7 +73,7 @@ class TestResolveKinChain:
     def test_three_level_inheritance(self, kin_tree):
         chain = resolve_kin_chain(kin_tree["project"] / ".kin")
         assert len(chain) == 3
-        assert chain[0]["name"] == "wander-integrations"
+        assert chain[0]["name"] == "payments-service"
         assert chain[1]["name"] == "platform-team"
         assert chain[2]["name"] == "acme-corp"
 
@@ -160,7 +160,7 @@ class TestMergeKinChain:
 class TestLoadProjectContext:
     def test_full_resolution(self, kin_tree):
         ctx = load_project_context(kin_tree["project"] / ".kin")
-        assert ctx["name"] == "wander-integrations"
+        assert ctx["name"] == "payments-service"
         # Domains merged from all three levels
         assert "integrations" in ctx["domains"]
         assert "python" in ctx["domains"]

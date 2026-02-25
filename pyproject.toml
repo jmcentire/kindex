@@ -41,6 +41,14 @@ Issues = "https://github.com/jmcentire/kindex/issues"
 kin = "kindex.cli:main"
 kin-mcp = "kindex.mcp_server:main"
 
+[project.entry-points."kindex.adapters"]
+github = "kindex.adapters.github:adapter"
+linear = "kindex.adapters.linear:adapter"
+files = "kindex.adapters.files:adapter"
+commits = "kindex.adapters.git_hooks:adapter"
+projects = "kindex.adapters.projects:adapter"
+sessions = "kindex.adapters.sessions:adapter"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/kindex"]
 

@@ -41,7 +41,7 @@ class DefaultsConfig(BaseModel):
 class Config(BaseModel):
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
-    project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal", "~/WanderRepos"])
+    project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
     claude_dir: str = "~/.claude"
     llm: LLMConfig = Field(default_factory=LLMConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)

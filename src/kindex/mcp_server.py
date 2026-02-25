@@ -526,6 +526,45 @@ def changelog(since: str = "", days: int = 7) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def ingest(source: str, limit: int = 50, repo: str = "", since: str = "") -> str:
+    """Ingest knowledge from external sources.
+
+    Args:
+        source: Adapter name (github, linear, files, commits, projects, sessions) or 'all'.
+        limit: Maximum items to ingest per adapter.
+        repo: GitHub owner/repo for github adapter (e.g. 'jmcentire/kindex').
+        since: ISO date — only ingest items after this date.
+    """
+    from .adapters.pipeline import IngestConfig, run_adapter, run_all
+    from .adapters.registry import discover, get
+
+    store, cfg = _get_store()
+    config = IngestConfig(since=since or None, limit=limit, verbose=False)
+    extra: dict = {"config": cfg}
+    if repo:
+        extra["repo"] = repo
+
+    if source == "all":
+        results = run_all(store, config, **extra)
+        lines = []
+        for name, result in sorted(results.items()):
+            lines.append(f"  {name}: {result}")
+        total = sum(r.created + r.updated for r in results.values())
+        lines.append(f"\nTotal: {total} node(s) across {len(results)} adapter(s)")
+        return "\n".join(lines)
+
+    adapter = get(source)
+    if not adapter:
+        names = ", ".join(sorted(discover().keys()))
+        return f"Unknown adapter '{source}'. Available: {names}, all"
+
+    result = run_adapter(adapter, store, config, **extra)
+    if result.errors:
+        return f"Errors: {'; '.join(result.errors)}"
+    return f"{adapter.meta.name}: {result}"
+
+
 # ── Resources ─────────────────────────────────────────────────────────
 
 
