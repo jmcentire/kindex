@@ -301,6 +301,10 @@
         <h3>Team &amp; Org Ready</h3>
         <p><code>.kin</code> inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export.</p>
       </div>
+      <div class="card">
+        <h3>Session Tags</h3>
+        <p>Named work context handles that replace manual resume files. Start a tag, track focus and remaining items, segment by topic, and resume seamlessly in new sessions. <code>kin tag start</code> / <code>kin tag resume</code>.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -532,7 +536,7 @@ inherits:
 <section>
   <div class="container">
     <h2>CLI Reference</h2>
-    <p style="color: var(--text-dim); margin-bottom: 24px;">42 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, and <code>--json</code> flags.</p>
+    <p style="color: var(--text-dim); margin-bottom: 24px;">43 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, and <code>--json</code> flags.</p>
 
     <div class="cmd-group">
       <h3>Core</h3>
@@ -557,6 +561,7 @@ inherits:
         <tr><td><code>kin trail &lt;id&gt;</code></td><td>Temporal history and provenance chain</td></tr>
         <tr><td><code>kin decay</code></td><td>Apply weight decay to stale nodes/edges</td></tr>
         <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
+        <tr><td><code>kin tag [action]</code></td><td>Session tags: start, update, segment, pause, end, resume, list, show</td></tr>
       </table>
     </div>
 
