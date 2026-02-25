@@ -278,6 +278,7 @@ class Store:
         audience: str = "private",
         weight: float = 0.5,
         prov_who: list[str] | None = None,
+        prov_when: str | None = None,
         prov_activity: str = "",
         prov_why: str = "",
         prov_source: str = "",
@@ -286,6 +287,7 @@ class Store:
         """Insert a node. Returns its ID."""
         nid = node_id or _uuid()
         now = _now()
+        when = prov_when or now
         self.conn.execute(
             """INSERT OR REPLACE INTO nodes
                (id, type, title, content, aka, intent,
@@ -295,7 +297,7 @@ class Store:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (nid, node_type, title, content,
              _jdumps(aka or []), intent,
-             _jdumps(prov_who or []), now, prov_activity, prov_why, prov_source,
+             _jdumps(prov_who or []), when, prov_activity, prov_why, prov_source,
              weight, _jdumps(domains or []), status, audience,
              now, now, now, _jdumps(extra or {})),
         )
