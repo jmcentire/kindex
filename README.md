@@ -25,7 +25,7 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Claude Code now has 13 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`.
+Claude Code now has 16 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`.
 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json
@@ -128,6 +128,12 @@ kin status --trigger pre-deploy
 
 # Ingest from all sources
 kin ingest all
+
+# Session tags — named work context handles
+kin tag start auth-refactor --focus "OAuth2 flow" --remaining "tokens,tests"
+kin tag segment --focus "Token storage" --summary "Flow design done"
+kin tag resume auth-refactor   # context block for new session
+kin tag end --summary "All done"
 ```
 
 ## .kin Voice & Inheritance
@@ -188,7 +194,7 @@ Three integration paths:
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
-## CLI Reference (42 commands)
+## CLI Reference (43 commands)
 
 ### Core
 | Command | Description |
@@ -211,6 +217,7 @@ Three integration paths:
 | `kin trail <id>` | Temporal history and provenance chain |
 | `kin decay` | Apply weight decay to stale nodes/edges |
 | `kin recent` | Recently active nodes |
+| `kin tag [action]` | Session tags: start, update, segment, pause, end, resume, list, show |
 
 ### Graph Analytics
 | Command | Description |
