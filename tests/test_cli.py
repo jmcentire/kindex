@@ -30,8 +30,9 @@ def data_dir(tmp_path):
 
 class TestVersion:
     def test_version(self):
+        from kindex import __version__
         r = run("--version")
-        assert "0.4.0" in r.stdout
+        assert __version__ in r.stdout
 
 
 class TestInit:

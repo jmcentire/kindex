@@ -3,7 +3,7 @@
   "name": "io.github.jmcentire/kindex",
   "title": "Kindex",
   "description": "Persistent knowledge graph for AI workflows with context tiers and .kin inheritance.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "repository": {
     "url": "https://github.com/jmcentire/kindex",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "kindex",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "runtimeHint": "pipx",
       "transport": {
         "type": "stdio"
