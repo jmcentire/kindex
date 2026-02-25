@@ -389,6 +389,17 @@ def cmd_show(args):
         if node.get("prov_when"):
             print(f"**When:** {node['prov_when']}")
 
+        # Display current_state if present (mutable directive state)
+        extra = node.get("extra") or {}
+        current_state = extra.get("current_state")
+        if current_state:
+            print(f"\n**Current State:**")
+            for k, v in current_state.items():
+                print(f"  {k}: {v}")
+            state_updated = extra.get("state_updated_at")
+            if state_updated:
+                print(f"  (updated: {state_updated})")
+
         if node.get("content"):
             print(f"\n{node['content'][:1000]}")
 
@@ -600,7 +611,8 @@ def cmd_init(args):
         print(f"Error: database already exists at {dp}", file=sys.stderr)
         sys.exit(1)
 
-    for d in [cfg.topics_dir, cfg.skills_dir, cfg.inbox_dir, cfg.tmp_dir]:
+    synonyms_dir = dp / "synonyms"
+    for d in [cfg.topics_dir, cfg.skills_dir, cfg.inbox_dir, cfg.tmp_dir, synonyms_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Create the database
@@ -610,10 +622,11 @@ def cmd_init(args):
     store.close()
 
     print(f"Initialized Kindex at {dp}")
-    print(f"  kindex.db — SQLite knowledge graph")
-    print(f"  topics/   — markdown topic files")
-    print(f"  skills/   — skill/ability files")
-    print(f"  inbox/    — queued discoveries")
+    print(f"  kindex.db  — SQLite knowledge graph")
+    print(f"  topics/    — markdown topic files")
+    print(f"  skills/    — skill/ability files")
+    print(f"  inbox/     — queued discoveries")
+    print(f"  synonyms/  — synonym ring files (.syn)")
 
 
 def cmd_migrate(args):
@@ -779,6 +792,94 @@ def cmd_doctor(args):
         if gs["components"] > 1:
             warnings.append(f"Graph has {gs['components']} disconnected components")
 
+    # ── Cross-domain bridge density ──
+    if stats["nodes"] >= 5 and stats["edges"] >= 4:
+        from .graph import build_nx_from_store
+        G = build_nx_from_store(store)
+        # Collect all unique domains across nodes
+        domain_sets = {}
+        for nid in G.nodes():
+            domains = G.nodes[nid].get("domains") or []
+            if isinstance(domains, str):
+                domains = [domains]
+            domain_sets[nid] = set(domains)
+        all_domains = set()
+        for ds in domain_sets.values():
+            all_domains.update(ds)
+        if len(all_domains) >= 2:
+            total_edges_g = G.number_of_edges()
+            cross_domain = 0
+            for u, v in G.edges():
+                u_doms = domain_sets.get(u, set())
+                v_doms = domain_sets.get(v, set())
+                if u_doms and v_doms and not u_doms.intersection(v_doms):
+                    cross_domain += 1
+            if total_edges_g > 0:
+                cross_pct = cross_domain / total_edges_g
+                if cross_pct < 0.10:
+                    warnings.append(
+                        f"Low cross-domain bridging: {cross_domain}/{total_edges_g} edges "
+                        f"({cross_pct:.0%}) cross domain boundaries (< 10%)")
+                    if do_fix:
+                        # Suggest edges between nodes in different domains
+                        import random
+                        domain_nodes: dict[str, list[str]] = {}
+                        for nid, doms in domain_sets.items():
+                            for d in doms:
+                                domain_nodes.setdefault(d, []).append(nid)
+                        dom_list = list(domain_nodes.keys())
+                        suggested = 0
+                        for i in range(len(dom_list)):
+                            for j in range(i + 1, len(dom_list)):
+                                pool_a = domain_nodes[dom_list[i]]
+                                pool_b = domain_nodes[dom_list[j]]
+                                if pool_a and pool_b:
+                                    a = random.choice(pool_a)
+                                    b = random.choice(pool_b)
+                                    a_title = G.nodes[a].get("title", a)
+                                    b_title = G.nodes[b].get("title", b)
+                                    store.add_suggestion(
+                                        a_title, b_title,
+                                        reason=f"Cross-domain bridge: {dom_list[i]} <-> {dom_list[j]}",
+                                        source="doctor --fix",
+                                    )
+                                    suggested += 1
+                                    if suggested >= 5:
+                                        break
+                            if suggested >= 5:
+                                break
+                        if suggested:
+                            warnings[-1] += f" (suggested {suggested} bridge edges — see `kin suggest`)"
+                            fixes_applied += 1
+
+    # ── Trailhead coverage ──
+    if stats["nodes"] > 10 and stats["edges"] >= 4:
+        from .graph import store_trailheads
+        trailheads = store_trailheads(store, top_k=10)
+        # Count trailheads with meaningful scores
+        significant = [t for t in trailheads if t["score"] > 0 and t["out_degree"] >= 2]
+        if len(significant) < 2:
+            warnings.append(
+                f"Low trailhead coverage: only {len(significant)} entry point(s) detected "
+                f"(< 2). Add more high-connectivity nodes to improve discoverability")
+
+    # ── Component balance ──
+    if stats["nodes"] >= 5 and stats["edges"] >= 4:
+        import networkx as nx
+        try:
+            G_bal = build_nx_from_store(store)
+        except NameError:
+            from .graph import build_nx_from_store
+            G_bal = build_nx_from_store(store)
+        components = list(nx.weakly_connected_components(G_bal))
+        if components:
+            largest = max(len(c) for c in components)
+            total_nodes = G_bal.number_of_nodes()
+            if total_nodes > 0 and largest / total_nodes > 0.80:
+                warnings.append(
+                    f"Component imbalance: largest component has {largest}/{total_nodes} "
+                    f"nodes ({largest/total_nodes:.0%}). Consider splitting into sub-domains")
+
     # ── Output ──
     if args.json:
         print(_dumps({
@@ -812,7 +913,7 @@ def cmd_doctor(args):
 # ── set-audience ──────────────────────────────────────────────────────
 
 def cmd_set_audience(args):
-    """Set the audience scope of a node (private/team/public)."""
+    """Set the audience scope of a node (private/team/org/public)."""
     store = _store(args)
     node = store.get_node(args.node_id) or store.get_node_by_title(args.node_id)
 
@@ -825,12 +926,71 @@ def cmd_set_audience(args):
     store.close()
 
 
+# ── set-state ─────────────────────────────────────────────────────────
+
+def cmd_set_state(args):
+    """Set a key-value pair in a node's current_state (mutable directive state)."""
+    store = _store(args)
+    node = store.get_node(args.node_id) or store.get_node_by_title(args.node_id)
+
+    if not node:
+        print(f"Error: '{args.node_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    # Build state dict: get existing current_state and update the key
+    extra = node.get("extra") or {}
+    current_state = extra.get("current_state") or {}
+
+    # Coerce value to appropriate type
+    value = args.value
+    if value.lower() in ("true", "yes"):
+        value = True
+    elif value.lower() in ("false", "no"):
+        value = False
+    else:
+        try:
+            value = int(value)
+        except ValueError:
+            try:
+                value = float(value)
+            except ValueError:
+                pass  # keep as string
+
+    current_state[args.key] = value
+    store.update_directive_state(node["id"], current_state)
+    print(f"Set state on {node['title']}: {args.key} = {value}")
+    store.close()
+
+
 # ── export ────────────────────────────────────────────────────────────
+
+def _strip_pii(node: dict) -> dict:
+    """Strip personally identifiable information from a node dict."""
+    import re
+    node = dict(node)  # shallow copy
+    node["prov_who"] = ["anonymous"]
+    node["prov_source"] = Path(node.get("prov_source", "")).name if node.get("prov_source") else ""
+    # Strip emails from content
+    content = node.get("content", "")
+    content = re.sub(r'\S+@\S+\.\S+', '[email]', content)
+    # Strip long tokens/keys (API keys, tokens, hashes)
+    content = re.sub(r'[A-Za-z0-9_-]{40,}', '[redacted]', content)
+    node["content"] = content
+    # Strip actor from activity log entries stored in extra
+    extra = node.get("extra")
+    if isinstance(extra, dict):
+        extra = dict(extra)
+        if "actor" in extra:
+            del extra["actor"]
+        node["extra"] = extra
+    return node
+
 
 def cmd_export(args):
     """Export the graph, respecting audience boundaries.
 
-    --audience team: exports team + public nodes (for shared drives)
+    --audience team: exports team + org + public nodes (for shared drives)
+    --audience org: exports org + public nodes (for org-wide sharing)
     --audience public: exports only public nodes (for open-source / LinkedIn)
     --audience private: exports everything (for personal backup)
     """
@@ -841,20 +1001,35 @@ def cmd_export(args):
         nodes = store.all_nodes(limit=10000)
     elif target_audience == "team":
         team = store.all_nodes(audience="team", limit=10000)
+        org = store.all_nodes(audience="org", limit=10000)
         public = store.all_nodes(audience="public", limit=10000)
         seen = set()
         nodes = []
-        for n in team + public:
+        for n in team + org + public:
+            if n["id"] not in seen:
+                seen.add(n["id"])
+                nodes.append(n)
+    elif target_audience == "org":
+        org = store.all_nodes(audience="org", limit=10000)
+        public = store.all_nodes(audience="public", limit=10000)
+        seen = set()
+        nodes = []
+        for n in org + public:
             if n["id"] not in seen:
                 seen.add(n["id"])
                 nodes.append(n)
     else:  # public
         nodes = store.all_nodes(audience="public", limit=10000)
 
+    # Apply PII stripping for public/org exports
+    strip_pii = target_audience in ("public", "org")
+
     # Strip edges that cross audience boundaries
     output = []
     node_ids = {n["id"] for n in nodes}
     for n in nodes:
+        if strip_pii:
+            n = _strip_pii(n)
         edges = store.edges_from(n["id"])
         # Only keep edges where target is in our exported set
         filtered_edges = [e for e in edges if e["to_id"] in node_ids]
@@ -927,8 +1102,16 @@ def cmd_ingest(args):
         pr_count = ingest_prs(store, repo, since=since, verbose=True)
         commit_count = ingest_commits(store, repo, since=since, verbose=True)
         print(f"\nGitHub: {issue_count} issues, {pr_count} PRs, {commit_count} commits ingested.")
+    elif source == "linear":
+        from .adapters.linear import ingest_issues as linear_ingest, is_linear_available
+        if not is_linear_available():
+            print("Error: LINEAR_API_KEY not set.", file=sys.stderr)
+            sys.exit(1)
+        team = getattr(args, "team", None)
+        count = linear_ingest(store, team=team, verbose=True)
+        print(f"\nLinear: {count} issue(s) ingested.")
     else:
-        print(f"Unknown source: {source}. Use: projects, sessions, files, commits, github, all",
+        print(f"Unknown source: {source}. Use: projects, sessions, files, commits, github, linear, all",
               file=sys.stderr)
 
     store.close()
@@ -1445,6 +1628,147 @@ def cmd_graph(args):
     store.close()
 
 
+# ── analytics ─────────────────────────────────────────────────────────
+
+def cmd_analytics(args):
+    """Archive analytics — session stats and activity heatmap."""
+    cfg = _config(args)
+
+    from .analytics import activity_heatmap, find_archive_db, session_stats
+
+    show_heatmap = getattr(args, "heatmap", False)
+    show_sessions = getattr(args, "sessions", False)
+    days = getattr(args, "days", 90) or 90
+
+    # Default: show sessions if neither flag is set
+    if not show_heatmap and not show_sessions:
+        show_sessions = True
+
+    if show_sessions:
+        stats = session_stats(cfg)
+        if "error" in stats:
+            db_path = find_archive_db(cfg)
+            if not db_path:
+                print(f"Error: {stats['error']}", file=sys.stderr)
+                print(f"Searched: {cfg.claude_path / 'archive'}", file=sys.stderr)
+                sys.exit(1)
+
+        if args.json:
+            print(_dumps(stats, indent=2))
+        else:
+            print("# Archive Session Stats\n")
+            print(f"Total sessions: {stats.get('total_sessions', 0)}")
+
+            by_month = stats.get("sessions_by_month", {})
+            if by_month:
+                print("\n## Sessions by Month")
+                for month, count in sorted(by_month.items(), reverse=True):
+                    bar = "█" * min(count, 40)
+                    print(f"  {month}  {bar} {count}")
+
+            top_projects = stats.get("top_projects", {})
+            if top_projects:
+                print("\n## Top Projects")
+                for proj, count in top_projects.items():
+                    print(f"  {proj:30s} {count}")
+
+    if show_heatmap:
+        heatmap = activity_heatmap(cfg, days=days)
+        if "error" in heatmap:
+            print(f"Error: {heatmap['error']}", file=sys.stderr)
+            sys.exit(1)
+
+        if args.json:
+            print(_dumps(heatmap, indent=2))
+        else:
+            print(f"\n# Activity Heatmap (last {days} days)\n")
+            grid = heatmap.get("grid", {})
+            # Header row: hours
+            hours_header = "          " + "".join(f"{h:3d}" for h in range(24))
+            print(hours_header)
+            for day_name in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]:
+                row = grid.get(day_name, {})
+                cells = []
+                for h in range(24):
+                    v = row.get(h, 0)
+                    if v == 0:
+                        cells.append("  .")
+                    elif v < 3:
+                        cells.append("  o")
+                    elif v < 6:
+                        cells.append("  O")
+                    else:
+                        cells.append("  #")
+                print(f"  {day_name:3s}   {''.join(cells)}")
+            print("\n  Legend: . = 0, o = 1-2, O = 3-5, # = 6+")
+
+
+# ── index ─────────────────────────────────────────────────────────────
+
+def cmd_index(args):
+    """Write .kin/index.json summarizing the graph for git tracking."""
+    store = _store(args)
+
+    from .ingest import write_kin_index
+
+    output_dir = Path(getattr(args, "output_dir", None) or os.getcwd())
+    path = write_kin_index(store, output_dir)
+    print(f"Wrote {path}")
+    print(f"  ({path.stat().st_size} bytes)")
+
+    store.close()
+
+
+# ── sync-links ────────────────────────────────────────────────────────
+
+def cmd_sync_links(args):
+    """Update each node's content with a '## Connections' section.
+
+    Reads all nodes, finds their outgoing edges, and appends (or replaces)
+    a ``## Connections`` section in the node content listing linked nodes.
+    Reports how many nodes were updated.
+    """
+    import re as _re
+
+    store = _store(args)
+    nodes = store.all_nodes(limit=5000)
+    updated = 0
+
+    for node in nodes:
+        edges = store.edges_from(node["id"])
+        if not edges:
+            continue
+
+        # Build the connections section
+        lines = ["## Connections", ""]
+        for edge in edges:
+            label = edge.get("to_title") or edge.get("to_id", "?")
+            etype = edge.get("type", "relates_to")
+            lines.append(f"- **{label}** ({etype})")
+        connections_block = "\n".join(lines)
+
+        content = node.get("content") or ""
+
+        # Strip any previous Connections section so we don't duplicate
+        content = _re.sub(
+            r"(?m)^## Connections\n(?:.*\n)*?(?=^## |\Z)",
+            "",
+            content,
+        ).rstrip()
+
+        # Append the new connections section
+        if content:
+            new_content = content + "\n\n" + connections_block + "\n"
+        else:
+            new_content = connections_block + "\n"
+
+        store.update_node(node["id"], content=new_content)
+        updated += 1
+
+    print(f"Updated {updated} node(s) with connection references.")
+    store.close()
+
+
 # ── alias ─────────────────────────────────────────────────────────────
 
 def cmd_alias(args):
@@ -1531,17 +1855,71 @@ def cmd_embed(args):
 
 # ── ask ───────────────────────────────────────────────────────────────
 
+
+def _classify_question(question: str) -> str:
+    """Classify a question by type using keyword heuristics.
+
+    Returns one of: 'procedural', 'decision', 'factual', 'exploratory'.
+    """
+    q = question.lower().strip()
+
+    # Procedural: how-to questions
+    procedural_patterns = [
+        "how do i ", "how to ", "how can i ", "how should i ",
+        "steps to ", "way to ", "guide to ", "instructions for ",
+    ]
+    for pat in procedural_patterns:
+        if pat in q or q.startswith(pat.strip()):
+            return "procedural"
+
+    # Decision: comparison / choice questions
+    decision_patterns = [
+        "should i ", "which is better", "which one", "compare ",
+        "vs ", " or ", "trade-off", "tradeoff", "pros and cons",
+        "advantage", "disadvantage", "prefer ",
+    ]
+    for pat in decision_patterns:
+        if pat in q:
+            return "decision"
+
+    # Factual: definitional / lookup questions
+    factual_patterns = [
+        "what is ", "what are ", "what was ", "what does ",
+        "who is ", "who are ", "who was ",
+        "when did ", "when was ", "when is ",
+        "where is ", "where did ", "where are ",
+        "define ", "definition of ",
+    ]
+    for pat in factual_patterns:
+        if pat in q or q.startswith(pat.strip()):
+            return "factual"
+
+    return "exploratory"
+
+
 def cmd_ask(args):
     """Query the knowledge graph with natural language.
 
     Uses LLM if available, otherwise falls back to search + context formatting.
+    Classifies the question type to improve search and output.
     """
     store = _store(args)
     question = " ".join(args.question)
+    qtype = _classify_question(question)
 
     from .retrieve import format_context_block, hybrid_search
 
-    results = hybrid_search(store, question, top_k=10)
+    # Adjust top_k based on question type: factual needs fewer precise
+    # hits; exploratory benefits from more context.
+    top_k_map = {
+        "factual": 5,
+        "procedural": 8,
+        "decision": 10,
+        "exploratory": 12,
+    }
+    top_k = top_k_map.get(qtype, 10)
+
+    results = hybrid_search(store, question, top_k=top_k)
 
     if not results:
         print("No relevant knowledge found.", file=sys.stderr)
@@ -1550,20 +1928,28 @@ def cmd_ask(args):
 
     # Try LLM-powered answer
     ledger, cfg = _ledger(args)
-    answer = _ask_llm(question, results, cfg, ledger)
+    answer = _ask_llm(question, results, cfg, ledger, qtype=qtype)
 
     if answer:
         print(answer)
     else:
-        # Fallback: just show the context
-        block = format_context_block(store, results, query=question, level="abridged")
-        print(f"(No LLM available — showing search results)\n")
+        # Fallback: show classified context
+        level_map = {
+            "factual": "abridged",
+            "procedural": "full",
+            "decision": "full",
+            "exploratory": "abridged",
+        }
+        level = level_map.get(qtype, "abridged")
+        block = format_context_block(store, results, query=question, level=level)
+        print(f"[{qtype} question] (No LLM available — showing search results)\n")
         print(block)
 
     store.close()
 
 
-def _ask_llm(question: str, results: list[dict], config, ledger) -> str | None:
+def _ask_llm(question: str, results: list[dict], config, ledger,
+             qtype: str = "exploratory") -> str | None:
     """Use LLM to answer a question given graph context."""
     if not config.llm.enabled:
         return None
@@ -1590,6 +1976,15 @@ def _ask_llm(question: str, results: list[dict], config, ledger) -> str | None:
 
     context = "\n\n".join(context_parts)
 
+    # Tailor prompt style to question type
+    style_hints = {
+        "factual": "Give a direct, concise factual answer.",
+        "procedural": "Provide clear step-by-step instructions.",
+        "decision": "Compare the options and give a recommendation with trade-offs.",
+        "exploratory": "Provide a broad overview touching on the key aspects.",
+    }
+    style = style_hints.get(qtype, style_hints["exploratory"])
+
     try:
         response = client.messages.create(
             model=config.llm.model,
@@ -1599,6 +1994,8 @@ def _ask_llm(question: str, results: list[dict], config, ledger) -> str | None:
 {context}
 
 Answer this question concisely: {question}
+
+{style}
 
 If the context doesn't contain enough information, say so honestly."""}],
         )
@@ -2146,7 +2543,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--owner", help="Person responsible (for watches/directives)")
     s.add_argument("--expires", help="Expiry date YYYY-MM-DD (for watches)")
     s.add_argument("--resets", help="Reset schedule (e.g. monday, monthly)")
-    s.add_argument("--audience", choices=["private", "team", "public"],
+    s.add_argument("--audience", choices=["private", "team", "org", "public"],
                    help="Audience scope")
     _common(s)
     s.set_defaults(func=cmd_add)
@@ -2225,27 +2622,36 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_doctor)
 
     # set-audience
-    s = sub.add_parser("set-audience", help="Set node audience (private/team/public)")
+    s = sub.add_parser("set-audience", help="Set node audience (private/team/org/public)")
     s.add_argument("node_id")
-    s.add_argument("audience", choices=["private", "team", "public"])
+    s.add_argument("audience", choices=["private", "team", "org", "public"])
     _common(s)
     s.set_defaults(func=cmd_set_audience)
 
+    # set-state
+    s = sub.add_parser("set-state", help="Set mutable state on a directive/operational node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("key", help="State key to set")
+    s.add_argument("value", help="Value to set")
+    _common(s)
+    s.set_defaults(func=cmd_set_state)
+
     # export
     s = sub.add_parser("export", help="Export graph (audience-aware)")
-    s.add_argument("--audience", choices=["private", "team", "public"], default="team")
+    s.add_argument("--audience", choices=["private", "team", "org", "public"], default="team")
     s.add_argument("--format", choices=["json", "jsonl"], default="json")
     _common(s)
     s.set_defaults(func=cmd_export)
 
     # ingest
     s = sub.add_parser("ingest", help="Ingest from external sources")
-    s.add_argument("source", choices=["projects", "sessions", "files", "commits", "github", "all"])
+    s.add_argument("source", choices=["projects", "sessions", "files", "commits", "github", "linear", "all"])
     s.add_argument("--limit", type=int, default=10, help="Max sessions to scan")
     s.add_argument("--repo", type=str, default=None, help="GitHub owner/repo (e.g. jmcentire/kindex)")
     s.add_argument("--repo-path", type=str, default=None,
                    help="Local repository path (for commits source)")
     s.add_argument("--since", type=str, default=None, help="ISO date to filter items created after")
+    s.add_argument("--team", type=str, default=None, help="Linear team key (for linear source)")
     _common(s)
     s.set_defaults(func=cmd_ingest)
 
@@ -2395,6 +2801,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Show what would be imported without making changes")
     _common(s)
     s.set_defaults(func=cmd_import_graph)
+
+    # analytics
+    s = sub.add_parser("analytics", help="Archive session analytics and activity heatmap")
+    s.add_argument("--sessions", action="store_true", help="Show session stats")
+    s.add_argument("--heatmap", action="store_true", help="Show activity heatmap")
+    s.add_argument("--days", type=int, default=90, help="Lookback days for heatmap (default 90)")
+    _common(s)
+    s.set_defaults(func=cmd_analytics)
+
+    # index
+    s = sub.add_parser("index", help="Write .kin/index.json for git tracking")
+    s.add_argument("--output-dir", type=str, help="Output directory (default: current dir)")
+    _common(s)
+    s.set_defaults(func=cmd_index)
+
+    # sync-links
+    s = sub.add_parser("sync-links", help="Update node content with connection references")
+    _common(s)
+    s.set_defaults(func=cmd_sync_links)
 
     # cron
     s = sub.add_parser("cron", help="One-shot maintenance cycle (for crontab)")

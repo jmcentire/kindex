@@ -5,7 +5,7 @@ from __future__ import annotations
 SCHEMA_VERSION = 4
 
 # Audience scopes for tenancy model
-AUDIENCES = ("private", "team", "public")
+AUDIENCES = ("private", "team", "org", "public")
 
 # Knowledge node types
 NODE_TYPES = (
