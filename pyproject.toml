@@ -29,7 +29,7 @@ dependencies = [
 llm = ["anthropic>=0.40"]
 vectors = ["sqlite-vec>=0.1", "sentence-transformers>=2.0"]
 mcp = ["mcp[cli]>=1.26.0"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "scipy>=1.10"]
 all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0", "mcp[cli]>=1.26.0"]
 
 [project.urls]
