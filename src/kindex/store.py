@@ -61,34 +61,65 @@ class Store:
         return self._conn
 
     def _init_schema(self) -> None:
-        self.conn.executescript(CREATE_TABLES)
-        # Set schema version if not present
-        cur = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'")
-        row = cur.fetchone()
-        if row is None:
-            self.conn.execute(
+        # Check if this is an existing database that needs migration
+        # before applying the full schema (which includes triggers
+        # referencing columns that may not exist yet).
+        cur = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"
+        )
+        has_meta = cur.fetchone() is not None
+
+        if has_meta:
+            cur = self._conn.execute("SELECT value FROM meta WHERE key='schema_version'")
+            row = cur.fetchone()
+            if row is not None:
+                current = int(row["value"])
+                if current < SCHEMA_VERSION:
+                    self._migrate_schema(current)
+        elif self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'"
+        ).fetchone() is not None:
+            # Pre-versioning database: has nodes table but no meta table.
+            # Create meta table, then migrate from v1.
+            self._conn.executescript(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"
+            )
+            self._conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '1')"
+            )
+            self._conn.commit()
+            self._migrate_schema(1)
+
+        # Now safe to apply full schema (IF NOT EXISTS is idempotent
+        # once columns are up to date).
+        self._conn.executescript(CREATE_TABLES)
+
+        # Ensure schema version is set for fresh databases.
+        cur = self._conn.execute("SELECT value FROM meta WHERE key='schema_version'")
+        if cur.fetchone() is None:
+            self._conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
-            self.conn.commit()
-        else:
-            self._migrate_schema(int(row["value"]))
+            self._conn.commit()
 
     def _migrate_schema(self, current_version: int) -> None:
-        """Apply incremental schema migrations."""
+        """Apply incremental schema migrations. Uses self._conn directly
+        to avoid triggering the conn property (which calls _init_schema)."""
+        c = self._conn
         if current_version < 2:
             # v2: add audience column
             try:
-                self.conn.execute("ALTER TABLE nodes ADD COLUMN audience TEXT NOT NULL DEFAULT 'private'")
-                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_audience ON nodes(audience)")
-                self.conn.commit()
+                c.execute("ALTER TABLE nodes ADD COLUMN audience TEXT NOT NULL DEFAULT 'private'")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_nodes_audience ON nodes(audience)")
+                c.commit()
             except Exception:
                 pass  # column already exists
 
         if current_version < 3:
             # v3: add activity_log table
             try:
-                self.conn.executescript("""
+                c.executescript("""
                     CREATE TABLE IF NOT EXISTS activity_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT NOT NULL DEFAULT (datetime('now')),
@@ -101,14 +132,14 @@ class Store:
                     CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp);
                     CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_log(action);
                 """)
-                self.conn.commit()
+                c.commit()
             except Exception:
                 pass
 
         if current_version < 4:
             # v4: add suggestions table
             try:
-                self.conn.executescript("""
+                c.executescript("""
                     CREATE TABLE IF NOT EXISTS suggestions (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         concept_a TEXT NOT NULL,
@@ -120,16 +151,16 @@ class Store:
                     );
                     CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
                 """)
-                self.conn.commit()
+                c.commit()
             except Exception:
                 pass
 
         if current_version < SCHEMA_VERSION:
-            self.conn.execute(
+            c.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
             )
-            self.conn.commit()
+            c.commit()
 
     def close(self) -> None:
         if self._conn:
