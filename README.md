@@ -2,7 +2,8 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.3.0](https://img.shields.io/badge/version-0.3.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.4.0](https://img.shields.io/badge/version-0.4.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![Tests](https://img.shields.io/badge/tests-373%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
@@ -19,7 +20,7 @@ It's a persistent knowledge graph for AI-assisted workflows. It indexes your con
 Two commands. Zero configuration.
 
 ```bash
-pip install -e ".[mcp]"
+pip install kindex[mcp]
 claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
@@ -34,18 +35,18 @@ Or add `.mcp.json` to any repo for project-scope access:
 ## Install as CLI
 
 ```bash
-pip install -e .
+pip install kindex
 kin init
 ```
 
 With LLM-powered extraction:
 ```bash
-pip install -e ".[llm]"
+pip install kindex[llm]
 ```
 
 With everything (LLM + vectors + MCP):
 ```bash
-pip install -e ".[all]"
+pip install kindex[all]
 ```
 
 ## Why Kindex
@@ -257,3 +258,5 @@ make clean        # remove build artifacts
 ## License
 
 MIT
+
+<!-- mcp-name: io.github.jmcentire/kindex -->
