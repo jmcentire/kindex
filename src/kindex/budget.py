@@ -57,15 +57,22 @@ class BudgetLedger:
         ))
 
     def record(self, amount: float, model: str = "", purpose: str = "",
-               tokens_in: int = 0, tokens_out: int = 0) -> None:
-        self.entries.append({
+               tokens_in: int = 0, tokens_out: int = 0,
+               cache_creation_tokens: int = 0,
+               cache_read_tokens: int = 0) -> None:
+        entry = {
             "date": _today(),
             "amount": round(amount, 6),
             "model": model,
             "purpose": purpose,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
-        })
+        }
+        if cache_creation_tokens:
+            entry["cache_creation_tokens"] = cache_creation_tokens
+        if cache_read_tokens:
+            entry["cache_read_tokens"] = cache_read_tokens
+        self.entries.append(entry)
         self._save()
 
     def _spend_since(self, since: str) -> float:
@@ -97,7 +104,7 @@ class BudgetLedger:
         return max(0, self.limits.daily - self.today_spend)
 
     def summary(self) -> dict:
-        return {
+        s = {
             "today": {"spent": round(self.today_spend, 4),
                       "limit": self.limits.daily,
                       "remaining": round(self.remaining_today, 4)},
@@ -108,4 +115,23 @@ class BudgetLedger:
                       "limit": self.limits.monthly,
                       "remaining": round(max(0, self.limits.monthly - self.month_spend), 4)},
             "can_spend": self.can_spend(),
+        }
+        cache = self.cache_efficiency()
+        if cache["total_cacheable"] > 0:
+            s["cache"] = cache
+        return s
+
+    def cache_efficiency(self) -> dict:
+        """Cache hit rate and savings from today's entries."""
+        today = _today()
+        recent = [e for e in self.entries if e.get("date", "") >= today]
+        cache_read = sum(e.get("cache_read_tokens", 0) for e in recent)
+        cache_write = sum(e.get("cache_creation_tokens", 0) for e in recent)
+        total = cache_read + cache_write
+        hit_rate = cache_read / total if total > 0 else 0.0
+        return {
+            "cache_hit_rate": round(hit_rate, 3),
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "total_cacheable": total,
         }

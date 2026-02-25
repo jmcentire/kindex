@@ -416,6 +416,122 @@ _TIER_FORMATTERS = {
 }
 
 
+def generate_codebook(store: Store, min_weight: float = 0.5) -> tuple[str, str]:
+    """Generate deterministic codebook of high-value nodes.
+
+    Returns (text, sha256_hash). Sorted by node ID for prefix cache stability.
+    Excludes session nodes. Includes: index, truncated ID, type, weight, domains, title.
+    """
+    import hashlib
+
+    nodes = store.all_nodes(limit=5000)
+    eligible = [n for n in nodes
+                if n.get("type") != "session" and (n.get("weight") or 0) >= min_weight]
+    eligible.sort(key=lambda n: n["id"])
+
+    lines = []
+    for i, n in enumerate(eligible, 1):
+        domains = ",".join(n.get("domains") or [])[:40]
+        title = (n.get("title") or n["id"])[:80]
+        lines.append(
+            f"#{i:03d} id:{n['id'][:8]} type:{n.get('type', 'concept')} "
+            f"w:{n.get('weight', 0):.2f} domains:[{domains}] \"{title}\""
+        )
+
+    header = f"[CODEBOOK v1 | {len(eligible)} entries]"
+    text = header + "\n" + "\n".join(lines)
+    h = hashlib.sha256(text.encode()).hexdigest()[:16]
+    return text, h
+
+
+def build_codebook_index(codebook_text: str) -> dict[str, str]:
+    """Parse codebook text into {truncated_id: entry_number} mapping."""
+    index: dict[str, str] = {}
+    for line in codebook_text.split("\n"):
+        if not line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            entry_num = parts[0]  # e.g. "#042"
+            for part in parts:
+                if part.startswith("id:"):
+                    index[part[3:]] = entry_num
+                    break
+    return index
+
+
+def predict_tier2(
+    store: Store,
+    query: str,
+    search_results: list[dict],
+    top_k: int = 8,
+) -> list[dict]:
+    """Expand search results with graph-predicted neighbors.
+
+    Uses 1-hop edges from top hits to predict related nodes the user
+    might ask about next. Returns merged list sorted by node ID for
+    deterministic prefix ordering.
+    """
+    hit_ids = {r["id"] for r in search_results}
+    predicted: dict[str, dict] = {}
+
+    for hit in search_results[:3]:
+        for edge in store.edges_from(hit["id"])[:5]:
+            tid = edge["to_id"]
+            if tid not in hit_ids and tid not in predicted:
+                node = store.get_node(tid)
+                if node and node.get("type") != "session":
+                    predicted[tid] = node
+
+    merged = list(search_results[:top_k])
+    for node in sorted(predicted.values(), key=lambda n: n["id"]):
+        if len(merged) >= top_k:
+            break
+        merged.append(node)
+    return merged
+
+
+def format_tier2(
+    results: list[dict],
+    codebook_index: dict[str, str],
+    max_tokens: int = 4000,
+) -> str:
+    """Format tier 2 context with codebook back-references.
+
+    Results sorted by node ID for deterministic prefix ordering.
+    Content trimmed to fit within max_tokens budget.
+    """
+    results_sorted = sorted(results, key=lambda r: r["id"])
+    char_budget = max_tokens * 4
+    lines: list[str] = ["## Relevant Context\n"]
+    used = 0
+
+    for r in results_sorted:
+        entry = codebook_index.get(r["id"][:8], "?")
+        title = r.get("title") or r["id"]
+        content = _strip_frontmatter(r.get("content") or "")[:1000]
+        edges = r.get("edges_out") or []
+
+        block_lines = [f"### {entry} {title}"]
+        if content:
+            block_lines.append(content)
+        if edges:
+            refs = []
+            for e in edges[:5]:
+                t_entry = codebook_index.get(e["to_id"][:8], "?")
+                refs.append(f"{t_entry} {e.get('to_title', e['to_id'])} (w={e['weight']:.1f})")
+            block_lines.append(f"Connects: {', '.join(refs)}")
+        block_lines.append("")
+
+        block = "\n".join(block_lines)
+        if used + len(block) > char_budget:
+            break
+        lines.append(block)
+        used += len(block)
+
+    return "\n".join(lines)
+
+
 def detect_domain_from_path(store: Store, cwd: str) -> list[str]:
     """Given a working directory, find relevant domain nodes.
 

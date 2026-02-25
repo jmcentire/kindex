@@ -1292,9 +1292,14 @@ def cmd_compact_hook(args):
 def cmd_prime(args):
     """Generate context injection for Claude Code SessionStart hook.
 
-    kin prime [--topic TOPIC] [--tokens N] [--for hook|stdout]
+    kin prime [--topic TOPIC] [--tokens N] [--for hook|stdout] [--codebook]
     """
     store = _store(args)
+
+    if getattr(args, "codebook", False):
+        _prime_codebook(store, args)
+        store.close()
+        return
 
     from .hooks import prime_context
 
@@ -1316,6 +1321,38 @@ def cmd_prime(args):
         print(block)
 
     store.close()
+
+
+def _prime_codebook(store, args):
+    """Regenerate the LLM prompt cache codebook."""
+    from .retrieve import generate_codebook
+
+    cfg = _config(args)
+    min_weight = cfg.llm.codebook_min_weight
+    text, hash_val = generate_codebook(store, min_weight=min_weight)
+
+    old_hash = store.get_meta("codebook_hash")
+    store.set_meta("codebook_text", text)
+    store.set_meta("codebook_hash", hash_val)
+    from datetime import datetime
+    store.set_meta("codebook_generated_at", datetime.now().isoformat())
+
+    # Track node count for staleness detection
+    stats = store.stats() if hasattr(store, "stats") else {}
+    node_count = stats.get("nodes", 0) if isinstance(stats, dict) else 0
+    store.set_meta("codebook_node_count", str(node_count))
+
+    entry_count = text.count("\n#")
+    est_tokens = len(text) // 4
+
+    if old_hash and old_hash == hash_val:
+        print(f"Codebook unchanged (hash: {hash_val})")
+    elif old_hash:
+        print(f"Codebook updated: {hash_val} (was: {old_hash})")
+    else:
+        print(f"Codebook created: {hash_val}")
+    print(f"  {entry_count} entries, ~{est_tokens} tokens")
+    print(f"  Min weight: {min_weight}")
 
 
 # ── suggest ───────────────────────────────────────────────────────────
@@ -1894,8 +1931,7 @@ def cmd_ask(args):
 
     from .retrieve import format_context_block, hybrid_search
 
-    # Adjust top_k based on question type: factual needs fewer precise
-    # hits; exploratory benefits from more context.
+    # Adjust top_k based on question type
     top_k_map = {
         "factual": 5,
         "procedural": 8,
@@ -1913,7 +1949,7 @@ def cmd_ask(args):
 
     # Try LLM-powered answer
     ledger, cfg = _ledger(args)
-    answer = _ask_llm(question, results, cfg, ledger, qtype=qtype)
+    answer = _ask_llm(question, results, cfg, ledger, qtype=qtype, store=store)
 
     if answer:
         print(answer)
@@ -1933,42 +1969,59 @@ def cmd_ask(args):
     store.close()
 
 
+_STYLE_HINTS = {
+    "factual": "Give a direct, concise factual answer.",
+    "procedural": "Provide clear step-by-step instructions.",
+    "decision": "Compare the options and give a recommendation with trade-offs.",
+    "exploratory": "Provide a broad overview touching on the key aspects.",
+}
+
+_SYSTEM_PREAMBLE = (
+    "You are Kindex, a knowledge graph assistant. "
+    "Below is a codebook listing nodes in the user's knowledge graph. "
+    "Use it as a lookup table — identify relevant entries by their # number. "
+    "Detailed context for query-relevant nodes follows the codebook.\n\n"
+)
+
+
 def _ask_llm(question: str, results: list[dict], config, ledger,
-             qtype: str = "exploratory") -> str | None:
-    """Use LLM to answer a question given graph context."""
+             qtype: str = "exploratory", store=None) -> str | None:
+    """Use LLM to answer a question given graph context.
+
+    Routes to cache-optimized path (three-tier with cache_control breakpoints)
+    or flat path (single user message) based on config.
+    """
     if not config.llm.enabled:
         return None
     if not ledger.can_spend():
         return None
 
-    try:
-        import os
-        import anthropic
-        key = os.environ.get(config.llm.api_key_env)
-        if not key:
-            return None
-        client = anthropic.Anthropic(api_key=key)
-    except ImportError:
+    from .llm import get_client, calculate_cost
+    client = get_client(config)
+    if client is None:
         return None
 
-    # Build context from results
+    use_cache = (config.llm.cache_control
+                 and config.llm.provider == "anthropic"
+                 and store is not None)
+
+    if use_cache:
+        return _ask_llm_cached(question, results, config, ledger, client, store, qtype)
+    return _ask_llm_flat(question, results, config, ledger, client, qtype)
+
+
+def _ask_llm_flat(question, results, config, ledger, client, qtype):
+    """Original flat message format (no caching)."""
+    from .llm import calculate_cost
+
     context_parts = []
     for r in results[:5]:
         title = r.get("title", r["id"])
         content = (r.get("content") or "")[:500]
         ntype = r.get("type", "concept")
         context_parts.append(f"[{ntype}] {title}: {content}")
-
     context = "\n\n".join(context_parts)
-
-    # Tailor prompt style to question type
-    style_hints = {
-        "factual": "Give a direct, concise factual answer.",
-        "procedural": "Provide clear step-by-step instructions.",
-        "decision": "Compare the options and give a recommendation with trade-offs.",
-        "exploratory": "Provide a broad overview touching on the key aspects.",
-    }
-    style = style_hints.get(qtype, style_hints["exploratory"])
+    style = _STYLE_HINTS.get(qtype, _STYLE_HINTS["exploratory"])
 
     try:
         response = client.messages.create(
@@ -1984,14 +2037,93 @@ Answer this question concisely: {question}
 
 If the context doesn't contain enough information, say so honestly."""}],
         )
+        cost_info = calculate_cost(config.llm.model, response.usage)
+        ledger.record(**cost_info, model=config.llm.model, purpose="ask")
+        return response.content[0].text
+    except Exception:
+        return None
 
-        cost_in = response.usage.input_tokens
-        cost_out = response.usage.output_tokens
-        pricing = {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000}
-        cost = cost_in * pricing["input"] + cost_out * pricing["output"]
-        ledger.record(cost, model=config.llm.model, purpose="ask",
-                      tokens_in=cost_in, tokens_out=cost_out)
 
+def _ask_llm_cached(question, results, config, ledger, client, store, qtype):
+    """Three-tier cached message format with cache_control breakpoints."""
+    from .llm import calculate_cost
+    from .retrieve import (build_codebook_index, format_tier2,
+                           generate_codebook, predict_tier2)
+
+    # Tier 1: Load or auto-generate codebook
+    codebook_text = store.get_meta("codebook_text")
+    if not codebook_text:
+        codebook_text, codebook_hash = generate_codebook(
+            store, min_weight=config.llm.codebook_min_weight)
+        store.set_meta("codebook_text", codebook_text)
+        store.set_meta("codebook_hash", codebook_hash)
+    else:
+        # Staleness check
+        import json
+        stats = store.stats() if hasattr(store, "stats") else {}
+        node_count = stats.get("nodes", 0) if isinstance(stats, dict) else 0
+        old_count_raw = store.get_meta("codebook_node_count")
+        old_count = int(old_count_raw) if old_count_raw else 0
+        if old_count and node_count > old_count * 1.1:
+            print("Hint: codebook may be stale. Run: kin prime --codebook",
+                  file=sys.stderr)
+
+    codebook_index = build_codebook_index(codebook_text)
+
+    # Tier 2: Predict and format context
+    tier2_results = predict_tier2(store, question, results)
+    tier2_text = format_tier2(tier2_results, codebook_index,
+                              max_tokens=config.llm.tier2_max_tokens)
+
+    style = _STYLE_HINTS.get(qtype, _STYLE_HINTS["exploratory"])
+
+    # Min cacheable tokens: 1024 for Haiku, 2048 for larger models
+    model_lower = config.llm.model.lower()
+    min_cache = 1024 if "haiku" in model_lower else 2048
+
+    # Build system blocks with cache_control breakpoints
+    tier1_content = _SYSTEM_PREAMBLE + codebook_text
+    tier1_tokens_est = len(tier1_content) // 4
+
+    system_blocks = []
+    if tier1_tokens_est >= min_cache:
+        # Tier 1 large enough to cache on its own
+        system_blocks.append({
+            "type": "text",
+            "text": tier1_content,
+            "cache_control": {"type": "ephemeral"},
+        })
+        if tier2_text.strip():
+            tier2_tokens_est = len(tier2_text) // 4
+            if tier2_tokens_est >= min_cache:
+                system_blocks.append({
+                    "type": "text",
+                    "text": tier2_text,
+                    "cache_control": {"type": "ephemeral"},
+                })
+            else:
+                system_blocks.append({"type": "text", "text": tier2_text})
+    else:
+        # Combine tier 1 + tier 2 into single cached block
+        combined = tier1_content + "\n\n" + tier2_text
+        system_blocks.append({
+            "type": "text",
+            "text": combined,
+            "cache_control": {"type": "ephemeral"},
+        })
+
+    # Tier 3: User message — just the question
+    user_content = f"{question}\n\n{style}"
+
+    try:
+        response = client.messages.create(
+            model=config.llm.model,
+            max_tokens=800,
+            system=system_blocks,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        cost_info = calculate_cost(config.llm.model, response.usage)
+        ledger.record(**cost_info, model=config.llm.model, purpose="ask")
         return response.content[0].text
     except Exception:
         return None
@@ -2709,6 +2841,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tokens", type=int, default=750, help="Max token budget (default 750)")
     s.add_argument("--for", dest="output_for", choices=["hook", "stdout"], default="stdout",
                    help="Output mode: hook (raw block) or stdout (with header)")
+    s.add_argument("--codebook", action="store_true",
+                   help="Regenerate the LLM prompt cache codebook")
     _common(s)
     s.set_defaults(func=cmd_prime)
 
