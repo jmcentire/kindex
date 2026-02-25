@@ -500,15 +500,23 @@ class Store:
 
     def fts_search(self, query: str, limit: int = 20) -> list[dict]:
         """Full-text search using FTS5 BM25 ranking."""
-        # Escape special FTS5 characters
-        safe_query = query.replace('"', '""')
+        import re
+        # Strip punctuation and FTS5 special chars, keep only words
+        tokens = re.findall(r'\w+', query.lower())
+        if not tokens:
+            return []
+        # Build FTS5 query: quoted phrase OR individual tokens
+        phrase = " ".join(tokens)
+        safe_phrase = phrase.replace('"', '""')
+        token_expr = " OR ".join(tokens)
+        fts_query = f'"{safe_phrase}" OR {token_expr}'
         try:
             rows = self.conn.execute(
                 """SELECT n.*, rank FROM nodes_fts
                    JOIN nodes n ON n.id = nodes_fts.id
                    WHERE nodes_fts MATCH ?
                    ORDER BY rank LIMIT ?""",
-                (f'"{safe_query}" OR {safe_query}', limit),
+                (fts_query, limit),
             ).fetchall()
         except sqlite3.OperationalError:
             # Fallback: simple LIKE search if FTS query syntax fails
@@ -516,7 +524,7 @@ class Store:
                 """SELECT *, 0 as rank FROM nodes
                    WHERE title LIKE ? OR content LIKE ?
                    ORDER BY weight DESC LIMIT ?""",
-                (f"%{query}%", f"%{query}%", limit),
+                (f"%{phrase}%", f"%{phrase}%", limit),
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
