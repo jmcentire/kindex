@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kindex — The memory layer Claude Code doesn't have</title>
-<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. 42 CLI commands, MCP plugin, hybrid search, and context tiers.">
+<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. Free Claude Code plugin with 12 MCP tools, 42 CLI commands, and five context tiers.">
 <style>
   :root {
     --bg: #0d1117;
@@ -47,10 +47,25 @@
   .hero .tagline {
     font-size: 1.25rem;
     color: var(--text-dim);
-    margin-bottom: 32px;
+    margin-bottom: 12px;
     max-width: 600px;
     margin-left: auto;
     margin-right: auto;
+  }
+  .hero .subline {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    margin-bottom: 32px;
+    max-width: 540px;
+    margin-left: auto;
+    margin-right: auto;
+    opacity: 0.8;
+  }
+  .install-boxes {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
   }
   .hero .install-box {
     display: inline-block;
@@ -58,10 +73,11 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 12px 24px;
-    font-size: 1rem;
+    font-size: 0.95rem;
   }
   .hero .install-box code { color: var(--accent2); }
   .hero .install-box .prompt { color: var(--text-dim); }
+  .hero .install-box.primary { border-color: var(--accent); }
   .badges {
     margin-top: 20px;
     display: flex;
@@ -80,6 +96,7 @@
   .badge.green { border-color: var(--accent2); color: var(--accent2); }
   .badge.blue { border-color: var(--accent); color: var(--accent); }
   .badge.purple { border-color: var(--accent3); color: var(--accent3); }
+  .badge.orange { border-color: var(--accent4); color: var(--accent4); }
 
   /* Sections */
   section {
@@ -115,6 +132,18 @@
   .card h3 { margin-bottom: 8px; }
   .card p { color: var(--text-dim); font-size: 0.9rem; }
   .card .icon { font-size: 1.5rem; margin-bottom: 8px; display: block; }
+
+  /* Callout */
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 20px 24px;
+    margin: 24px 0;
+    font-size: 0.95rem;
+  }
+  .callout strong { color: var(--text); }
+  .callout p { color: var(--text-dim); margin-top: 8px; }
 
   /* Terminal */
   .terminal {
@@ -206,6 +235,7 @@
     .hero .tagline { font-size: 1rem; }
     .features { grid-template-columns: 1fr; }
     section { padding: 40px 0; }
+    .install-boxes { flex-direction: column; align-items: center; }
   }
 </style>
 </head>
@@ -217,76 +247,111 @@
     <h1><span>kin</span>dex</h1>
     <p class="tagline">
       The memory layer Claude Code doesn't have.
-      Your AI coding assistant never starts a session blind.
     </p>
-    <div class="install-box mono">
-      <span class="prompt">$</span> <code>pip install kindex</code>
+    <p class="subline">
+      Kindex does one thing. It knows what you know.
+      A persistent knowledge graph so your AI assistant never starts a session blind.
+    </p>
+    <div class="install-boxes">
+      <div class="install-box primary mono">
+        <span class="prompt">$</span> <code>pip install kindex[mcp]</code>
+      </div>
+      <div class="install-box mono">
+        <span class="prompt">$</span> <code>claude mcp add -s user -t stdio kindex -- kin-mcp</code>
+      </div>
     </div>
     <div class="badges">
       <span class="badge green">v0.3.0</span>
-      <span class="badge blue">Python 3.10+</span>
-      <span class="badge purple">MIT License</span>
-      <span class="badge">42 CLI commands</span>
-      <span class="badge">MCP plugin</span>
-      <span class="badge">373 tests</span>
+      <span class="badge orange">Claude Code Plugin</span>
+      <span class="badge blue">12 MCP Tools</span>
+      <span class="badge purple">42 CLI Commands</span>
+      <span class="badge">MIT License</span>
+      <span class="badge">Free</span>
     </div>
   </div>
 </div>
 
-<!-- Features -->
+<!-- Why Kindex -->
 <section>
   <div class="container">
-    <h2>What It Does</h2>
-    <p>Kindex maintains a graph of <strong>nodes</strong> (concepts, decisions, skills, projects, sessions) connected by <strong>weighted edges</strong>. It provides:</p>
-    <div class="features">
+    <h2>Why Kindex</h2>
+    <div class="callout">
+      <strong>Memory plugins capture what happened. Kindex captures what it means and how it connects.</strong>
+      <p>Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time &mdash; understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.</p>
+    </div>
+    <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
       <div class="card">
-        <span class="icon">&#x1F50D;</span>
-        <h3>Hybrid Search</h3>
-        <p>FTS5 full-text + graph traversal, merged via Reciprocal Rank Fusion. Question classification adjusts result depth automatically.</p>
+        <h3>Context-Aware by Design</h3>
+        <p>Five context tiers auto-select based on available tokens. When other plugins dump everything into context, Kindex gives you 200 tokens of executive summary or 4000 tokens of deep context &mdash; whatever fits. <strong>Your plugin doesn't eat the context window.</strong></p>
       </div>
       <div class="card">
-        <span class="icon">&#x1F4CA;</span>
-        <h3>Context Tiers</h3>
-        <p>Five levels &mdash; full, abridged, summarized, executive, index &mdash; auto-selected by token budget for optimal AI injection.</p>
+        <h3>Knowledge Graph, Not Log File</h3>
+        <p>Nodes have types, weights, domains, and audiences. Edges carry provenance and decay over time. The graph understands what matters &mdash; not just what was said.</p>
       </div>
       <div class="card">
-        <span class="icon">&#x26A0;</span>
-        <h3>Operational Nodes</h3>
-        <p>Constraints, directives, checkpoints, and watches that surface at the right time. Pre-deploy checklists built into your graph.</p>
+        <h3>Operational Guardrails</h3>
+        <p>Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.</p>
       </div>
       <div class="card">
-        <span class="icon">&#x1F504;</span>
-        <h3>Session Learning</h3>
-        <p>Ingests Claude Code sessions, GitHub issues, git commits, and Linear tickets. LLM-powered extraction with budget controls.</p>
-      </div>
-      <div class="card">
-        <span class="icon">&#x1F512;</span>
-        <h3>Audience Tenancy</h3>
-        <p>Private, team, org, and public scoping. PII stripping on export. Audience-aware boundary enforcement.</p>
-      </div>
-      <div class="card">
-        <span class="icon">&#x1F517;</span>
-        <h3>.kin Inheritance</h3>
-        <p>Composable context chains across repos and teams. A service repo inherits from the platform .kin, which inherits from the org .kin &mdash; depth-first, local overrides ancestors.</p>
-      </div>
-      <div class="card">
-        <span class="icon">&#x1F9E0;</span>
-        <h3>Bridge Discovery</h3>
-        <p>Finds cross-domain connections you didn't manually encode. Suggests edges, detects analogies, tracks expertise.</p>
-      </div>
-      <div class="card">
-        <span class="icon">&#x23F0;</span>
-        <h3>Weight Decay</h3>
-        <p>Nodes and edges naturally fade unless accessed. The graph stays fresh without manual curation.</p>
+        <h3>Team &amp; Org Ready</h3>
+        <p><code>.kin</code> inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export.</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- Quick Start -->
+<!-- Install as Plugin -->
 <section>
   <div class="container">
-    <h2>Quick Start</h2>
+    <h2>Install as Claude Code Plugin</h2>
+    <p>Two commands. Zero configuration. Claude gets 12 native tools for your knowledge graph.</p>
+    <div class="terminal mono">
+<span class="comment"># Install and register (one time)</span>
+<span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
+<span class="prompt">$</span> <span class="cmd">claude mcp add</span> <span class="flag">--scope</span> user <span class="flag">--transport</span> stdio kindex <span class="flag">--</span> kin-mcp
+<span class="prompt">$</span> <span class="cmd">kin init</span>
+
+<span class="comment"># That's it. Claude Code now has:</span>
+<span class="output">  search      &mdash; hybrid FTS5 + graph search</span>
+<span class="output">  add         &mdash; capture knowledge with auto-linking</span>
+<span class="output">  context     &mdash; formatted context block at any tier</span>
+<span class="output">  show        &mdash; full node details with edges</span>
+<span class="output">  ask         &mdash; question classification + answer</span>
+<span class="output">  learn       &mdash; extract knowledge from text</span>
+<span class="output">  link        &mdash; create edges between nodes</span>
+<span class="output">  list_nodes  &mdash; browse with filters</span>
+<span class="output">  status      &mdash; graph health + operational summary</span>
+<span class="output">  suggest     &mdash; bridge opportunity suggestions</span>
+<span class="output">  graph_stats &mdash; centrality, communities, density</span>
+<span class="output">  changelog   &mdash; recent changes</span>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
+    <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
+    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via Claude Code hooks. Use whichever integration fits your workflow.</p>
+  </div>
+</section>
+
+<!-- Context Tiers -->
+<section>
+  <div class="container">
+    <h2>Context Tiers</h2>
+    <p>The core differentiator. Other plugins inject context and hope for the best. Kindex manages exactly how much based on what's available.</p>
+    <table class="tiers">
+      <tr><th>Tier</th><th>Budget</th><th>Use Case</th></tr>
+      <tr><td>full</td><td>~4000 tokens</td><td>Session start, deep work &mdash; everything relevant</td></tr>
+      <tr><td>abridged</td><td>~1500 tokens</td><td>Mid-session reference &mdash; key facts and connections</td></tr>
+      <tr><td>summarized</td><td>~750 tokens</td><td>Quick orientation &mdash; what matters right now</td></tr>
+      <tr><td>executive</td><td>~200 tokens</td><td>Post-compaction &mdash; just the essentials</td></tr>
+      <tr><td>index</td><td>~100 tokens</td><td>Existence check &mdash; "I know about X"</td></tr>
+    </table>
+    <p style="margin-top: 16px; color: var(--text-dim);">Auto-selected via <code>--tokens</code> budget or set explicitly with <code>--level</code>. The MCP <code>context</code> tool does this automatically.</p>
+  </div>
+</section>
+
+<!-- Quick Start CLI -->
+<section>
+  <div class="container">
+    <h2>Quick Start (CLI)</h2>
     <div class="terminal mono">
 <span class="comment"># Initialize a knowledge store</span>
 <span class="prompt">$</span> <span class="cmd">kin init</span>
@@ -299,18 +364,15 @@
 <span class="prompt">$</span> <span class="cmd">kin search</span> stigmergy
 <span class="output">  0.85  stigmergy-is-coordination-th  concept  Stigmergy is coordination...</span>
 
-<span class="comment"># Get context for Claude Code injection</span>
-<span class="prompt">$</span> <span class="cmd">kin context</span> <span class="flag">--topic</span> stigmergy <span class="flag">--level</span> full
+<span class="comment"># Ask questions (with automatic classification)</span>
+<span class="prompt">$</span> <span class="cmd">kin ask</span> "How does weight decay work?"
+<span class="output">[procedural question]</span>
 
 <span class="comment"># Track operational rules</span>
 <span class="prompt">$</span> <span class="cmd">kin add</span> "Never break the API contract" <span class="flag">--type</span> constraint <span class="flag">--trigger</span> pre-deploy
 
-<span class="comment"># Ingest from all sources</span>
+<span class="comment"># Ingest from all sources (GitHub, git, sessions, files)</span>
 <span class="prompt">$</span> <span class="cmd">kin ingest</span> all
-
-<span class="comment"># Install Claude Code hooks (one-time setup)</span>
-<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
-<span class="prompt">$</span> <span class="cmd">kin setup-cron</span>
     </div>
   </div>
 </section>
@@ -330,24 +392,91 @@
   (vectors) ──┘                   |
                           <span class="green">full | abridged | summarized | executive | index</span>
 
-<span class="green">Feedback loop:</span>
-  SessionStart ──&gt; <span class="highlight">kin prime</span> ──&gt; context injected
-  PreCompact  ──&gt; <span class="highlight">kin compact-hook</span> ──&gt; knowledge captured
-  Cron (30min) ──&gt; <span class="highlight">kin cron</span> ──&gt; decay, ingest, health checks</div>
-
-    <h3 style="margin-top: 24px;">Context Tiers</h3>
-    <table class="tiers">
-      <tr><th>Tier</th><th>Budget</th><th>Use Case</th></tr>
-      <tr><td>full</td><td>~4000 tokens</td><td>Session start, deep work</td></tr>
-      <tr><td>abridged</td><td>~1500 tokens</td><td>Mid-session reference</td></tr>
-      <tr><td>summarized</td><td>~750 tokens</td><td>Quick orientation</td></tr>
-      <tr><td>executive</td><td>~200 tokens</td><td>Post-compaction re-injection</td></tr>
-      <tr><td>index</td><td>~100 tokens</td><td>Existence check only</td></tr>
-    </table>
+<span class="green">Two integration paths:</span>
+  MCP plugin ──&gt; Claude calls tools natively (search, add, learn, ...)
+  CLI hooks  ──&gt; SessionStart/PreCompact/Stop lifecycle events</div>
 
     <h3 style="margin-top: 24px;">Node Types</h3>
     <p><strong>Knowledge:</strong> concept, document, session, person, project, decision, question, artifact, skill</p>
-    <p><strong>Operational:</strong> constraint, directive, checkpoint, watch</p>
+    <p><strong>Operational:</strong> constraint (invariants), directive (soft rules), checkpoint (pre-flight checks), watch (attention flags)</p>
+  </div>
+</section>
+
+<!-- .kin Inheritance -->
+<section>
+  <div class="container">
+    <h2>.kin Voice &amp; Inheritance</h2>
+    <p>Companies publish <code>.kin</code> files that encode their voice, standards, and context. Teams inherit from orgs. Repos inherit from teams. The knowledge graph carries the voice forward automatically.</p>
+    <div class="features" style="grid-template-columns: 1fr 1fr 1fr;">
+      <div class="card">
+        <h3>Org Voice</h3>
+        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.78rem;">
+# ~/.kindex/voices/acme.kin
+name: acme-voice
+audience: org
+voice:
+  tone: precise, direct
+  principles:
+    - Explain reasoning
+    - Be honest about trade-offs
+standards:
+  code_review:
+    - Every PR needs a "why"</div>
+      </div>
+      <div class="card">
+        <h3>Platform Team</h3>
+        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.78rem;">
+# platform/.kin
+name: platform
+audience: org
+domains: [engineering]
+inherits:
+  - ~/.kindex/voices/acme.kin
+
+
+
+</div>
+      </div>
+      <div class="card">
+        <h3>Service Repo</h3>
+        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.78rem;">
+# payments-service/.kin
+name: payments-service
+audience: team
+domains: [payments, python]
+inherits:
+  - ../platform/.kin
+
+
+</div>
+      </div>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets: <code>domains: [payments, python, engineering]</code>, Acme's voice principles, the platform's review standards, and <code>audience: team</code> (local wins). Parent directories are auto-walked when no explicit <code>inherits</code> is set. <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Example voice files included.</a></p>
+  </div>
+</section>
+
+<!-- External Integrations -->
+<section>
+  <div class="container">
+    <h2>Integrations</h2>
+    <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+      <div class="card">
+        <h3>GitHub</h3>
+        <p>Ingest issues, PRs, and commits via <code>gh</code> CLI.</p>
+      </div>
+      <div class="card">
+        <h3>Linear</h3>
+        <p>Ingest issues via GraphQL API.</p>
+      </div>
+      <div class="card">
+        <h3>Git Hooks</h3>
+        <p>Post-commit records. Pre-push surfaces constraints.</p>
+      </div>
+      <div class="card">
+        <h3>File Watcher</h3>
+        <p>SHA-256 change detection for registered files.</p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -365,30 +494,30 @@
         <tr><td><code>kin add &lt;text&gt;</code></td><td>Quick capture with auto-extraction and linking</td></tr>
         <tr><td><code>kin show &lt;id&gt;</code></td><td>Full node details with edges, provenance, and state</td></tr>
         <tr><td><code>kin list</code></td><td>List nodes (--type, --status, --mine, --limit)</td></tr>
-        <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
+        <tr><td><code>kin ask &lt;question&gt;</code></td><td>Question classification + LLM or context answer</td></tr>
       </table>
     </div>
 
     <div class="cmd-group">
       <h3>Knowledge Management</h3>
       <table>
-        <tr><td><code>kin learn</code></td><td>Extract knowledge from sessions and inbox items</td></tr>
+        <tr><td><code>kin learn</code></td><td>Extract knowledge from sessions and inbox</td></tr>
         <tr><td><code>kin link &lt;a&gt; &lt;b&gt;</code></td><td>Create weighted edge between nodes</td></tr>
-        <tr><td><code>kin ask &lt;question&gt;</code></td><td>Query the graph (question classification + LLM)</td></tr>
         <tr><td><code>kin alias &lt;id&gt;</code></td><td>Manage AKA/synonyms for a node</td></tr>
         <tr><td><code>kin register &lt;id&gt; &lt;path&gt;</code></td><td>Associate a file path with a node</td></tr>
         <tr><td><code>kin orphans</code></td><td>Nodes with no connections</td></tr>
         <tr><td><code>kin trail &lt;id&gt;</code></td><td>Temporal history and provenance chain</td></tr>
         <tr><td><code>kin decay</code></td><td>Apply weight decay to stale nodes/edges</td></tr>
+        <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
       </table>
     </div>
 
     <div class="cmd-group">
       <h3>Graph Analytics</h3>
       <table>
-        <tr><td><code>kin graph [mode]</code></td><td>Analytics dashboard (stats, centrality, communities, bridges)</td></tr>
-        <tr><td><code>kin suggest</code></td><td>Review bridge opportunity suggestions (--accept, --reject)</td></tr>
-        <tr><td><code>kin skills [person]</code></td><td>Show skill profile and expertise for a person</td></tr>
+        <tr><td><code>kin graph [mode]</code></td><td>Dashboard: stats, centrality, communities, bridges, trailheads</td></tr>
+        <tr><td><code>kin suggest</code></td><td>Bridge opportunity suggestions (--accept, --reject)</td></tr>
+        <tr><td><code>kin skills [person]</code></td><td>Skill profile and expertise for a person</td></tr>
         <tr><td><code>kin embed</code></td><td>Index all nodes for vector similarity search</td></tr>
       </table>
     </div>
@@ -406,23 +535,13 @@
     </div>
 
     <div class="cmd-group">
-      <h3>Ingestion &amp; External Sources</h3>
+      <h3>Ingestion</h3>
       <table>
-        <tr><td><code>kin ingest &lt;source&gt;</code></td><td>Ingest from projects, sessions, files, commits, github, linear</td></tr>
+        <tr><td><code>kin ingest &lt;source&gt;</code></td><td>Ingest from: projects, sessions, files, commits, github, linear, all</td></tr>
         <tr><td><code>kin cron</code></td><td>One-shot maintenance cycle (for crontab/launchd)</td></tr>
-        <tr><td><code>kin watch</code></td><td>Watch for new sessions and ingest them</td></tr>
+        <tr><td><code>kin watch</code></td><td>Watch for new sessions and ingest (--interval)</td></tr>
         <tr><td><code>kin analytics</code></td><td>Archive session analytics and activity heatmap</td></tr>
         <tr><td><code>kin index</code></td><td>Write .kin/index.json for git tracking</td></tr>
-      </table>
-    </div>
-
-    <div class="cmd-group">
-      <h3>Claude Code Integration</h3>
-      <table>
-        <tr><td><code>kin prime</code></td><td>Generate context for SessionStart hook</td></tr>
-        <tr><td><code>kin compact-hook</code></td><td>Pre-compact knowledge capture</td></tr>
-        <tr><td><code>kin setup-hooks</code></td><td>Install Kindex hooks into Claude Code settings</td></tr>
-        <tr><td><code>kin setup-cron</code></td><td>Install periodic maintenance (launchd/crontab)</td></tr>
       </table>
     </div>
 
@@ -431,123 +550,19 @@
       <table>
         <tr><td><code>kin init</code></td><td>Initialize data directory</td></tr>
         <tr><td><code>kin config [show|get|set]</code></td><td>View or edit configuration</td></tr>
-        <tr><td><code>kin migrate</code></td><td>Import markdown topics into SQLite</td></tr>
+        <tr><td><code>kin setup-hooks</code></td><td>Install lifecycle hooks into Claude Code</td></tr>
+        <tr><td><code>kin setup-cron</code></td><td>Install periodic maintenance (launchd/crontab)</td></tr>
         <tr><td><code>kin doctor</code></td><td>Health check with graph enforcement</td></tr>
+        <tr><td><code>kin migrate</code></td><td>Import markdown topics into SQLite</td></tr>
         <tr><td><code>kin budget</code></td><td>LLM spend tracking</td></tr>
         <tr><td><code>kin whoami</code></td><td>Show current user identity</td></tr>
-        <tr><td><code>kin changelog</code></td><td>Show what changed (--since, --days, --actor)</td></tr>
-        <tr><td><code>kin log</code></td><td>Show recent activity log</td></tr>
+        <tr><td><code>kin changelog</code></td><td>What changed (--since, --days, --actor)</td></tr>
+        <tr><td><code>kin log</code></td><td>Recent activity log</td></tr>
         <tr><td><code>kin git-hook</code></td><td>Install/uninstall git hooks in a repository</td></tr>
+        <tr><td><code>kin prime</code></td><td>Generate context for SessionStart hook</td></tr>
+        <tr><td><code>kin compact-hook</code></td><td>Pre-compact knowledge capture</td></tr>
       </table>
     </div>
-  </div>
-</section>
-
-<!-- MCP Plugin -->
-<section>
-  <div class="container">
-    <h2>Claude Code Plugin (MCP)</h2>
-    <p>Kindex ships as a native <strong>Model Context Protocol</strong> server. Claude Code calls tools directly &mdash; no subprocess overhead, structured responses, and resource browsing via <code>@kindex</code>.</p>
-    <div class="terminal mono">
-<span class="comment"># Install as MCP plugin (one command)</span>
-<span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
-<span class="prompt">$</span> <span class="cmd">claude mcp add</span> <span class="flag">--scope</span> user <span class="flag">--transport</span> stdio kindex <span class="flag">--</span> kin-mcp
-
-<span class="comment"># Claude Code now has 12 native tools:</span>
-<span class="output">  search      &mdash; hybrid FTS5 + graph search</span>
-<span class="output">  add         &mdash; capture knowledge with auto-linking</span>
-<span class="output">  context     &mdash; formatted context block at any tier</span>
-<span class="output">  show        &mdash; full node details with edges</span>
-<span class="output">  ask         &mdash; question classification + answer</span>
-<span class="output">  learn       &mdash; extract knowledge from text</span>
-<span class="output">  link        &mdash; create edges between nodes</span>
-<span class="output">  list_nodes  &mdash; browse with filters</span>
-<span class="output">  status      &mdash; graph health + operational summary</span>
-<span class="output">  suggest     &mdash; bridge opportunity suggestions</span>
-<span class="output">  graph_stats &mdash; centrality, communities, density</span>
-<span class="output">  changelog   &mdash; recent changes</span>
-    </div>
-    <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
-    <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
-  </div>
-</section>
-
-<!-- Hooks Integration -->
-<section>
-  <div class="container">
-    <h2>Claude Code Hooks (Alternative)</h2>
-    <p>If you prefer hooks over MCP, one-time setup injects context at session start and captures knowledge before compaction:</p>
-    <div class="terminal mono">
-<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
-<span class="prompt">$</span> <span class="cmd">kin setup-cron</span>
-    </div>
-    <p style="margin-top: 16px; color: var(--text-dim);">Or configure manually in <code>~/.claude/settings.json</code>:</p>
-    <div class="integration-block mono">{
-  "hooks": {
-    "SessionStart": [{ "matcher": "", "hooks": [{
-      "type": "command", "command": "kin context --level executive", "timeout": 5000
-    }]}],
-    "PreCompact": [{ "matcher": "", "hooks": [{
-      "type": "command", "command": "kin compact-hook --emit-context", "timeout": 10000
-    }]}]
-  }
-}</div>
-  </div>
-</section>
-
-<!-- External Integrations -->
-<section>
-  <div class="container">
-    <h2>External Integrations</h2>
-    <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
-      <div class="card">
-        <h3>GitHub</h3>
-        <p>Ingest issues, PRs, and commits via <code>gh</code> CLI. <code>kin ingest github --repo owner/repo</code></p>
-      </div>
-      <div class="card">
-        <h3>Linear</h3>
-        <p>Ingest issues via GraphQL API. <code>kin ingest linear --team ENG</code></p>
-      </div>
-      <div class="card">
-        <h3>Git Hooks</h3>
-        <p>Post-commit records commits, pre-push surfaces constraints. <code>kin git-hook install</code></p>
-      </div>
-      <div class="card">
-        <h3>File Watcher</h3>
-        <p>SHA-256 change detection for registered files. <code>kin ingest files</code></p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- .kin Inheritance -->
-<section>
-  <div class="container">
-    <h2>.kin Inheritance Chains</h2>
-    <p>Place a <code>.kin</code> file in any repo to declare its context. Files inherit depth-first &mdash; local values override ancestors, lists are merged.</p>
-    <div class="features" style="grid-template-columns: 1fr 1fr;">
-      <div class="card">
-        <h3>Service Repo</h3>
-        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.8rem;">
-# payments-service/.kin
-name: payments-service
-audience: team
-domains: [payments, python]
-inherits:
-  - ../platform/.kin</div>
-      </div>
-      <div class="card">
-        <h3>Platform (Parent)</h3>
-        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.8rem;">
-# platform/.kin
-name: platform
-audience: org
-domains: [engineering]
-inherits:
-  - ~/.kindex/.kin   # org defaults</div>
-      </div>
-    </div>
-    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets: <code>domains: [payments, python, engineering]</code>, <code>audience: team</code> (local wins). Parent directories are auto-walked when no explicit <code>inherits</code> is set.</p>
   </div>
 </section>
 
@@ -557,10 +572,12 @@ inherits:
     <p>
       <a href="https://github.com/jmcentire/kindex">GitHub</a> &middot;
       <a href="https://github.com/jmcentire/kindex/issues">Issues</a> &middot;
+      <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Voice Examples</a> &middot;
       MIT License &middot;
-      Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a>
+      Free
     </p>
-    <p style="margin-top: 8px;">v0.3.0 &middot; 42 CLI commands &middot; 12 MCP tools &middot; 373 tests</p>
+    <p style="margin-top: 8px;">v0.3.0 &middot; Claude Code Plugin &middot; 12 MCP Tools &middot; 42 CLI Commands &middot; 373 Tests</p>
+    <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
   </div>
 </footer>
 

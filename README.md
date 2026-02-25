@@ -3,20 +3,39 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![v0.3.0](https://img.shields.io/badge/version-0.3.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
-[![Tests](https://img.shields.io/badge/tests-348%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-373%20passing-brightgreen.svg)](#)
+[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
-**Knowledge index that learns from your conversations.**
+**The memory layer Claude Code doesn't have.**
 
-Kindex is a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code (or any AI coding assistant) never starts a session blind.
+Kindex does one thing. It knows what you know.
 
-The CLI is `kin`.
+It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code never starts a session blind. Available as a **free Claude Code plugin** (MCP server) or standalone CLI.
 
-## Install
+> **Memory plugins capture what happened. Kindex captures what it means and how it connects.** Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time — understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.
+
+## Install as Claude Code Plugin
+
+Two commands. Zero configuration.
+
+```bash
+pip install -e ".[mcp]"
+claude mcp add --scope user --transport stdio kindex -- kin-mcp
+kin init
+```
+
+Claude Code now has 12 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`.
+
+Or add `.mcp.json` to any repo for project-scope access:
+```json
+{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }
+```
+
+## Install as CLI
 
 ```bash
 pip install -e .
-# or:
-make install
+kin init
 ```
 
 With LLM-powered extraction:
@@ -24,86 +43,15 @@ With LLM-powered extraction:
 pip install -e ".[llm]"
 ```
 
-With everything (LLM + vectors):
+With everything (LLM + vectors + MCP):
 ```bash
 pip install -e ".[all]"
-make dev
 ```
 
-## Quick Start
+## Why Kindex
 
-```bash
-# Initialize a knowledge store
-kin init
-
-# Add knowledge
-kin add "Stigmergy is coordination through environmental traces"
-
-# Search with hybrid FTS5 + graph traversal
-kin search stigmergy
-
-# Get context for Claude Code injection
-kin context --topic stigmergy --level full
-
-# Ask questions (with question classification)
-kin ask "How does weight decay work?"
-
-# Track operational rules
-kin add "Never break the API contract" --type constraint --trigger pre-deploy --action block
-
-# Check status before deploy
-kin status --trigger pre-deploy
-
-# Ingest from your projects, sessions, and external sources
-kin ingest all
-
-# Install Claude Code hooks (one-time setup)
-kin setup-hooks
-kin setup-cron
-```
-
-## What It Does
-
-Kindex maintains a graph of **nodes** (concepts, decisions, questions, skills, projects, sessions) connected by **weighted edges**. It provides:
-
-- **Hybrid search** — FTS5 full-text + graph traversal, merged via Reciprocal Rank Fusion
-- **Five-tier context** — full / abridged / summarized / executive / index, auto-selected by token budget
-- **Operational nodes** — constraints, directives, checkpoints, watches that surface at the right time
-- **Audience tenancy** — private / team / org / public scoping with PII stripping on export
-- **Weight decay** — nodes and edges naturally fade unless accessed, keeping the graph fresh
-- **Session learning** — ingests Claude Code sessions and project metadata automatically
-- **Question classification** — procedural, decision, factual, and exploratory queries handled differently
-- **Expertise detection** — auto-infers person skills from activity patterns
-- **Bridge discovery** — finds cross-domain connections and suggests missing edges
-- **.kin inheritance** — composable context chains across repos and teams
-
-## Architecture
-
-```
-SQLite + FTS5          ← primary store and full-text search
-  nodes: id, title, content, type, weight, audience, domains, extra
-  edges: from_id, to_id, type, weight, provenance
-  fts5:  content synced via triggers
-
-Retrieval pipeline:
-  FTS5 BM25 ──┐
-  Graph BFS ──┼── RRF merge ── tier formatter ── context block
-  (vectors) ──┘                   │
-                          full │ abridged │ summarized │ executive │ index
-
-Feedback loop:
-  SessionStart ──> kin prime ──> context injected
-  PreCompact  ──> kin compact-hook ──> knowledge captured
-  Cron (30min) ──> kin cron ──> decay, ingest, health checks
-```
-
-### Node Types
-
-**Knowledge**: concept, document, session, person, project, decision, question, artifact, skill
-
-**Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight checks), watch (attention flags)
-
-### Context Tiers
+### Context-aware by design
+Five context tiers auto-select based on available tokens. When other plugins dump everything into context, Kindex gives you 200 tokens of executive summary or 4000 tokens of deep context — whatever fits. **Your plugin doesn't eat the context window.**
 
 | Tier | Budget | Use Case |
 |------|--------|----------|
@@ -113,7 +61,91 @@ Feedback loop:
 | executive | ~200 tokens | Post-compaction re-injection |
 | index | ~100 tokens | Existence check only |
 
-Auto-selected via `--tokens` or set explicitly with `--level`.
+### Knowledge graph, not log file
+Nodes have types, weights, domains, and audiences. Edges carry provenance and decay over time. The graph understands what matters — not just what was said.
+
+### Operational guardrails
+Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
+
+### Team and org ready
+`.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
+
+## Quick Start
+
+```bash
+# Add knowledge
+kin add "Stigmergy is coordination through environmental traces"
+
+# Search with hybrid FTS5 + graph traversal
+kin search stigmergy
+
+# Ask questions (with automatic classification)
+kin ask "How does weight decay work?"
+
+# Get context for AI injection
+kin context --topic stigmergy --level full
+
+# Track operational rules
+kin add "Never break the API contract" --type constraint --trigger pre-deploy --action block
+
+# Check status before deploy
+kin status --trigger pre-deploy
+
+# Ingest from all sources
+kin ingest all
+```
+
+## .kin Voice & Inheritance
+
+Companies publish `.kin` files that encode their communication style, engineering standards, and values. Teams inherit from orgs. Repos inherit from teams. The knowledge graph carries the voice forward.
+
+```
+~/.kindex/voices/acme.kin         # Org voice (downloadable, public)
+    ^
+    |  inherits
+~/Code/platform/.kin              # Platform team context
+    ^
+    |  inherits
+~/Code/payments-service/.kin      # Service-specific context
+```
+
+```yaml
+# payments-service/.kin
+name: payments-service
+audience: team
+domains: [payments, python]
+inherits:
+  - ../platform/.kin
+```
+
+The payments service gets Acme's voice principles, the platform's engineering standards, AND its own domain context. Local values override ancestors. Lists merge with dedup. Parent directories auto-walk when no explicit `inherits` is set.
+
+See [examples/kin-voices/](examples/kin-voices/) for ready-to-use voice templates.
+
+## Architecture
+
+```
+SQLite + FTS5          <- primary store and full-text search
+  nodes: id, title, content, type, weight, audience, domains, extra
+  edges: from_id, to_id, type, weight, provenance
+  fts5:  content synced via triggers
+
+Retrieval pipeline:
+  FTS5 BM25 --+
+  Graph BFS --+-- RRF merge -- tier formatter -- context block
+  (vectors) --+                   |
+                          full | abridged | summarized | executive | index
+
+Two integration paths:
+  MCP plugin --> Claude calls tools natively (search, add, learn, ...)
+  CLI hooks  --> SessionStart / PreCompact / Stop lifecycle events
+```
+
+### Node Types
+
+**Knowledge**: concept, document, session, person, project, decision, question, artifact, skill
+
+**Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
 ## CLI Reference (42 commands)
 
@@ -125,26 +157,26 @@ Auto-selected via `--tokens` or set explicitly with `--level`.
 | `kin add <text>` | Quick capture with auto-extraction and linking |
 | `kin show <id>` | Full node details with edges, provenance, and state |
 | `kin list` | List nodes (--type, --status, --mine, --limit) |
-| `kin recent` | Recently active nodes |
+| `kin ask <question>` | Question classification + LLM or context answer |
 
 ### Knowledge Management
 | Command | Description |
 |---------|-------------|
 | `kin learn` | Extract knowledge from sessions and inbox |
 | `kin link <a> <b>` | Create weighted edge between nodes |
-| `kin ask <question>` | Query the graph (question classification + LLM) |
 | `kin alias <id> [add\|remove\|list]` | Manage AKA/synonyms for a node |
 | `kin register <id> <path>` | Associate a file path with a node |
 | `kin orphans` | Nodes with no connections |
 | `kin trail <id>` | Temporal history and provenance chain |
 | `kin decay` | Apply weight decay to stale nodes/edges |
+| `kin recent` | Recently active nodes |
 
 ### Graph Analytics
 | Command | Description |
 |---------|-------------|
 | `kin graph [mode]` | Dashboard: stats, centrality, communities, bridges, trailheads |
-| `kin suggest` | Review bridge opportunity suggestions (--accept, --reject) |
-| `kin skills [person]` | Show skill profile and expertise for a person |
+| `kin suggest` | Bridge opportunity suggestions (--accept, --reject) |
+| `kin skills [person]` | Skill profile and expertise for a person |
 | `kin embed` | Index all nodes for vector similarity search |
 
 ### Operational
@@ -166,82 +198,22 @@ Auto-selected via `--tokens` or set explicitly with `--level`.
 | `kin analytics` | Archive session analytics and activity heatmap |
 | `kin index` | Write .kin/index.json for git tracking |
 
-### Claude Code Integration
-| Command | Description |
-|---------|-------------|
-| `kin prime` | Generate context for SessionStart hook |
-| `kin compact-hook` | Pre-compact knowledge capture |
-| `kin setup-hooks` | Install Kindex hooks into Claude Code settings |
-| `kin setup-cron` | Install periodic maintenance (launchd/crontab) |
-
 ### Infrastructure
 | Command | Description |
 |---------|-------------|
 | `kin init` | Initialize data directory |
 | `kin config [show\|get\|set]` | View or edit configuration |
-| `kin migrate` | Import markdown topics into SQLite |
+| `kin setup-hooks` | Install lifecycle hooks into Claude Code |
+| `kin setup-cron` | Install periodic maintenance (launchd/crontab) |
 | `kin doctor` | Health check with graph enforcement (--fix) |
+| `kin migrate` | Import markdown topics into SQLite |
 | `kin budget` | LLM spend tracking |
 | `kin whoami` | Show current user identity |
-| `kin changelog` | Show what changed (--since, --days, --actor) |
-| `kin log` | Show recent activity log |
+| `kin changelog` | What changed (--since, --days, --actor) |
+| `kin log` | Recent activity log |
 | `kin git-hook [install\|uninstall]` | Manage git hooks in a repository |
-
-## External Integrations
-
-### GitHub
-Ingest issues, PRs, and commits via the `gh` CLI:
-```bash
-kin ingest github --repo owner/repo --since 2026-01-01
-```
-
-### Linear
-Ingest issues via GraphQL API (requires `LINEAR_API_KEY`):
-```bash
-kin ingest linear --team ENG
-```
-
-### Git Hooks
-Post-commit records commits, pre-push surfaces constraints:
-```bash
-kin git-hook install --repo-path /path/to/repo
-```
-
-### File Watching
-SHA-256 change detection for registered files:
-```bash
-kin register my-node ./src/main.py
-kin ingest files
-```
-
-## .kin Files
-
-Place a `.kin` file in any repo root to declare its context:
-
-```yaml
-name: my-project
-audience: team
-domains: [engineering, python]
-inherits:
-  - ../platform/.kin
-shared_with:
-  - team: engineering
-```
-
-Inheritance chains resolve depth-first. Local values override ancestors. Lists are concatenated with dedup. Parent directories are auto-walked when no explicit `inherits` is set.
-
-### Synonym Rings
-
-Place `.syn` files in `<data_dir>/synonyms/` to define equivalent terms:
-
-```yaml
-ring: database-terms
-synonyms:
-  - database
-  - db
-  - datastore
-  - persistence layer
-```
+| `kin prime` | Generate context for SessionStart hook |
+| `kin compact-hook` | Pre-compact knowledge capture |
 
 ## Configuration
 
@@ -249,16 +221,6 @@ Config is loaded from (first found):
 1. `.kin` in current directory
 2. `kin.yaml` in current directory
 3. `~/.config/kindex/kin.yaml`
-
-Or use `kin config` to read/write:
-
-```bash
-kin config show                    # show all
-kin config get llm.enabled         # read a value
-kin config set budget.daily 1.00   # write a value
-```
-
-Sample config (`kin.sample.yaml`):
 
 ```yaml
 data_dir: ~/.kindex
@@ -283,46 +245,11 @@ defaults:
   mode: bfs
 ```
 
-## Claude Code Integration
-
-One-time setup:
-```bash
-kin setup-hooks    # installs SessionStart + PreCompact hooks
-kin setup-cron     # installs 30-min maintenance cycle
-```
-
-Or add manually to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "kin context --level executive",
-        "timeout": 5000
-      }]
-    }],
-    "PreCompact": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "kin compact-hook --emit-context",
-        "timeout": 10000
-      }]
-    }]
-  }
-}
-```
-
 ## Development
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 348 tests
-make test-verbose # run tests with full output
-make lint         # check Python syntax
+make test         # run 373 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```
