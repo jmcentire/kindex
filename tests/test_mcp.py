@@ -5,6 +5,8 @@ import os
 
 import pytest
 
+mcp = pytest.importorskip("mcp", reason="mcp not installed")
+
 
 @pytest.fixture
 def mcp_store(tmp_path):
