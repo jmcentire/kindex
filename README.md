@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.4.0](https://img.shields.io/badge/version-0.4.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.4.1](https://img.shields.io/badge/version-0.4.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![Tests](https://img.shields.io/badge/tests-373%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
@@ -70,6 +70,37 @@ Constraints block deploys. Directives encode preferences. Watches flag attention
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
+
+## In Practice
+
+A 162-file fantasy novel vault — characters, locations, magic systems, plot outlines — ingested in one pass. Cross-referenced by content mentions. Searched in milliseconds.
+
+```
+$ kin status
+Nodes:     192
+Edges:     11,802
+Orphans:   3
+
+$ time kin search "the Baker"
+# Kindex: 10 results for "the Baker"
+
+## [document] The Baker - Hessa's Profile and Message Broker System (w=0.70)
+  → Thieves Guild, Five Marks, Thieves Guild Operations
+
+## [person] Mia and The Baker (Hessa) -- Relationship (w=0.70)
+  → Sebastian and Mia, Mia -- Motivations and Goals
+
+0.142 total
+
+$ kin graph stats
+Nodes:      192
+Edges:      11,802
+Density:    0.3218
+Components: 5
+Avg degree: 122.94
+```
+
+192 nodes. 11,802 edges. 5 context tiers. Hybrid FTS5 + graph traversal in 142ms.
 
 ## Quick Start
 

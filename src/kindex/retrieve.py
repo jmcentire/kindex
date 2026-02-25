@@ -13,6 +13,7 @@ Auto-selects based on estimated available token budget when level is not specifi
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,13 @@ TIER_BUDGETS = {
 }
 
 TIER_ORDER = ["full", "abridged", "summarized", "executive", "index"]
+
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n", re.DOTALL)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter (---...---) from content."""
+    return _FRONTMATTER_RE.sub("", text).lstrip()
 
 
 def _rrf_merge(*ranked_lists: list[tuple[str, float]], k: int = 60) -> list[tuple[str, float]]:
@@ -211,7 +219,7 @@ def _format_full(store: Store, results: list[dict], query: str) -> str:
     for r in results:
         title = r.get("title", r["id"])
         node_type = r.get("type", "concept")
-        content = (r.get("content") or "")[:600]
+        content = _strip_frontmatter(r.get("content") or "")[:600]
         weight = r.get("weight", 0)
         edges_out = r.get("edges_out", [])
 
@@ -244,7 +252,7 @@ def _format_full(store: Store, results: list[dict], query: str) -> str:
         for q in questions:
             lines.append(f"- {q['title']}")
             if q.get("content"):
-                lines.append(f"  Context: {q['content'][:200]}")
+                lines.append(f"  Context: {_strip_frontmatter(q['content'])[:200]}")
 
     # Recent decisions
     decisions = store.all_nodes(node_type="decision", limit=5)
@@ -254,7 +262,7 @@ def _format_full(store: Store, results: list[dict], query: str) -> str:
             when = d.get("prov_when", "")[:10]
             lines.append(f"- {when}: {d['title']}")
             if d.get("content"):
-                lines.append(f"  Rationale: {d['content'][:200]}")
+                lines.append(f"  Rationale: {_strip_frontmatter(d['content'])[:200]}")
 
     # Operational nodes
     _append_operational(store, lines, verbose=True)
@@ -281,7 +289,7 @@ def _format_abridged(store: Store, results: list[dict], query: str) -> str:
     for r in results:
         title = r.get("title", r["id"])
         node_type = r.get("type", "concept")
-        content_preview = (r.get("content") or "")[:200]
+        content_preview = _strip_frontmatter(r.get("content") or "")[:200]
         edges_out = r.get("edges_out", [])
         connected = ", ".join(e.get("to_title", e["to_id"]) for e in edges_out[:3])
 
@@ -340,7 +348,7 @@ def _format_summarized(store: Store, results: list[dict], query: str) -> str:
         # Build a synthesized sentence about this cluster
         summaries = []
         for n in nodes[:3]:
-            content = (n.get("content") or "")[:150]
+            content = _strip_frontmatter(n.get("content") or "")[:150]
             if content:
                 summaries.append(f"{n['title']}: {content}")
 
@@ -367,7 +375,7 @@ def _format_executive(store: Store, results: list[dict], query: str) -> str:
     summaries = []
     for r in results[:5]:
         title = r.get("title", r["id"])
-        content = (r.get("content") or "")[:80]
+        content = _strip_frontmatter(r.get("content") or "")[:80]
         if content:
             summaries.append(f"{title} — {content}")
         else:
