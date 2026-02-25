@@ -603,6 +603,41 @@ class Store:
         rows = self.conn.execute(q, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def get_session_tags(
+        self,
+        status: str | None = None,
+        project_path: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Query session-tag nodes with optional status and project_path filters."""
+        q = "SELECT * FROM nodes WHERE type = 'session' AND extra LIKE ?"
+        params: list = ['%"session_status"%']
+        if project_path:
+            q += " AND extra LIKE ?"
+            params.append(f'%"project_path"%"{project_path}"%')
+        q += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(q, params).fetchall()
+        results = [self._row_to_dict(r) for r in rows]
+        if status:
+            results = [
+                r for r in results
+                if (r.get("extra") or {}).get("session_status") == status
+            ]
+        return results
+
+    def get_session_tag_by_name(self, tag_name: str) -> dict | None:
+        """Find a session tag by its tag name in extra JSON."""
+        rows = self.conn.execute(
+            "SELECT * FROM nodes WHERE type = 'session' AND extra LIKE ?",
+            (f'%"tag"%"{tag_name}"%',),
+        ).fetchall()
+        for r in rows:
+            d = self._row_to_dict(r)
+            if (d.get("extra") or {}).get("tag") == tag_name:
+                return d
+        return self.get_node_by_title(tag_name)
+
     def active_watches(self) -> list[dict]:
         """Get all active watches that haven't expired."""
         now = _now()[:10]  # YYYY-MM-DD

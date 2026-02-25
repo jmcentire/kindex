@@ -2407,6 +2407,210 @@ def _now_short() -> str:
     return _dt.datetime.now(tz=None).strftime("%H:%M:%S")
 
 
+# ── session tags ──────────────────────────────────────────────────────
+
+
+def cmd_tag(args):
+    """Session tag management — named work context handles."""
+    store = _store(args)
+    action = getattr(args, "tag_action", None)
+    tag_name = getattr(args, "tag_name", None)
+
+    if action == "start":
+        from .sessions import start_tag
+
+        if not tag_name:
+            print("Usage: kin tag start <name>", file=sys.stderr)
+            store.close()
+            return
+        remaining = []
+        raw = getattr(args, "remaining", None)
+        if raw:
+            remaining = [r.strip() for r in raw.split(",") if r.strip()]
+        try:
+            nid = start_tag(
+                store,
+                tag_name,
+                description=getattr(args, "description", "") or "",
+                focus=getattr(args, "focus", "") or "",
+                remaining=remaining,
+                project_path=os.getcwd(),
+            )
+            print(f"Started session tag: {tag_name} ({nid})")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "update":
+        from .sessions import get_active_tag, update_tag
+
+        if not tag_name:
+            active = get_active_tag(store, project_path=os.getcwd())
+            if active:
+                tag_name = (active.get("extra") or {}).get("tag", active["title"])
+            else:
+                print("No active session tag. Use: kin tag start <name>", file=sys.stderr)
+                store.close()
+                return
+        remaining = None
+        raw = getattr(args, "remaining", None)
+        if raw:
+            remaining = [r.strip() for r in raw.split(",") if r.strip()]
+        append = None
+        raw_add = getattr(args, "add_remaining", None)
+        if raw_add:
+            append = [r.strip() for r in raw_add.split(",") if r.strip()]
+        remove = None
+        raw_done = getattr(args, "done", None)
+        if raw_done:
+            remove = [r.strip() for r in raw_done.split(",") if r.strip()]
+        try:
+            update_tag(
+                store,
+                tag_name,
+                focus=getattr(args, "focus", None),
+                description=getattr(args, "description", None),
+                remaining=remaining,
+                append_remaining=append,
+                remove_remaining=remove,
+            )
+            print(f"Updated: {tag_name}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "segment":
+        from .sessions import add_segment, get_active_tag
+
+        if not tag_name:
+            active = get_active_tag(store, project_path=os.getcwd())
+            if active:
+                tag_name = (active.get("extra") or {}).get("tag", active["title"])
+        if not tag_name:
+            print("No active session tag.", file=sys.stderr)
+            store.close()
+            return
+        focus = getattr(args, "focus", None) or "New segment"
+        summary = getattr(args, "summary", None) or ""
+        try:
+            add_segment(store, tag_name, new_focus=focus, summary=summary)
+            print(f"New segment on {tag_name}: {focus}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "pause":
+        from .sessions import get_active_tag, pause_tag
+
+        if not tag_name:
+            active = get_active_tag(store, project_path=os.getcwd())
+            if active:
+                tag_name = (active.get("extra") or {}).get("tag", active["title"])
+        if not tag_name:
+            print("No active session tag.", file=sys.stderr)
+            store.close()
+            return
+        summary = getattr(args, "summary", None) or ""
+        try:
+            pause_tag(store, tag_name, summary=summary)
+            print(f"Paused: {tag_name}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "end":
+        from .sessions import complete_tag, get_active_tag
+
+        if not tag_name:
+            active = get_active_tag(store, project_path=os.getcwd())
+            if active:
+                tag_name = (active.get("extra") or {}).get("tag", active["title"])
+        if not tag_name:
+            print("No active session tag.", file=sys.stderr)
+            store.close()
+            return
+        summary = getattr(args, "summary", None) or ""
+        try:
+            complete_tag(store, tag_name, summary=summary)
+            print(f"Completed: {tag_name}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "resume":
+        from .sessions import format_resume_context
+
+        if not tag_name:
+            print("Usage: kin tag resume <name>", file=sys.stderr)
+            store.close()
+            return
+        tokens = getattr(args, "tokens", 1500) or 1500
+        block = format_resume_context(store, tag_name, max_tokens=tokens)
+        print(block)
+
+    elif action == "list":
+        from .sessions import list_tags
+
+        status = getattr(args, "status", None)
+        project = os.getcwd() if getattr(args, "project", False) else None
+        tags = list_tags(store, status=status, project_path=project)
+        if not tags:
+            print("No session tags found.")
+        else:
+            for t in tags:
+                extra = t.get("extra") or {}
+                tname = extra.get("tag", t["title"])
+                tstatus = extra.get("session_status", "?")
+                tfocus = extra.get("current_focus", "")[:50]
+                seg_count = len(extra.get("segments", []))
+                updated = (t.get("updated_at") or "")[:16]
+                print(f"  [{tstatus:9s}] {tname:25s} {tfocus:50s} ({seg_count} seg) {updated}")
+
+    elif action == "show":
+        from .sessions import get_tag
+
+        if not tag_name:
+            print("Usage: kin tag show <name>", file=sys.stderr)
+            store.close()
+            return
+        tag = get_tag(store, tag_name)
+        if not tag:
+            print(f"Tag not found: {tag_name}", file=sys.stderr)
+            store.close()
+            return
+        extra = tag.get("extra") or {}
+        print(f"Tag: {extra.get('tag', tag['title'])}")
+        print(f"Status: {extra.get('session_status', '?')}")
+        print(f"Project: {extra.get('project_path', '')}")
+        print(f"Focus: {extra.get('current_focus', '')}")
+        print(f"Started: {extra.get('started_at', '')}")
+        if extra.get("paused_at"):
+            print(f"Paused: {extra['paused_at']}")
+        if extra.get("completed_at"):
+            print(f"Completed: {extra['completed_at']}")
+        if tag.get("content"):
+            print(f"Description: {tag['content']}")
+        remaining = extra.get("remaining", [])
+        if remaining:
+            print(f"Remaining ({len(remaining)}):")
+            for item in remaining:
+                print(f"  - {item}")
+        segments = extra.get("segments", [])
+        if segments:
+            print(f"Segments ({len(segments)}):")
+            for seg in segments:
+                state = "active" if not seg.get("ended_at") else "done"
+                print(f"  [{state}] {seg.get('focus', '')}")
+                if seg.get("summary"):
+                    print(f"         {seg['summary'][:100]}")
+                if seg.get("decisions"):
+                    print(f"         Decisions: {', '.join(seg['decisions'][:3])}")
+        linked = extra.get("linked_nodes", [])
+        if linked:
+            print(f"Linked nodes ({len(linked)}):")
+            for nid in linked[:10]:
+                node = store.get_node(nid)
+                if node:
+                    print(f"  - {node['title']} ({node['type']})")
+
+    store.close()
+
+
 # ── setup ─────────────────────────────────────────────────────────────
 
 def cmd_setup_hooks(args):
@@ -2988,6 +3192,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--verbose", "-v", action="store_true", help="Detailed logging")
     _common(s)
     s.set_defaults(func=cmd_watch)
+
+    # tag (session tags)
+    s = sub.add_parser("tag", help="Session tag management (start, update, resume, etc.)")
+    s.add_argument("tag_action",
+                   choices=["start", "update", "segment", "pause", "end",
+                            "resume", "list", "show"],
+                   help="Tag action")
+    s.add_argument("tag_name", nargs="?", help="Tag name (auto-detects active for update/pause/end)")
+    s.add_argument("--focus", help="Current focus / new segment focus")
+    s.add_argument("--description", help="Session description")
+    s.add_argument("--summary", help="Summary (for segment/pause/end)")
+    s.add_argument("--remaining", help="Comma-separated remaining items")
+    s.add_argument("--add-remaining", help="Add items to remaining list (comma-separated)")
+    s.add_argument("--done", help="Mark items as done / remove from remaining (comma-separated)")
+    s.add_argument("--status", help="Filter by status (for list: active/paused/completed)")
+    s.add_argument("--project", action="store_true", help="Filter by current project (for list)")
+    s.add_argument("--tokens", type=int, default=1500, help="Token budget for resume context")
+    _common(s)
+    s.set_defaults(func=cmd_tag)
 
     return p
 

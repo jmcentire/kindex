@@ -672,6 +672,112 @@ def orient() -> str:
     return "\n".join(lines)
 
 
+# ── Session tags ──────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def tag_start(name: str, description: str = "", focus: str = "",
+              remaining: str = "") -> str:
+    """Start a new session tag for tracking work context.
+
+    Args:
+        name: Human-readable tag name (e.g. 'auth-refactor').
+        description: What this session is about.
+        focus: Current focus area.
+        remaining: Comma-separated list of remaining items.
+    """
+    store, _ = _get_store()
+    from .sessions import start_tag
+    import os
+    remaining_list = [r.strip() for r in remaining.split(",") if r.strip()] if remaining else []
+    try:
+        nid = start_tag(store, name, description=description, focus=focus,
+                        remaining=remaining_list, project_path=os.getcwd())
+        return f"Started session tag: {name} ({nid})"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def tag_update(name: str = "", focus: str = "", description: str = "",
+               remaining: str = "", add_remaining: str = "",
+               done: str = "", summary: str = "",
+               action: str = "update") -> str:
+    """Update, segment, pause, or end a session tag.
+
+    Args:
+        name: Tag name (auto-detects active tag if empty).
+        focus: New focus area (used for update and segment actions).
+        description: Updated description.
+        remaining: Replace remaining items (comma-separated).
+        add_remaining: Add items to remaining (comma-separated).
+        done: Remove items from remaining (comma-separated).
+        summary: Summary for segment/pause/end actions.
+        action: One of: update, segment, pause, end.
+    """
+    store, _ = _get_store()
+    from .sessions import (update_tag, add_segment, pause_tag,
+                           complete_tag, get_active_tag, get_tag)
+    import os
+
+    if not name:
+        active = get_active_tag(store, project_path=os.getcwd())
+        if not active:
+            return "No active session tag found. Start one with tag_start."
+        name = (active.get("extra") or {}).get("tag", active["title"])
+
+    try:
+        if action == "update":
+            update_tag(
+                store, name,
+                focus=focus or None,
+                description=description or None,
+                remaining=[r.strip() for r in remaining.split(",") if r.strip()] if remaining else None,
+                append_remaining=[r.strip() for r in add_remaining.split(",") if r.strip()] if add_remaining else None,
+                remove_remaining=[r.strip() for r in done.split(",") if r.strip()] if done else None,
+            )
+            return f"Updated tag: {name}"
+        elif action == "segment":
+            add_segment(store, name, new_focus=focus or "New segment", summary=summary)
+            return f"New segment on {name}: {focus}"
+        elif action == "pause":
+            pause_tag(store, name, summary=summary)
+            return f"Paused: {name}"
+        elif action == "end":
+            complete_tag(store, name, summary=summary)
+            return f"Completed: {name}"
+        return f"Unknown action: {action}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def tag_resume(name: str = "", tokens: int = 1500) -> str:
+    """Resume a session tag — get full context for continuing work.
+
+    Args:
+        name: Tag name to resume (shows active/paused tags if empty).
+        tokens: Token budget for context block.
+    """
+    store, _ = _get_store()
+    from .sessions import format_resume_context, list_tags
+
+    if not name:
+        tags = list_tags(store, status="active", limit=5)
+        tags += list_tags(store, status="paused", limit=5)
+        if not tags:
+            return "No active or paused session tags."
+        lines = ["Available session tags:\n"]
+        for t in tags:
+            extra = t.get("extra") or {}
+            lines.append(f"  [{extra.get('session_status', '?')}] "
+                         f"{extra.get('tag', t['title'])}: "
+                         f"{extra.get('current_focus', '')[:60]}")
+        return "\n".join(lines)
+
+    return format_resume_context(store, name, max_tokens=tokens)
+
+
 # ── Entry point ───────────────────────────────────────────────────────
 
 

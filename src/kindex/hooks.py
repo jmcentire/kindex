@@ -135,6 +135,34 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750)
             lines.append(f"  - {n}")
         lines.append("")
 
+    # -- Active session tag --
+    try:
+        from .sessions import get_active_tag
+        import os
+
+        active_tag = get_active_tag(store, project_path=os.getcwd())
+        if active_tag:
+            extra = active_tag.get("extra") or {}
+            tag_name = extra.get("tag", active_tag["title"])
+            focus = extra.get("current_focus", "")
+            remaining = extra.get("remaining", [])
+            segments = extra.get("segments", [])
+
+            lines.append(f"### Active session: {tag_name}")
+            if focus:
+                lines.append(f"**Focus:** {focus}")
+            if remaining:
+                lines.append(f"**Remaining:** {', '.join(remaining[:5])}")
+            if segments:
+                past = [s for s in segments if s.get("ended_at")]
+                if past:
+                    lines.append(f"**Previous segments:** {len(past)}")
+                    for seg in past[-2:]:
+                        lines.append(f"  - {seg['focus']}: {seg.get('summary', '')[:80]}")
+            lines.append("")
+    except Exception:
+        pass  # Don't break priming if sessions module has issues
+
     return "\n".join(lines) + "\n"
 
 
@@ -233,6 +261,20 @@ def capture_session_end(
         for i in range(len(created_ids) - 1):
             store.add_edge(created_ids[i], created_ids[i + 1],
                            provenance="co-created-session-end")
+
+    # Link captured nodes to active session tag
+    if created_ids:
+        try:
+            from .sessions import get_active_tag, link_node_to_tag
+            import os
+
+            active_tag = get_active_tag(store, project_path=os.getcwd())
+            if active_tag:
+                tag_name = (active_tag.get("extra") or {}).get("tag", active_tag["title"])
+                for nid in created_ids:
+                    link_node_to_tag(store, tag_name, nid)
+        except Exception:
+            pass  # Don't break session end capture
 
     return count
 

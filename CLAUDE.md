@@ -28,6 +28,7 @@ pytest tests/ --cov=kindex --cov-report=term-missing
 | `src/kindex/retrieve.py` | Hybrid search (FTS5 + graph BFS + RRF merge) |
 | `src/kindex/extract.py` | Knowledge extraction from text and sessions |
 | `src/kindex/ingest.py` | Project and session ingestion pipeline |
+| `src/kindex/sessions.py` | Session tag lifecycle (start, update, segment, resume) |
 | `src/kindex/hooks.py` | Claude Code hook handlers (prime, compact) |
 | `src/kindex/setup.py` | System setup (Claude hooks, launchd, crontab) |
 | `src/kindex/daemon.py` | Background daemon and cron cycle |
@@ -52,6 +53,7 @@ When working in this codebase, follow these practices:
 - **Flag attention items**: Use `kin add "<item>" --type watch --owner <person> --expires <date>` for things that need monitoring.
 - **Search before adding**: Use `kin search <term>` to check if knowledge already exists before duplicating.
 - **Check status**: Use `kin status` to see graph health and active operational nodes.
+- **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update --focus "..."` or `kin tag segment --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end --summary "..."`. See `kin tag list` for all tags.
 
 ## Auto-Context Loading
 
