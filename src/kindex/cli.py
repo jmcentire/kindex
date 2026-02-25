@@ -2399,8 +2399,11 @@ def cmd_config(args):
         if not args.key or args.value is None:
             print("Error: kin config set <key> <value>", file=sys.stderr)
             sys.exit(1)
-        _config_write(args.key, args.value, getattr(args, "config", None))
-        print(f"Set {args.key} = {args.value}")
+        is_global = getattr(args, "global_", False)
+        _config_write(args.key, args.value, getattr(args, "config", None),
+                      global_=is_global)
+        scope = "global" if is_global else "local"
+        print(f"Set {args.key} = {args.value} ({scope})")
         return
 
     # Default: show
@@ -2452,23 +2455,45 @@ def _coerce_value(value: str):
     return value
 
 
-def _config_write(key: str, value: str, config_path: str | None = None) -> None:
-    """Write a config value to the config file."""
+def _config_write(key: str, value: str, config_path: str | None = None,
+                   global_: bool = False) -> None:
+    """Write a config value to the appropriate config file.
+
+    Resolution (like git config):
+    - --config <path>:  explicit file
+    - --global:         user-level (~/.config/kindex/kin.yaml)
+    - default:          local file if one exists in cwd, else global
+    """
     import yaml
 
-    # Find existing config file or create one
     if config_path:
         path = Path(config_path).expanduser().resolve()
-    else:
-        from .config import _SEARCH_PATHS
+    elif global_:
+        from .config import _GLOBAL_PATHS
         path = None
-        for p in _SEARCH_PATHS:
+        for p in _GLOBAL_PATHS:
             p = p.expanduser().resolve()
             if p.exists():
                 path = p
                 break
         if path is None:
-            # Create default config location
+            path = Path.home() / ".config" / "kindex" / "kin.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        from .config import _LOCAL_PATHS, _GLOBAL_PATHS
+        path = None
+        for p in _LOCAL_PATHS:
+            p = p.expanduser().resolve()
+            if p.exists():
+                path = p
+                break
+        if path is None:
+            for p in _GLOBAL_PATHS:
+                p = p.expanduser().resolve()
+                if p.exists():
+                    path = p
+                    break
+        if path is None:
             path = Path.home() / ".config" / "kindex" / "kin.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2774,6 +2799,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Action: show, get <key>, set <key> <value>")
     s.add_argument("key", nargs="?", help="Config key (dot-separated: llm.enabled)")
     s.add_argument("value", nargs="?", help="Value to set")
+    s.add_argument("--global", dest="global_", action="store_true",
+                   help="Write to global config (~/.config/kindex/kin.yaml)")
     _common(s)
     s.set_defaults(func=cmd_config)
 

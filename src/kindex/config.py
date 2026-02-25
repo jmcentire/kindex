@@ -10,13 +10,19 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-_SEARCH_PATHS = [
-    Path(".kin"),                                      # cwd (repo-local)
-    Path("kin.yaml"),                                  # cwd (explicit)
-    Path("conv.yaml"),                                 # legacy
+# Config layers, loaded bottom-up and merged (like git config).
+# Global (user-level) is loaded first, then local (project-level) overrides.
+_GLOBAL_PATHS = [
     Path.home() / ".config" / "kindex" / "kin.yaml",  # XDG-ish
     Path.home() / ".config" / "conv" / "conv.yaml",   # legacy
 ]
+_LOCAL_PATHS = [
+    Path(".kin"),                                      # cwd (repo-local)
+    Path("kin.yaml"),                                  # cwd (explicit)
+    Path("conv.yaml"),                                 # legacy
+]
+# Flat list for backward compat (used by config set to find first existing)
+_SEARCH_PATHS = _LOCAL_PATHS + _GLOBAL_PATHS
 
 
 class LLMConfig(BaseModel):
@@ -104,14 +110,46 @@ def _detect_user() -> str:
     return os.environ.get("USER", os.environ.get("USERNAME", "unknown"))
 
 
-def load_config(config_path: str | Path | None = None) -> Config:
-    """Load config from explicit path, or search standard locations."""
-    paths = [Path(config_path)] if config_path else _SEARCH_PATHS
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base (override wins)."""
+    merged = dict(base)
+    for key, val in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge(merged[key], val)
+        else:
+            merged[key] = val
+    return merged
 
-    for p in paths:
-        p = p.expanduser().resolve()
+
+def load_config(config_path: str | Path | None = None) -> Config:
+    """Load config with layered merging: code defaults → global → local.
+
+    Like git config: global (~/.config/kindex/kin.yaml) is loaded first,
+    then local (.kin / kin.yaml / conv.yaml in cwd) merges over it.
+    An explicit config_path bypasses layering and loads only that file.
+    """
+    if config_path:
+        p = Path(config_path).expanduser().resolve()
         if p.exists():
             data = yaml.safe_load(p.read_text()) or {}
             return Config(**data)
+        return Config()
 
-    return Config()
+    # Layer 1: global config (user-level)
+    merged: dict = {}
+    for p in _GLOBAL_PATHS:
+        p = p.expanduser().resolve()
+        if p.exists():
+            data = yaml.safe_load(p.read_text()) or {}
+            merged = _deep_merge(merged, data)
+            break  # use first global found
+
+    # Layer 2: local config (project-level) merges over global
+    for p in _LOCAL_PATHS:
+        p = p.expanduser().resolve()
+        if p.exists():
+            data = yaml.safe_load(p.read_text()) or {}
+            merged = _deep_merge(merged, data)
+            break  # use first local found
+
+    return Config(**merged) if merged else Config()
