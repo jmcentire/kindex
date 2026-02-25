@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kindex — The memory layer Claude Code doesn't have</title>
-<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. Free Claude Code plugin with 12 MCP tools, 42 CLI commands, and five context tiers.">
+<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. Free Claude Code plugin with 13 MCP tools, 42 CLI commands, and cache-optimized LLM retrieval.">
 <style>
   :root {
     --bg: #0d1117;
@@ -294,6 +294,10 @@
         <p>Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.</p>
       </div>
       <div class="card">
+        <h3>Cache-Optimized LLM Retrieval</h3>
+        <p>Three-tier prompt architecture with Anthropic prompt caching. Stable knowledge cached at 10% cost. Query-relevant context predicted via graph expansion. Only the question pays full price. Transparent &mdash; <code>kin ask</code> just works better and cheaper.</p>
+      </div>
+      <div class="card">
         <h3>Team &amp; Org Ready</h3>
         <p><code>.kin</code> inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export.</p>
       </div>
@@ -341,7 +345,7 @@
 <section>
   <div class="container">
     <h2>Install as Claude Code Plugin</h2>
-    <p>Two commands. Zero configuration. Claude gets 12 native tools for your knowledge graph.</p>
+    <p>Two commands. Zero configuration. Claude gets 13 native tools for your knowledge graph.</p>
     <div class="terminal mono">
 <span class="comment"># Install and register (one time)</span>
 <span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
@@ -361,6 +365,7 @@
 <span class="output">  suggest     &mdash; bridge opportunity suggestions</span>
 <span class="output">  graph_stats &mdash; centrality, communities, density</span>
 <span class="output">  changelog   &mdash; recent changes</span>
+<span class="output">  ingest      &mdash; ingest from external sources</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
@@ -429,9 +434,15 @@
   (vectors) ──┘                   |
                           <span class="green">full | abridged | summarized | executive | index</span>
 
-<span class="green">Two integration paths:</span>
+<span class="green">LLM cache tiers</span> (kin ask):
+  Tier 1: codebook (stable node index)     <span class="highlight">cached @ 10% cost</span>
+  Tier 2: query-relevant context           <span class="highlight">cached per-topic @ 10% cost</span>
+  Tier 3: user question                    full price, tiny
+
+<span class="green">Three integration paths:</span>
   MCP plugin ──&gt; Claude calls tools natively (search, add, learn, ...)
-  CLI hooks  ──&gt; SessionStart/PreCompact/Stop lifecycle events</div>
+  CLI hooks  ──&gt; SessionStart/PreCompact/Stop lifecycle events
+  Adapters   ──&gt; Entry-point discovery for custom ingestion sources</div>
 
     <h3 style="margin-top: 24px;">Node Types</h3>
     <p><strong>Knowledge:</strong> concept, document, session, person, project, decision, question, artifact, skill</p>
@@ -596,7 +607,7 @@ inherits:
         <tr><td><code>kin changelog</code></td><td>What changed (--since, --days, --actor)</td></tr>
         <tr><td><code>kin log</code></td><td>Recent activity log</td></tr>
         <tr><td><code>kin git-hook</code></td><td>Install/uninstall git hooks in a repository</td></tr>
-        <tr><td><code>kin prime</code></td><td>Generate context for SessionStart hook</td></tr>
+        <tr><td><code>kin prime</code></td><td>Generate context for SessionStart hook (--codebook)</td></tr>
         <tr><td><code>kin compact-hook</code></td><td>Pre-compact knowledge capture</td></tr>
       </table>
     </div>
