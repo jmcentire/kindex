@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kindex — Knowledge index that learns from your conversations</title>
+<meta name="description" content="A persistent knowledge graph for AI-assisted workflows. 42 CLI commands, hybrid search, context tiers, and Claude Code integration.">
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --accent4: #f0883e;
+    --code-bg: #0d1117;
+    --max-w: 960px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .container { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+  code, .mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 80px 0 60px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hero h1 {
+    font-size: 3rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .tagline {
+    font-size: 1.25rem;
+    color: var(--text-dim);
+    margin-bottom: 32px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .hero .install-box {
+    display: inline-block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 1rem;
+  }
+  .hero .install-box code { color: var(--accent2); }
+  .hero .install-box .prompt { color: var(--text-dim); }
+  .badges {
+    margin-top: 20px;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .badge.green { border-color: var(--accent2); color: var(--accent2); }
+  .badge.blue { border-color: var(--accent); color: var(--accent); }
+  .badge.purple { border-color: var(--accent3); color: var(--accent3); }
+
+  /* Sections */
+  section {
+    padding: 60px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  section:last-of-type { border-bottom: none; }
+  section h2 {
+    font-size: 1.75rem;
+    margin-bottom: 24px;
+    font-weight: 600;
+  }
+  section h3 {
+    font-size: 1.1rem;
+    margin-bottom: 12px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* Feature cards */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-top: 24px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card h3 { margin-bottom: 8px; }
+  .card p { color: var(--text-dim); font-size: 0.9rem; }
+  .card .icon { font-size: 1.5rem; margin-bottom: 8px; display: block; }
+
+  /* Terminal */
+  .terminal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    overflow-x: auto;
+    font-size: 0.875rem;
+    line-height: 1.7;
+    margin-top: 16px;
+  }
+  .terminal .comment { color: var(--text-dim); }
+  .terminal .cmd { color: var(--accent2); }
+  .terminal .prompt { color: var(--text-dim); }
+  .terminal .output { color: var(--text); }
+  .terminal .flag { color: var(--accent3); }
+
+  /* Architecture */
+  .arch-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-dim);
+    margin-top: 16px;
+  }
+  .arch-diagram .highlight { color: var(--accent); }
+  .arch-diagram .green { color: var(--accent2); }
+
+  /* Tables */
+  .cmd-group { margin-bottom: 32px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+    margin-top: 8px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  td {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  td code {
+    color: var(--accent2);
+    font-size: 0.85rem;
+  }
+
+  /* Integration */
+  .integration-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    font-size: 0.85rem;
+    overflow-x: auto;
+    margin-top: 16px;
+    white-space: pre;
+    color: var(--text);
+  }
+
+  /* Footer */
+  footer {
+    padding: 40px 0;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+  }
+  footer a { color: var(--accent); }
+
+  /* Tiers table */
+  .tiers { margin-top: 16px; }
+  .tiers td:nth-child(2) { font-family: 'SF Mono', monospace; color: var(--accent3); font-size: 0.85rem; }
+
+  /* Responsive */
+  @media (max-width: 600px) {
+    .hero h1 { font-size: 2rem; }
+    .hero .tagline { font-size: 1rem; }
+    .features { grid-template-columns: 1fr; }
+    section { padding: 40px 0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+  <div class="container">
+    <h1><span>kin</span>dex</h1>
+    <p class="tagline">
+      A persistent knowledge graph for AI-assisted workflows.
+      Your AI coding assistant never starts a session blind.
+    </p>
+    <div class="install-box mono">
+      <span class="prompt">$</span> <code>pip install kindex</code>
+    </div>
+    <div class="badges">
+      <span class="badge green">v0.3.0</span>
+      <span class="badge blue">Python 3.10+</span>
+      <span class="badge purple">MIT License</span>
+      <span class="badge">42 CLI commands</span>
+      <span class="badge">348 tests</span>
+    </div>
+  </div>
+</div>
+
+<!-- Features -->
+<section>
+  <div class="container">
+    <h2>What It Does</h2>
+    <p>Kindex maintains a graph of <strong>nodes</strong> (concepts, decisions, skills, projects, sessions) connected by <strong>weighted edges</strong>. It provides:</p>
+    <div class="features">
+      <div class="card">
+        <span class="icon">&#x1F50D;</span>
+        <h3>Hybrid Search</h3>
+        <p>FTS5 full-text + graph traversal, merged via Reciprocal Rank Fusion. Question classification adjusts result depth automatically.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1F4CA;</span>
+        <h3>Context Tiers</h3>
+        <p>Five levels &mdash; full, abridged, summarized, executive, index &mdash; auto-selected by token budget for optimal AI injection.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x26A0;</span>
+        <h3>Operational Nodes</h3>
+        <p>Constraints, directives, checkpoints, and watches that surface at the right time. Pre-deploy checklists built into your graph.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1F504;</span>
+        <h3>Session Learning</h3>
+        <p>Ingests Claude Code sessions, GitHub issues, git commits, and Linear tickets. LLM-powered extraction with budget controls.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1F512;</span>
+        <h3>Audience Tenancy</h3>
+        <p>Private, team, org, and public scoping. PII stripping on export. Audience-aware boundary enforcement.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1F517;</span>
+        <h3>.kin Inheritance</h3>
+        <p>Composable context chains across repos and teams. Depth-first resolution with parent directory auto-walk.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1F9E0;</span>
+        <h3>Bridge Discovery</h3>
+        <p>Finds cross-domain connections you didn't manually encode. Suggests edges, detects analogies, tracks expertise.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x23F0;</span>
+        <h3>Weight Decay</h3>
+        <p>Nodes and edges naturally fade unless accessed. The graph stays fresh without manual curation.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Quick Start -->
+<section>
+  <div class="container">
+    <h2>Quick Start</h2>
+    <div class="terminal mono">
+<span class="comment"># Initialize a knowledge store</span>
+<span class="prompt">$</span> <span class="cmd">kin init</span>
+
+<span class="comment"># Add knowledge</span>
+<span class="prompt">$</span> <span class="cmd">kin add</span> "Stigmergy is coordination through environmental traces"
+<span class="output">Created node: stigmergy-is-coordination-th (concept)</span>
+
+<span class="comment"># Search with hybrid FTS5 + graph traversal</span>
+<span class="prompt">$</span> <span class="cmd">kin search</span> stigmergy
+<span class="output">  0.85  stigmergy-is-coordination-th  concept  Stigmergy is coordination...</span>
+
+<span class="comment"># Get context for Claude Code injection</span>
+<span class="prompt">$</span> <span class="cmd">kin context</span> <span class="flag">--topic</span> stigmergy <span class="flag">--level</span> full
+
+<span class="comment"># Track operational rules</span>
+<span class="prompt">$</span> <span class="cmd">kin add</span> "Never break the API contract" <span class="flag">--type</span> constraint <span class="flag">--trigger</span> pre-deploy
+
+<span class="comment"># Ingest from all sources</span>
+<span class="prompt">$</span> <span class="cmd">kin ingest</span> all
+
+<span class="comment"># Install Claude Code hooks (one-time setup)</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-cron</span>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section>
+  <div class="container">
+    <h2>Architecture</h2>
+    <div class="arch-diagram mono"><span class="highlight">SQLite + FTS5</span>              primary store and full-text search
+  nodes: id, title, content, type, weight, audience, domains, extra
+  edges: from_id, to_id, type, weight, provenance
+  fts5:  content synced via triggers
+
+<span class="green">Retrieval pipeline:</span>
+  FTS5 BM25 ──┐
+  Graph BFS ──┼── <span class="highlight">RRF merge</span> ── tier formatter ── context block
+  (vectors) ──┘                   |
+                          <span class="green">full | abridged | summarized | executive | index</span>
+
+<span class="green">Feedback loop:</span>
+  SessionStart ──&gt; <span class="highlight">kin prime</span> ──&gt; context injected
+  PreCompact  ──&gt; <span class="highlight">kin compact-hook</span> ──&gt; knowledge captured
+  Cron (30min) ──&gt; <span class="highlight">kin cron</span> ──&gt; decay, ingest, health checks</div>
+
+    <h3 style="margin-top: 24px;">Context Tiers</h3>
+    <table class="tiers">
+      <tr><th>Tier</th><th>Budget</th><th>Use Case</th></tr>
+      <tr><td>full</td><td>~4000 tokens</td><td>Session start, deep work</td></tr>
+      <tr><td>abridged</td><td>~1500 tokens</td><td>Mid-session reference</td></tr>
+      <tr><td>summarized</td><td>~750 tokens</td><td>Quick orientation</td></tr>
+      <tr><td>executive</td><td>~200 tokens</td><td>Post-compaction re-injection</td></tr>
+      <tr><td>index</td><td>~100 tokens</td><td>Existence check only</td></tr>
+    </table>
+
+    <h3 style="margin-top: 24px;">Node Types</h3>
+    <p><strong>Knowledge:</strong> concept, document, session, person, project, decision, question, artifact, skill</p>
+    <p><strong>Operational:</strong> constraint, directive, checkpoint, watch</p>
+  </div>
+</section>
+
+<!-- CLI Reference -->
+<section>
+  <div class="container">
+    <h2>CLI Reference</h2>
+    <p style="color: var(--text-dim); margin-bottom: 24px;">42 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, and <code>--json</code> flags.</p>
+
+    <div class="cmd-group">
+      <h3>Core</h3>
+      <table>
+        <tr><td><code>kin search &lt;query&gt;</code></td><td>Hybrid FTS5 + graph search with RRF merging</td></tr>
+        <tr><td><code>kin context</code></td><td>Formatted context block for AI injection (--level, --tokens)</td></tr>
+        <tr><td><code>kin add &lt;text&gt;</code></td><td>Quick capture with auto-extraction and linking</td></tr>
+        <tr><td><code>kin show &lt;id&gt;</code></td><td>Full node details with edges, provenance, and state</td></tr>
+        <tr><td><code>kin list</code></td><td>List nodes (--type, --status, --mine, --limit)</td></tr>
+        <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Knowledge Management</h3>
+      <table>
+        <tr><td><code>kin learn</code></td><td>Extract knowledge from sessions and inbox items</td></tr>
+        <tr><td><code>kin link &lt;a&gt; &lt;b&gt;</code></td><td>Create weighted edge between nodes</td></tr>
+        <tr><td><code>kin ask &lt;question&gt;</code></td><td>Query the graph (question classification + LLM)</td></tr>
+        <tr><td><code>kin alias &lt;id&gt;</code></td><td>Manage AKA/synonyms for a node</td></tr>
+        <tr><td><code>kin register &lt;id&gt; &lt;path&gt;</code></td><td>Associate a file path with a node</td></tr>
+        <tr><td><code>kin orphans</code></td><td>Nodes with no connections</td></tr>
+        <tr><td><code>kin trail &lt;id&gt;</code></td><td>Temporal history and provenance chain</td></tr>
+        <tr><td><code>kin decay</code></td><td>Apply weight decay to stale nodes/edges</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Graph Analytics</h3>
+      <table>
+        <tr><td><code>kin graph [mode]</code></td><td>Analytics dashboard (stats, centrality, communities, bridges)</td></tr>
+        <tr><td><code>kin suggest</code></td><td>Review bridge opportunity suggestions (--accept, --reject)</td></tr>
+        <tr><td><code>kin skills [person]</code></td><td>Show skill profile and expertise for a person</td></tr>
+        <tr><td><code>kin embed</code></td><td>Index all nodes for vector similarity search</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Operational</h3>
+      <table>
+        <tr><td><code>kin status</code></td><td>Graph health + operational summary (--trigger, --owner)</td></tr>
+        <tr><td><code>kin set-audience &lt;id&gt;</code></td><td>Set privacy scope (private/team/org/public)</td></tr>
+        <tr><td><code>kin set-state &lt;id&gt; &lt;k&gt; &lt;v&gt;</code></td><td>Set mutable state on directives/watches</td></tr>
+        <tr><td><code>kin export</code></td><td>Audience-aware graph export with PII stripping</td></tr>
+        <tr><td><code>kin import &lt;file&gt;</code></td><td>Import nodes/edges from JSON/JSONL</td></tr>
+        <tr><td><code>kin sync-links</code></td><td>Update node content with connection references</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Ingestion &amp; External Sources</h3>
+      <table>
+        <tr><td><code>kin ingest &lt;source&gt;</code></td><td>Ingest from projects, sessions, files, commits, github, linear</td></tr>
+        <tr><td><code>kin cron</code></td><td>One-shot maintenance cycle (for crontab/launchd)</td></tr>
+        <tr><td><code>kin watch</code></td><td>Watch for new sessions and ingest them</td></tr>
+        <tr><td><code>kin analytics</code></td><td>Archive session analytics and activity heatmap</td></tr>
+        <tr><td><code>kin index</code></td><td>Write .kin/index.json for git tracking</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Claude Code Integration</h3>
+      <table>
+        <tr><td><code>kin prime</code></td><td>Generate context for SessionStart hook</td></tr>
+        <tr><td><code>kin compact-hook</code></td><td>Pre-compact knowledge capture</td></tr>
+        <tr><td><code>kin setup-hooks</code></td><td>Install Kindex hooks into Claude Code settings</td></tr>
+        <tr><td><code>kin setup-cron</code></td><td>Install periodic maintenance (launchd/crontab)</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Infrastructure</h3>
+      <table>
+        <tr><td><code>kin init</code></td><td>Initialize data directory</td></tr>
+        <tr><td><code>kin config [show|get|set]</code></td><td>View or edit configuration</td></tr>
+        <tr><td><code>kin migrate</code></td><td>Import markdown topics into SQLite</td></tr>
+        <tr><td><code>kin doctor</code></td><td>Health check with graph enforcement</td></tr>
+        <tr><td><code>kin budget</code></td><td>LLM spend tracking</td></tr>
+        <tr><td><code>kin whoami</code></td><td>Show current user identity</td></tr>
+        <tr><td><code>kin changelog</code></td><td>Show what changed (--since, --days, --actor)</td></tr>
+        <tr><td><code>kin log</code></td><td>Show recent activity log</td></tr>
+        <tr><td><code>kin git-hook</code></td><td>Install/uninstall git hooks in a repository</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Integration -->
+<section>
+  <div class="container">
+    <h2>Claude Code Integration</h2>
+    <p>One-time setup injects context at session start and captures knowledge before compaction:</p>
+    <div class="terminal mono">
+<span class="comment"># Install hooks into Claude Code settings</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
+<span class="output">Installed SessionStart hook: kin prime</span>
+<span class="output">Installed PreCompact hook: kin compact-hook</span>
+
+<span class="comment"># Install periodic maintenance</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-cron</span>
+<span class="output">Installed launchd plist (runs every 30 minutes)</span>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">Or configure manually in <code>~/.claude/settings.json</code>:</p>
+    <div class="integration-block mono">{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "kin context --level executive",
+        "timeout": 5000
+      }]
+    }],
+    "PreCompact": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "kin compact-hook --emit-context",
+        "timeout": 10000
+      }]
+    }]
+  }
+}</div>
+  </div>
+</section>
+
+<!-- External Integrations -->
+<section>
+  <div class="container">
+    <h2>External Integrations</h2>
+    <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+      <div class="card">
+        <h3>GitHub</h3>
+        <p>Ingest issues, PRs, and commits via <code>gh</code> CLI. <code>kin ingest github --repo owner/repo</code></p>
+      </div>
+      <div class="card">
+        <h3>Linear</h3>
+        <p>Ingest issues via GraphQL API. <code>kin ingest linear --team ENG</code></p>
+      </div>
+      <div class="card">
+        <h3>Git Hooks</h3>
+        <p>Post-commit records commits, pre-push surfaces constraints. <code>kin git-hook install</code></p>
+      </div>
+      <div class="card">
+        <h3>File Watcher</h3>
+        <p>SHA-256 change detection for registered files. <code>kin ingest files</code></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <p>
+      <a href="https://github.com/jmcentire/kindex">GitHub</a> &middot;
+      <a href="https://github.com/jmcentire/kindex/issues">Issues</a> &middot;
+      MIT License &middot;
+      Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a>
+    </p>
+    <p style="margin-top: 8px;">v0.3.0 &middot; 42 commands &middot; 348 tests</p>
+  </div>
+</footer>
+
+</body>
+</html>
