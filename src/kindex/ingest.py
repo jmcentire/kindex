@@ -177,6 +177,17 @@ def scan_sessions(
     count = 0
     from .extract import keyword_extract
 
+    # Try to set up LLM summarization
+    llm_summarize = None
+    try:
+        from .extract import llm_summarize_session
+        from .budget import BudgetLedger
+        ledger = BudgetLedger(config.ledger_path, config.budget)
+        if ledger.can_spend():
+            llm_summarize = lambda txt: llm_summarize_session(txt, config, ledger)
+    except Exception:
+        pass
+
     # Find recent JSONL conversation files
     jsonl_files = sorted(
         projects_dir.rglob("*.jsonl"),
@@ -207,8 +218,17 @@ def scan_sessions(
         if not concepts:
             continue
 
+        # Generate summary: LLM if available, fallback to first 500 chars
+        summary = None
+        if llm_summarize is not None:
+            try:
+                summary = llm_summarize(text)
+            except Exception:
+                pass
+        if not summary:
+            summary = text[:500]
+
         # Create session node
-        summary = text[:500]
         store.add_node(
             node_id=session_slug,
             title=f"Session: {project_context[:40]}",
@@ -274,6 +294,33 @@ def _extract_session_text(jsonl_path: Path, max_chars: int = 8000) -> str:
         return ""
 
     return "\n".join(texts)
+
+
+# ── Parent directory .kin walk ────────────────────────────────────────
+
+
+def find_parent_kin(start_path: Path | None = None, max_depth: int = 10) -> list[Path]:
+    """Walk up from start_path (or cwd) to find .kin files.
+
+    Returns list of .kin file paths from most specific (deepest) to root.
+    Stops at filesystem root or after max_depth levels.
+    """
+    if start_path is None:
+        start_path = Path.cwd()
+    start_path = Path(start_path).resolve()
+
+    found = []
+    current = start_path
+    for _ in range(max_depth):
+        kin_file = current / ".kin"
+        if kin_file.exists():
+            found.append(kin_file)
+        parent = current.parent
+        if parent == current:  # filesystem root
+            break
+        current = parent
+
+    return found
 
 
 # ── .kin file support ────────────────────────────────────────────────
@@ -355,8 +402,11 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
 # ── .kin inheritance resolution ───────────────────────────────────────
 
 
-def resolve_kin_chain(kin_path: Path, max_depth: int = 5) -> list[dict]:
+def resolve_kin_chain(kin_path: Path, max_depth: int = 5, auto_walk: bool = False) -> list[dict]:
     """Resolve the .kin inheritance chain for a given .kin file.
+
+    If auto_walk=True and no explicit inherits, also walk up the directory tree
+    to discover parent .kin files automatically.
 
     Returns a list of parsed .kin dicts from most specific (local) to
     most general (root ancestor). Each inheritor's values override ancestors.
@@ -376,6 +426,18 @@ def resolve_kin_chain(kin_path: Path, max_depth: int = 5) -> list[dict]:
     chain = []
     visited = set()
     _resolve_kin_recursive(kin_path, chain, visited, max_depth)
+
+    # If auto_walk is enabled and the root .kin file has no explicit inherits,
+    # walk up the directory tree for additional .kin files
+    if auto_walk and chain:
+        root_data = chain[0]
+        if not root_data.get("inherits"):
+            parent_kins = find_parent_kin(kin_path.parent.parent, max_depth=max_depth)
+            for parent_kin in parent_kins:
+                resolved = parent_kin.resolve()
+                if str(resolved) not in visited:
+                    _resolve_kin_recursive(parent_kin, chain, visited, max_depth - len(chain))
+
     return chain
 
 
@@ -474,6 +536,74 @@ def _infer_audience(project_root: Path) -> str:
     return "private"
 
 
+# ── Synonym ring files ───────────────────────────────────────────────
+
+
+def load_synonym_rings(config: "Config", store: "Store", verbose: bool = False) -> int:
+    """Load synonym ring files from the data directory.
+
+    Synonym ring format (.syn files in data_dir/synonyms/):
+        ring: database-terms
+        synonyms:
+          - database
+          - db
+          - datastore
+          - data store
+          - persistence layer
+
+    Applies synonyms as AKA entries on matching nodes.
+    Returns count of nodes updated.
+    """
+    import yaml
+
+    syn_dir = config.data_path / "synonyms"
+    if not syn_dir.exists():
+        return 0
+
+    count = 0
+    for syn_file in sorted(syn_dir.glob("*.syn")):
+        try:
+            data = yaml.safe_load(syn_file.read_text()) or {}
+        except Exception:
+            if verbose:
+                print(f"  Warning: could not parse {syn_file.name}")
+            continue
+
+        ring_name = data.get("ring", syn_file.stem)
+        synonyms = data.get("synonyms", [])
+        if not synonyms or not isinstance(synonyms, list):
+            continue
+
+        # For each synonym, find nodes whose title matches and add
+        # all other synonyms as AKA entries
+        for synonym in synonyms:
+            node = store.get_node_by_title(synonym)
+            if not node:
+                continue
+
+            existing_aka = list(node.get("aka") or [])
+            new_aka = list(existing_aka)
+            added = False
+
+            for other in synonyms:
+                if other == synonym:
+                    continue
+                if other.lower() == node.get("title", "").lower():
+                    continue
+                if other not in new_aka:
+                    new_aka.append(other)
+                    added = True
+
+            if added:
+                store.update_node(node["id"], aka=new_aka)
+                count += 1
+                if verbose:
+                    added_count = len(new_aka) - len(existing_aka)
+                    print(f"  {node['title']}: +{added_count} synonyms from ring '{ring_name}'")
+
+    return count
+
+
 def _link_session_to_project(store: Store, session_slug: str, project_context: str) -> None:
     """Try to link a session to its corresponding project node."""
     # project_context is like "-Users-jmcentire-Code-Conv"
@@ -491,3 +621,99 @@ def _link_session_to_project(store: Store, session_slug: str, project_context: s
                 provenance="session in project dir",
             )
             return
+
+
+# ── Person expertise auto-detection ───────────────────────────────────
+
+
+def detect_expertise(store: "Store", person_node_id: str) -> dict[str, int]:
+    """Detect expertise domains for a person by analysing their graph connections.
+
+    Walks edges from the person node, inspects the ``domains`` field on
+    each connected node, and tallies how often each domain appears.  The
+    person's node is then updated with the top domains.
+
+    Parameters
+    ----------
+    store : Store
+        An open Kindex store.
+    person_node_id : str
+        The node ID of the person to analyse.
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping of domain name to frequency count.
+    """
+    from collections import Counter
+
+    person = store.get_node(person_node_id)
+    if person is None:
+        return {}
+
+    domain_counts: Counter[str] = Counter()
+
+    # 1. Tally domains from directly connected nodes
+    edges = store.edges_from(person_node_id)
+    for edge in edges:
+        target_id = edge.get("to_id")
+        if not target_id:
+            continue
+        target = store.get_node(target_id)
+        if target is None:
+            continue
+        for domain in (target.get("domains") or []):
+            domain_counts[domain] += 1
+
+    # 2. Also inspect activity log entries for this person
+    activities = store.activity_by_actor(person_node_id, limit=100)
+    for act in activities:
+        node_id = act.get("node_id") or ""
+        if not node_id:
+            continue
+        node = store.get_node(node_id)
+        if node is None:
+            continue
+        for domain in (node.get("domains") or []):
+            domain_counts[domain] += 1
+
+    # 3. Update the person node with the top domains (up to 10)
+    if domain_counts:
+        top_domains = [d for d, _ in domain_counts.most_common(10)]
+        store.update_node(person_node_id, domains=top_domains)
+
+    return dict(domain_counts)
+
+
+# ── Git-tracked index ────────────────────────────────────────────────
+
+
+def _now_iso() -> str:
+    """Return current timestamp in ISO format."""
+    from datetime import datetime
+    return datetime.now(tz=None).isoformat(timespec="seconds")
+
+
+def write_kin_index(store: "Store", output_dir: Path) -> Path:
+    """Write a .kin/index.json file summarizing the graph for this project.
+
+    This file is meant to be git-tracked, giving other tools a snapshot
+    of what Kindex knows about this project.
+    """
+    nodes = store.all_nodes(limit=500)
+    index = {
+        "version": 1,
+        "generated_at": _now_iso(),
+        "node_count": len(nodes),
+        "nodes": [
+            {"id": n["id"], "title": n["title"], "type": n["type"],
+             "weight": n["weight"], "domains": n.get("domains", [])}
+            for n in nodes[:100]  # Top 100 by weight
+        ],
+        "domains": list(set(d for n in nodes for d in (n.get("domains") or []))),
+    }
+
+    output_path = output_dir / ".kin" / "index.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(index, indent=2) + "\n")
+    return output_path

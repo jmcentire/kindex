@@ -382,3 +382,54 @@ def extract(
     if result is not None:
         return result
     return keyword_extract(text, existing_titles=existing_titles)
+
+
+# ── Session summarization ─────────────────────────────────────────────
+
+SESSION_SUMMARIZE_PROMPT = """Summarize this Claude Code session concisely in 2-3 sentences.
+
+SESSION TEXT:
+{text}
+
+Address these questions in your summary:
+- What was the main goal of this session?
+- What was accomplished?
+- What decisions were made?
+- What open questions remain?
+
+Return ONLY the summary text, no formatting or labels."""
+
+
+def llm_summarize_session(text: str, config: Config, ledger: BudgetLedger) -> str | None:
+    """Use LLM to generate a concise summary of a session.
+
+    Returns a 2-3 sentence summary, or None if LLM unavailable.
+    """
+    if not ledger.can_spend():
+        return None
+
+    client = _get_client(config)
+    if client is None:
+        return None
+
+    prompt = SESSION_SUMMARIZE_PROMPT.format(text=text[:4000])
+
+    try:
+        response = client.messages.create(
+            model=config.llm.model,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        cost = _estimate_cost(
+            config.llm.model,
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+        )
+        ledger.record(cost, model=config.llm.model, purpose="session-summarize",
+                      tokens_in=response.usage.input_tokens,
+                      tokens_out=response.usage.output_tokens)
+
+        return response.content[0].text.strip()
+    except Exception:
+        return None

@@ -713,6 +713,20 @@ class Store:
         self._log("record_skill_evidence", skill_id, skill_title, person_id,
                   {"evidence": evidence, "source": source})
 
+    # ── Directive mutable state ─────────────────────────────────────────
+
+    def update_directive_state(self, node_id: str, state: dict) -> None:
+        """Update the current_state of a directive/operational node."""
+        node = self.get_node(node_id)
+        if not node:
+            return
+        extra = node.get("extra") or {}
+        extra["current_state"] = state
+        extra["state_updated_at"] = _now()
+        self.update_node(node_id, extra=extra)
+        self._log("update_state", node_id, node.get("title", ""),
+                  details={"state": state})
+
     # ── Stats ──────────────────────────────────────────────────────────
 
     def stats(self) -> dict:
