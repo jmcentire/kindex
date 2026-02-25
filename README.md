@@ -25,7 +25,7 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Claude Code now has 12 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`.
+Claude Code now has 13 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`.
 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json
@@ -67,6 +67,9 @@ Nodes have types, weights, domains, and audiences. Edges carry provenance and de
 
 ### Operational guardrails
 Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
+
+### Cache-optimized LLM retrieval
+Three-tier prompt architecture with Anthropic prompt caching. Stable knowledge (codebook) is cached at 10% cost. Query-relevant context is predicted via graph expansion and cached per-topic. Only the question pays full price. Transparent — `kin ask` just works better and cheaper.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
@@ -168,9 +171,15 @@ Retrieval pipeline:
   (vectors) --+                   |
                           full | abridged | summarized | executive | index
 
-Two integration paths:
+LLM cache tiers (kin ask):
+  Tier 1: codebook (stable node index)     <- cached @ 10% cost
+  Tier 2: query-relevant context           <- cached per-topic @ 10% cost
+  Tier 3: user question                    <- full price, tiny
+
+Three integration paths:
   MCP plugin --> Claude calls tools natively (search, add, learn, ...)
   CLI hooks  --> SessionStart / PreCompact / Stop lifecycle events
+  Adapters   --> Entry-point discovery for custom ingestion sources
 ```
 
 ### Node Types
@@ -244,15 +253,19 @@ Two integration paths:
 | `kin changelog` | What changed (--since, --days, --actor) |
 | `kin log` | Recent activity log |
 | `kin git-hook [install\|uninstall]` | Manage git hooks in a repository |
-| `kin prime` | Generate context for SessionStart hook |
+| `kin prime` | Generate context for SessionStart hook (--codebook) |
 | `kin compact-hook` | Pre-compact knowledge capture |
 
 ## Configuration
 
-Config is loaded from (first found):
-1. `.kin` in current directory
-2. `kin.yaml` in current directory
-3. `~/.config/kindex/kin.yaml`
+Config is layered like git — global defaults, then global config, then local config. Each layer deep-merges over the previous, so you only set what you want to override.
+
+| Layer | Path | Purpose |
+|-------|------|---------|
+| Global | `~/.config/kindex/kin.yaml` | User-wide defaults |
+| Local | `.kin` or `kin.yaml` in cwd | Project-specific overrides |
+
+Use `kin config set --global llm.enabled true` for global settings, or `kin config set llm.model claude-sonnet-4-6` for project-local.
 
 ```yaml
 data_dir: ~/.kindex
@@ -261,6 +274,9 @@ llm:
   enabled: false
   model: claude-haiku-4-5-20251001
   api_key_env: ANTHROPIC_API_KEY
+  cache_control: true              # Prompt caching (90% savings on repeated prefixes)
+  codebook_min_weight: 0.5         # Min node weight for codebook inclusion
+  tier2_max_tokens: 4000           # Token budget for query-relevant context
 
 budget:
   daily: 0.50
@@ -281,7 +297,7 @@ defaults:
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 373 tests
+make test         # run 429 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```
