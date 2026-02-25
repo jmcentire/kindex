@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__kindex__search",
+      "mcp__kindex__add",
+      "mcp__kindex__context",
+      "mcp__kindex__show",
+      "mcp__kindex__ask",
+      "mcp__kindex__learn",
+      "mcp__kindex__link",
+      "mcp__kindex__list_nodes",
+      "mcp__kindex__status",
+      "mcp__kindex__suggest",
+      "mcp__kindex__graph_stats",
+      "mcp__kindex__changelog"
+    ]
+  }
+}
