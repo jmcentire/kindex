@@ -27,8 +27,9 @@ dependencies = [
 [project.optional-dependencies]
 llm = ["anthropic>=0.40"]
 vectors = ["sqlite-vec>=0.1", "sentence-transformers>=2.0"]
+mcp = ["mcp[cli]>=1.26.0"]
 dev = ["pytest>=7.0"]
-all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0"]
+all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0", "mcp[cli]>=1.26.0"]
 
 [project.urls]
 Homepage = "https://github.com/jmcentire/kindex"
@@ -37,6 +38,7 @@ Issues = "https://github.com/jmcentire/kindex/issues"
 
 [project.scripts]
 kin = "kindex.cli:main"
+kin-mcp = "kindex.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kindex"]

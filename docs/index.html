@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kindex — Knowledge index that learns from your conversations</title>
-<meta name="description" content="A persistent knowledge graph for AI-assisted workflows. 42 CLI commands, hybrid search, context tiers, and Claude Code integration.">
+<title>Kindex — The memory layer Claude Code doesn't have</title>
+<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. 42 CLI commands, MCP plugin, hybrid search, and context tiers.">
 <style>
   :root {
     --bg: #0d1117;
@@ -216,7 +216,7 @@
   <div class="container">
     <h1><span>kin</span>dex</h1>
     <p class="tagline">
-      A persistent knowledge graph for AI-assisted workflows.
+      The memory layer Claude Code doesn't have.
       Your AI coding assistant never starts a session blind.
     </p>
     <div class="install-box mono">
@@ -227,7 +227,8 @@
       <span class="badge blue">Python 3.10+</span>
       <span class="badge purple">MIT License</span>
       <span class="badge">42 CLI commands</span>
-      <span class="badge">348 tests</span>
+      <span class="badge">MCP plugin</span>
+      <span class="badge">373 tests</span>
     </div>
   </div>
 </div>
@@ -266,7 +267,7 @@
       <div class="card">
         <span class="icon">&#x1F517;</span>
         <h3>.kin Inheritance</h3>
-        <p>Composable context chains across repos and teams. Depth-first resolution with parent directory auto-walk.</p>
+        <p>Composable context chains across repos and teams. A service repo inherits from the platform .kin, which inherits from the org .kin &mdash; depth-first, local overrides ancestors.</p>
       </div>
       <div class="card">
         <span class="icon">&#x1F9E0;</span>
@@ -442,40 +443,53 @@
   </div>
 </section>
 
-<!-- Integration -->
+<!-- MCP Plugin -->
 <section>
   <div class="container">
-    <h2>Claude Code Integration</h2>
-    <p>One-time setup injects context at session start and captures knowledge before compaction:</p>
+    <h2>Claude Code Plugin (MCP)</h2>
+    <p>Kindex ships as a native <strong>Model Context Protocol</strong> server. Claude Code calls tools directly &mdash; no subprocess overhead, structured responses, and resource browsing via <code>@kindex</code>.</p>
     <div class="terminal mono">
-<span class="comment"># Install hooks into Claude Code settings</span>
-<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
-<span class="output">Installed SessionStart hook: kin prime</span>
-<span class="output">Installed PreCompact hook: kin compact-hook</span>
+<span class="comment"># Install as MCP plugin (one command)</span>
+<span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
+<span class="prompt">$</span> <span class="cmd">claude mcp add</span> <span class="flag">--scope</span> user <span class="flag">--transport</span> stdio kindex <span class="flag">--</span> kin-mcp
 
-<span class="comment"># Install periodic maintenance</span>
+<span class="comment"># Claude Code now has 12 native tools:</span>
+<span class="output">  search      &mdash; hybrid FTS5 + graph search</span>
+<span class="output">  add         &mdash; capture knowledge with auto-linking</span>
+<span class="output">  context     &mdash; formatted context block at any tier</span>
+<span class="output">  show        &mdash; full node details with edges</span>
+<span class="output">  ask         &mdash; question classification + answer</span>
+<span class="output">  learn       &mdash; extract knowledge from text</span>
+<span class="output">  link        &mdash; create edges between nodes</span>
+<span class="output">  list_nodes  &mdash; browse with filters</span>
+<span class="output">  status      &mdash; graph health + operational summary</span>
+<span class="output">  suggest     &mdash; bridge opportunity suggestions</span>
+<span class="output">  graph_stats &mdash; centrality, communities, density</span>
+<span class="output">  changelog   &mdash; recent changes</span>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
+    <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
+  </div>
+</section>
+
+<!-- Hooks Integration -->
+<section>
+  <div class="container">
+    <h2>Claude Code Hooks (Alternative)</h2>
+    <p>If you prefer hooks over MCP, one-time setup injects context at session start and captures knowledge before compaction:</p>
+    <div class="terminal mono">
+<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-cron</span>
-<span class="output">Installed launchd plist (runs every 30 minutes)</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or configure manually in <code>~/.claude/settings.json</code>:</p>
     <div class="integration-block mono">{
   "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "kin context --level executive",
-        "timeout": 5000
-      }]
-    }],
-    "PreCompact": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "kin compact-hook --emit-context",
-        "timeout": 10000
-      }]
-    }]
+    "SessionStart": [{ "matcher": "", "hooks": [{
+      "type": "command", "command": "kin context --level executive", "timeout": 5000
+    }]}],
+    "PreCompact": [{ "matcher": "", "hooks": [{
+      "type": "command", "command": "kin compact-hook --emit-context", "timeout": 10000
+    }]}]
   }
 }</div>
   </div>
@@ -506,6 +520,37 @@
   </div>
 </section>
 
+<!-- .kin Inheritance -->
+<section>
+  <div class="container">
+    <h2>.kin Inheritance Chains</h2>
+    <p>Place a <code>.kin</code> file in any repo to declare its context. Files inherit depth-first &mdash; local values override ancestors, lists are merged.</p>
+    <div class="features" style="grid-template-columns: 1fr 1fr;">
+      <div class="card">
+        <h3>Service Repo</h3>
+        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.8rem;">
+# payments-service/.kin
+name: payments-service
+audience: team
+domains: [payments, python]
+inherits:
+  - ../platform/.kin</div>
+      </div>
+      <div class="card">
+        <h3>Platform (Parent)</h3>
+        <div class="integration-block mono" style="margin-top: 8px; font-size: 0.8rem;">
+# platform/.kin
+name: platform
+audience: org
+domains: [engineering]
+inherits:
+  - ~/.kindex/.kin   # org defaults</div>
+      </div>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets: <code>domains: [payments, python, engineering]</code>, <code>audience: team</code> (local wins). Parent directories are auto-walked when no explicit <code>inherits</code> is set.</p>
+  </div>
+</section>
+
 <!-- Footer -->
 <footer>
   <div class="container">
@@ -515,7 +560,7 @@
       MIT License &middot;
       Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a>
     </p>
-    <p style="margin-top: 8px;">v0.3.0 &middot; 42 commands &middot; 348 tests</p>
+    <p style="margin-top: 8px;">v0.3.0 &middot; 42 CLI commands &middot; 12 MCP tools &middot; 373 tests</p>
   </div>
 </footer>
 
