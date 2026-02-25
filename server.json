@@ -1,0 +1,34 @@
+{
+  "name": "io.github.jmcentire/kindex",
+  "description": "Persistent knowledge graph for AI-assisted workflows. Hybrid search, five context tiers, operational nodes, .kin inheritance, and audience tenancy.",
+  "version": "0.3.0",
+  "homepage": "https://jmcentire.github.io/kindex/",
+  "repository": "https://github.com/jmcentire/kindex",
+  "license": "MIT",
+  "runtime": "python",
+  "command": "kin-mcp",
+  "args": [],
+  "env": {},
+  "tools": [
+    "search", "add", "context", "show", "ask", "learn",
+    "link", "list_nodes", "status", "suggest", "graph_stats", "changelog"
+  ],
+  "resources": [
+    "kindex://status",
+    "kindex://node/{id}",
+    "kindex://recent",
+    "kindex://orphans"
+  ],
+  "prompts": ["prime", "orient"],
+  "_meta": {
+    "categories": ["memory", "knowledge-management", "developer-tools"],
+    "pricing": "free",
+    "differentiators": [
+      "Five context tiers with token-budget awareness",
+      "Weighted knowledge graph (not just session archive)",
+      "Operational nodes: constraints, directives, watches",
+      ".kin inheritance chains for team/org context",
+      "Audience tenancy with PII stripping on export"
+    ]
+  }
+}

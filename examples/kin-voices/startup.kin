@@ -1,0 +1,30 @@
+# Startup Voice — .kin context file
+#
+# A voice template for fast-moving startups.
+# Inherit this as a base, override what doesn't fit.
+
+name: startup-voice
+audience: team
+domains: [engineering, product]
+
+voice:
+  tone: direct, fast, pragmatic
+  principles:
+    - Ship it. Perfect is the enemy of shipped.
+    - Decide fast, reverse if wrong. Most decisions are two-way doors.
+    - Write code for the problem you have, not the problem you might have.
+    - If it takes longer to discuss than to do, just do it.
+  anti-patterns:
+    - Building for scale before you have users
+    - Meetings that should have been messages
+    - Abstractions with one implementation
+
+standards:
+  code_review:
+    - "Does it work?" matters more than "Is it elegant?"
+    - Tests for the critical path. Don't test getters.
+    - If the PR is bigger than 400 lines, split it.
+  communication:
+    - Default to public channels over DMs
+    - Async first. Meetings are synchronization points, not working sessions.
+    - Blockers get escalated immediately, not in standup tomorrow.

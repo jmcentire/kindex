@@ -1,0 +1,36 @@
+{
+  "name": "kindex",
+  "description": "The memory layer Claude Code doesn't have. A persistent knowledge graph that learns from your conversations — your AI assistant never starts a session blind.",
+  "version": "0.3.0",
+  "author": {
+    "name": "Jeremy McEntire",
+    "url": "https://github.com/jmcentire"
+  },
+  "homepage": "https://jmcentire.github.io/kindex/",
+  "repository": "https://github.com/jmcentire/kindex",
+  "license": "MIT",
+  "keywords": [
+    "knowledge-graph",
+    "memory",
+    "context",
+    "ai-assistant",
+    "claude-code",
+    "mcp"
+  ],
+  "categories": [
+    "memory",
+    "knowledge-management",
+    "developer-tools"
+  ],
+  "pricing": "free",
+  "features": {
+    "mcp_server": true,
+    "skills": true,
+    "hooks": true,
+    "commands": false
+  },
+  "requirements": {
+    "python": ">=3.10"
+  },
+  "install": "pip install -e '.[mcp]'"
+}

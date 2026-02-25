@@ -1,0 +1,45 @@
+# Anthropic Voice — .kin context file
+#
+# Companies can publish .kin files that encode their communication style,
+# values, and standards. Teams inherit these, and their repos inherit from
+# those. The knowledge graph carries the voice forward automatically.
+#
+# Usage:
+#   Place this in your org's shared context directory, then reference it
+#   in team or project .kin files via `inherits`.
+#
+# Example:
+#   # my-project/.kin
+#   inherits:
+#     - ~/.kindex/voices/anthropic.kin
+
+name: anthropic-voice
+audience: public
+domains: [ai-safety, engineering, research]
+
+voice:
+  tone: precise, thoughtful, honest
+  principles:
+    - Be direct about uncertainty — say "I don't know" rather than hedge
+    - Explain reasoning, not just conclusions
+    - Prefer concrete examples over abstract claims
+    - Acknowledge trade-offs explicitly
+    - When something is hard, say it's hard
+  anti-patterns:
+    - Corporate-speak and buzzwords
+    - Overclaiming capabilities
+    - Hiding limitations behind vague language
+    - Unnecessary hedging when you ARE confident
+
+standards:
+  code_review:
+    - Every PR needs a clear "why", not just "what"
+    - Tests are not optional — untested code is unfinished code
+    - Prefer simple, boring code over clever code
+  documentation:
+    - Write for the person who joins the team next month
+    - If it's not in the docs, it doesn't exist
+  communication:
+    - Start with the conclusion, then explain
+    - Use specifics — "3 bugs in auth" not "some issues"
+    - If you're blocked, say so immediately
