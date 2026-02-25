@@ -903,10 +903,57 @@ def cmd_ingest(args):
         sc = scan_sessions(cfg, store, limit=getattr(args, "limit", 10) or 10,
                            verbose=True)
         print(f"\n{pc} project(s), {cc} .kin update(s), {sc} session(s) ingested.")
+    elif source == "files":
+        from .adapters.files import scan_registered_files
+        count = scan_registered_files(store, verbose=True)
+        print(f"\n{count} file(s) updated from registered paths.")
+    elif source == "commits":
+        from .adapters.git_hooks import ingest_recent_commits
+        repo_path = getattr(args, "repo_path", ".") or "."
+        count = ingest_recent_commits(store, repo_path=repo_path,
+                                      limit=getattr(args, "limit", 20), verbose=True)
+        print(f"\n{count} commit(s) ingested.")
+    elif source == "github":
+        from .adapters.github import ingest_issues, ingest_prs, ingest_commits, is_gh_available
+        if not is_gh_available():
+            print("Error: gh CLI not available. Install from https://cli.github.com", file=sys.stderr)
+            sys.exit(1)
+        repo = getattr(args, "repo", None)
+        if not repo:
+            print("Error: --repo required for github ingest", file=sys.stderr)
+            sys.exit(1)
+        since = getattr(args, "since", None)
+        issue_count = ingest_issues(store, repo, since=since, verbose=True)
+        pr_count = ingest_prs(store, repo, since=since, verbose=True)
+        commit_count = ingest_commits(store, repo, since=since, verbose=True)
+        print(f"\nGitHub: {issue_count} issues, {pr_count} PRs, {commit_count} commits ingested.")
     else:
-        print(f"Unknown source: {source}. Use: projects, sessions, all", file=sys.stderr)
+        print(f"Unknown source: {source}. Use: projects, sessions, files, commits, github, all",
+              file=sys.stderr)
 
     store.close()
+
+
+# ── git-hook ──────────────────────────────────────────────────────────
+
+def cmd_git_hook(args):
+    """Install or uninstall Kindex git hooks in a repository."""
+    from .adapters.git_hooks import install_hooks, uninstall_hooks
+
+    action = args.hook_action
+    repo_path = getattr(args, "repo_path", ".") or "."
+
+    if action == "install":
+        cfg = _config(args)
+        actions = install_hooks(repo_path, cfg)
+        for a in actions:
+            print(f"  {a}")
+    elif action == "uninstall":
+        actions = uninstall_hooks(repo_path)
+        for a in actions:
+            print(f"  {a}")
+    else:
+        print(f"Unknown action: {action}. Use: install, uninstall", file=sys.stderr)
 
 
 # ── trail ─────────────────────────────────────────────────────────────
@@ -1846,6 +1893,92 @@ def _now_short() -> str:
     return _dt.datetime.now(tz=None).strftime("%H:%M:%S")
 
 
+# ── setup ─────────────────────────────────────────────────────────────
+
+def cmd_setup_hooks(args):
+    """Install/uninstall Kindex hooks in Claude Code's settings.json."""
+    from .setup import install_claude_hooks
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        # Remove hooks by loading settings and filtering out kindex entries
+        settings_path = cfg.claude_path / "settings.json"
+        if settings_path.exists():
+            import json as _json
+            data = _json.loads(settings_path.read_text())
+            hooks = data.get("hooks", {})
+            changed = False
+            for key in ["SessionStart", "PreCompact"]:
+                if key in hooks:
+                    before = len(hooks[key])
+                    hooks[key] = [
+                        h for h in hooks[key]
+                        if "kin prime" not in str(h)
+                        and "compact-hook" not in str(h)
+                        and "kindex" not in str(h).lower()
+                    ]
+                    if len(hooks[key]) < before:
+                        changed = True
+                        print(f"Removed Kindex {key} hook")
+            if changed and not dry_run:
+                settings_path.write_text(_json.dumps(data, indent=2) + "\n")
+                print(f"Updated {settings_path}")
+            elif not changed:
+                print("No Kindex hooks found to remove")
+        else:
+            print("No Claude Code settings.json found")
+        return
+
+    actions = install_claude_hooks(cfg, dry_run=dry_run)
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_cron(args):
+    """Install/uninstall periodic cron job for kin maintenance."""
+    import platform
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+    method = getattr(args, "method", None)
+
+    # Auto-detect method
+    if method is None:
+        method = "launchd" if platform.system() == "Darwin" else "crontab"
+
+    if getattr(args, "uninstall", False):
+        if method == "launchd":
+            from .setup import uninstall_launchd
+            actions = uninstall_launchd(dry_run=dry_run)
+        else:
+            # Remove crontab entry
+            import subprocess
+            result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            if result.returncode == 0:
+                lines = result.stdout.splitlines()
+                filtered = [l for l in lines if "kin cron" not in l and "kindex" not in l]
+                if len(filtered) < len(lines):
+                    if not dry_run:
+                        new_crontab = "\n".join(filtered) + "\n"
+                        subprocess.run(["crontab", "-"], input=new_crontab,
+                                       capture_output=True, text=True)
+                    actions = ["Removed crontab entry"]
+                else:
+                    actions = ["No crontab entry found"]
+            else:
+                actions = ["No crontab found"]
+    else:
+        if method == "launchd":
+            from .setup import install_launchd
+            actions = install_launchd(cfg, dry_run=dry_run)
+        else:
+            from .setup import install_crontab
+            actions = install_crontab(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
 # ── config ────────────────────────────────────────────────────────────
 
 def cmd_config(args):
@@ -2107,10 +2240,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ingest
     s = sub.add_parser("ingest", help="Ingest from external sources")
-    s.add_argument("source", choices=["projects", "sessions", "all"])
+    s.add_argument("source", choices=["projects", "sessions", "files", "commits", "github", "all"])
     s.add_argument("--limit", type=int, default=10, help="Max sessions to scan")
+    s.add_argument("--repo", type=str, default=None, help="GitHub owner/repo (e.g. jmcentire/kindex)")
+    s.add_argument("--repo-path", type=str, default=None,
+                   help="Local repository path (for commits source)")
+    s.add_argument("--since", type=str, default=None, help="ISO date to filter items created after")
     _common(s)
     s.set_defaults(func=cmd_ingest)
+
+    # git-hook
+    s = sub.add_parser("git-hook", help="Install/uninstall Kindex git hooks in a repository")
+    s.add_argument("hook_action", choices=["install", "uninstall"],
+                   help="Action: install or uninstall git hooks")
+    s.add_argument("--repo-path", type=str, default=".",
+                   help="Path to git repository (default: current directory)")
+    _common(s)
+    s.set_defaults(func=cmd_git_hook)
 
     # trail
     s = sub.add_parser("trail", help="Temporal history of a node")
@@ -2205,6 +2351,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("filepath", help="File path to register")
     _common(s)
     s.set_defaults(func=cmd_register)
+
+    # setup-hooks
+    s = sub.add_parser("setup-hooks", help="Install Kindex hooks into Claude Code")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed hooks")
+    _common(s)
+    s.set_defaults(func=cmd_setup_hooks)
+
+    # setup-cron
+    s = sub.add_parser("setup-cron", help="Install periodic cron job for kin maintenance")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove cron entry")
+    s.add_argument("--method", choices=["launchd", "crontab"],
+                   help="Scheduling method (auto-detects: launchd on macOS, crontab on Linux)")
+    _common(s)
+    s.set_defaults(func=cmd_setup_cron)
 
     # config
     s = sub.add_parser("config", help="View or edit configuration")
