@@ -125,7 +125,7 @@ def _infer_domains(project_root: Path) -> list[str]:
     domain_map = {
         "code": "engineering",
         "personal": "personal",
-        "wanderrepos": "research",
+        "research": "research",
         "work": "work",
     }
     if parent_name in domain_map:

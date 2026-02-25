@@ -5,6 +5,8 @@ import os
 import subprocess
 from typing import TYPE_CHECKING
 
+from .base import AdapterMeta, AdapterOption, IngestResult
+
 if TYPE_CHECKING:
     from ..store import Store
 
@@ -112,3 +114,29 @@ def ingest_issues(store: "Store", team: str | None = None,
             print(f"  Linear: {title}")
 
     return count
+
+
+# ── Adapter protocol wrapper ────────────────────────────────────────
+
+
+class LinearAdapter:
+    meta = AdapterMeta(
+        name="linear",
+        description="Ingest issues from Linear",
+        requires_auth=True,
+        auth_hint="Set LINEAR_API_KEY env var",
+        options=[
+            AdapterOption("team", "Linear team key to filter by"),
+        ],
+    )
+
+    def is_available(self) -> bool:
+        return is_linear_available()
+
+    def ingest(self, store, *, limit=50, since=None, verbose=False, **kwargs):
+        team = kwargs.get("team")
+        created = ingest_issues(store, team=team, limit=limit, verbose=verbose)
+        return IngestResult(created=created)
+
+
+adapter = LinearAdapter()

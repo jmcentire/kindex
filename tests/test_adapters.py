@@ -1,4 +1,4 @@
-"""Tests for adapters (GitHub, git hooks, file watcher)."""
+"""Tests for adapters (GitHub, git hooks, file watcher) and adapter protocol."""
 import hashlib
 import json
 import subprocess
@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+from kindex.adapters.base import Adapter, AdapterMeta, AdapterOption, IngestResult
 from kindex.config import Config
 from kindex.store import Store
 
@@ -487,3 +488,181 @@ class TestGitHookCLI:
         run("git-hook", "install", "--repo-path", str(tmp_path), data_dir=d)
         r = run("git-hook", "uninstall", "--repo-path", str(tmp_path), data_dir=d)
         assert r.returncode == 0
+
+
+# ── Adapter protocol tests ───────────────────────────────────────────
+
+
+class _StubAdapter:
+    """Minimal adapter that satisfies the protocol."""
+
+    meta = AdapterMeta(name="stub", description="Stub for testing")
+
+    def is_available(self) -> bool:
+        return True
+
+    def ingest(self, store, *, limit=50, since=None, verbose=False, **kwargs):
+        return IngestResult(created=1)
+
+
+class _UnavailableAdapter:
+    meta = AdapterMeta(
+        name="unavailable",
+        description="Always unavailable",
+        requires_auth=True,
+        auth_hint="Set FAKE_KEY env var",
+    )
+
+    def is_available(self) -> bool:
+        return False
+
+    def ingest(self, store, *, limit=50, since=None, verbose=False, **kwargs):
+        return IngestResult()
+
+
+class TestIngestResult:
+    def test_defaults(self):
+        r = IngestResult()
+        assert r.created == 0 and r.updated == 0 and r.skipped == 0
+        assert r.total == 0
+
+    def test_total(self):
+        r = IngestResult(created=5, updated=3, skipped=2)
+        assert r.total == 8
+
+    def test_str_empty(self):
+        assert str(IngestResult()) == "no changes"
+
+    def test_str_with_counts(self):
+        r = IngestResult(created=3, skipped=1)
+        assert "3 created" in str(r) and "1 skipped" in str(r)
+
+    def test_str_with_errors(self):
+        assert "2 errors" in str(IngestResult(errors=["a", "b"]))
+
+
+class TestAdapterProtocol:
+    def test_stub_is_adapter(self):
+        assert isinstance(_StubAdapter(), Adapter)
+
+    def test_unavailable_is_adapter(self):
+        assert isinstance(_UnavailableAdapter(), Adapter)
+
+    def test_non_adapter(self):
+        assert not isinstance("not an adapter", Adapter)
+
+
+class TestAdapterMeta:
+    def test_defaults(self):
+        meta = AdapterMeta(name="test", description="Test")
+        assert meta.version == "0.1.0"
+        assert meta.requires_auth is False
+        assert meta.options == []
+
+    def test_with_options(self):
+        meta = AdapterMeta(
+            name="x", description="X",
+            options=[AdapterOption("repo", "owner/repo", required=True)],
+        )
+        assert meta.options[0].required is True
+
+
+class TestRegistry:
+    def test_register_and_get(self):
+        from kindex.adapters.registry import get, register, reset
+
+        reset()
+        stub = _StubAdapter()
+        register(stub)
+        assert get("stub") is stub
+        reset()
+
+    def test_discover_returns_builtins(self):
+        from kindex.adapters.registry import discover, reset
+
+        reset()
+        adapters = discover()
+        assert isinstance(adapters, dict)
+        # files and projects have no external deps, should always load
+        assert "files" in adapters
+        assert "projects" in adapters
+        reset()
+
+    def test_available_filters_unavailable(self):
+        from kindex.adapters.registry import available, register, reset
+
+        reset()
+        register(_StubAdapter())
+        register(_UnavailableAdapter())
+        avail = available()
+        assert "stub" in avail
+        assert "unavailable" not in avail
+        reset()
+
+    def test_get_nonexistent(self):
+        from kindex.adapters.registry import get, reset
+
+        reset()
+        assert get("nonexistent_adapter_xyz") is None
+        reset()
+
+
+class TestPipeline:
+    def test_run_adapter_unavailable(self):
+        from kindex.adapters.pipeline import IngestConfig, run_adapter
+
+        result = run_adapter(_UnavailableAdapter(), None, IngestConfig())
+        assert len(result.errors) == 1
+        assert "unavailable" in result.errors[0]
+
+    def test_run_adapter_success(self, tmp_path):
+        from kindex.adapters.pipeline import IngestConfig, run_adapter
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+        result = run_adapter(_StubAdapter(), s, IngestConfig())
+        assert result.created == 1
+        s.close()
+
+    def test_run_adapter_dry_run(self, tmp_path):
+        from kindex.adapters.pipeline import IngestConfig, run_adapter
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+        result = run_adapter(_StubAdapter(), s, IngestConfig(dry_run=True))
+        assert result.created == 0
+        s.close()
+
+
+class TestBuiltinAdapters:
+    def test_github_adapter(self):
+        from kindex.adapters.github import adapter
+        assert isinstance(adapter, Adapter)
+        assert adapter.meta.name == "github"
+        assert adapter.meta.requires_auth is True
+
+    def test_linear_adapter(self):
+        from kindex.adapters.linear import adapter
+        assert isinstance(adapter, Adapter)
+        assert adapter.meta.name == "linear"
+
+    def test_commits_adapter(self):
+        from kindex.adapters.git_hooks import adapter
+        assert isinstance(adapter, Adapter)
+        assert adapter.meta.name == "commits"
+
+    def test_files_adapter(self):
+        from kindex.adapters.files import adapter
+        assert isinstance(adapter, Adapter)
+        assert adapter.meta.name == "files"
+        assert adapter.is_available() is True
+
+    def test_projects_adapter(self):
+        from kindex.adapters.projects import adapter
+        assert isinstance(adapter, Adapter)
+        assert adapter.meta.name == "projects"
+
+    def test_sessions_adapter(self):
+        from kindex.adapters.sessions import adapter
+        assert isinstance(adapter, Adapter)
+        assert adapter.meta.name == "sessions"

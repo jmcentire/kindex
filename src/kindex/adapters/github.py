@@ -5,6 +5,8 @@ import subprocess
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from .base import AdapterMeta, AdapterOption, IngestResult
+
 if TYPE_CHECKING:
     from ..store import Store
 
@@ -230,3 +232,34 @@ def _link_to_project(store: "Store", repo: str, node_ids: list[str]) -> None:
                                   bidirectional=False)
                 except Exception:
                     pass
+
+
+# ── Adapter protocol wrapper ────────────────────────────────────────
+
+
+class GitHubAdapter:
+    meta = AdapterMeta(
+        name="github",
+        description="Ingest issues, PRs, and commits from GitHub",
+        requires_auth=True,
+        auth_hint="Install and authenticate gh CLI: brew install gh && gh auth login",
+        options=[
+            AdapterOption("repo", "GitHub owner/repo (e.g. jmcentire/kindex)", required=True),
+        ],
+    )
+
+    def is_available(self) -> bool:
+        return is_gh_available()
+
+    def ingest(self, store, *, limit=50, since=None, verbose=False, **kwargs):
+        repo = kwargs.get("repo")
+        if not repo:
+            return IngestResult(errors=["--repo required for github adapter"])
+        created = 0
+        created += ingest_issues(store, repo, since=since, limit=limit, verbose=verbose)
+        created += ingest_prs(store, repo, since=since, limit=limit, verbose=verbose)
+        created += ingest_commits(store, repo, since=since, limit=limit, verbose=verbose)
+        return IngestResult(created=created)
+
+
+adapter = GitHubAdapter()

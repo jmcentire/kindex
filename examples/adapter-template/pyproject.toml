@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kindex-adapter-csv"
+version = "0.1.0"
+description = "Example kindex adapter — ingest from CSV files"
+requires-python = ">=3.10"
+dependencies = ["kindex"]
+
+# This is the magic line. When installed, kindex discovers this adapter
+# automatically via entry points. "csv" becomes a valid source for
+# `kin ingest csv --path data.csv`.
+[project.entry-points."kindex.adapters"]
+csv = "kindex_adapter_csv:adapter"
