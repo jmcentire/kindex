@@ -28,6 +28,8 @@ lint: ## Run basic checks
 	python -m py_compile src/kindex/extract.py
 	python -m py_compile src/kindex/ingest.py
 	python -m py_compile src/kindex/analytics.py
+	python -m py_compile src/kindex/reminders.py
+	python -m py_compile src/kindex/notify.py
 
 check: lint test ## Lint + test combined
 

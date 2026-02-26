@@ -47,6 +47,47 @@ class DefaultsConfig(BaseModel):
     mode: str = "bfs"
 
 
+class SystemChannelConfig(BaseModel):
+    enabled: bool = True
+    sound: str = "default"
+
+
+class SlackChannelConfig(BaseModel):
+    enabled: bool = False
+    webhook_url: str = ""
+
+
+class EmailChannelConfig(BaseModel):
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_pass_keychain: str = ""
+    from_addr: str = ""
+    to_addr: str = ""
+
+
+class ClaudeChannelConfig(BaseModel):
+    enabled: bool = True
+
+
+class ChannelsConfig(BaseModel):
+    system: SystemChannelConfig = Field(default_factory=SystemChannelConfig)
+    slack: SlackChannelConfig = Field(default_factory=SlackChannelConfig)
+    email: EmailChannelConfig = Field(default_factory=EmailChannelConfig)
+    claude: ClaudeChannelConfig = Field(default_factory=ClaudeChannelConfig)
+
+
+class ReminderConfig(BaseModel):
+    enabled: bool = True
+    check_interval: int = 300
+    default_channels: list[str] = Field(default_factory=lambda: ["system"])
+    snooze_duration: int = 900
+    auto_snooze_timeout: int = 300
+    idle_suppress_after: int = 600
+    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+
+
 class Config(BaseModel):
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
@@ -55,6 +96,7 @@ class Config(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    reminders: ReminderConfig = Field(default_factory=ReminderConfig)
 
     @property
     def current_user(self) -> str:

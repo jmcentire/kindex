@@ -778,6 +778,106 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
     return format_resume_context(store, name, max_tokens=tokens)
 
 
+# ── Reminders ─────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def remind_create(text: str, when: str, priority: str = "normal",
+                  channels: str = "") -> str:
+    """Create a reminder with natural language time parsing.
+
+    Args:
+        text: What to be reminded about.
+        when: When to fire: 'in 30 minutes', 'tomorrow at 3pm', 'every weekday at 9am'.
+        priority: Priority level (low, normal, high, urgent).
+        channels: Comma-separated notification channels (system, slack, email, claude).
+    """
+    store, config = _get_store()
+    from .reminders import create_reminder
+    channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
+    try:
+        rid = create_reminder(store, text, when, priority=priority, channels=channel_list)
+        r = store.get_reminder(rid)
+        return f"Created reminder: {rid} (next due: {r['next_due']})"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remind_list(status: str = "active", priority: str = "") -> str:
+    """List reminders with optional filters.
+
+    Args:
+        status: Filter by status (active, snoozed, fired, all).
+        priority: Filter by priority (low, normal, high, urgent).
+    """
+    store, _ = _get_store()
+    from .reminders import format_reminder_list
+    s = None if status == "all" else status
+    p = priority or None
+    reminders = store.list_reminders(status=s, priority=p)
+    if not reminders:
+        return "No reminders found."
+    return format_reminder_list(reminders)
+
+
+@mcp.tool()
+def remind_snooze(id: str, duration: str = "") -> str:
+    """Snooze a reminder.
+
+    Args:
+        id: Reminder ID.
+        duration: Snooze duration (e.g. '15m', '1h'). Uses config default if empty.
+    """
+    store, config = _get_store()
+    from .reminders import parse_duration, snooze_reminder
+    dur = parse_duration(duration) if duration else None
+    try:
+        new_time = snooze_reminder(store, id, dur, config)
+        return f"Snoozed until: {new_time}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remind_done(id: str) -> str:
+    """Mark a reminder as completed.
+
+    Args:
+        id: Reminder ID.
+    """
+    store, _ = _get_store()
+    from .reminders import complete_reminder
+    try:
+        complete_reminder(store, id)
+        return f"Completed reminder: {id}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remind_check() -> str:
+    """Check for due reminders and fire notifications.
+
+    Runs the reminder check cycle: finds due reminders, sends notifications,
+    handles auto-snooze for stale fired reminders.
+    """
+    store, config = _get_store()
+    from .reminders import auto_snooze_stale, check_and_fire
+    fired = check_and_fire(store, config)
+    snoozed = auto_snooze_stale(store, config)
+    if not fired and snoozed == 0:
+        return "No due reminders."
+    parts = []
+    if fired:
+        parts.append(f"{len(fired)} reminder(s) fired")
+        for r in fired:
+            parts.append(f"  - {r['title']} [{r.get('priority', 'normal')}]")
+    if snoozed:
+        parts.append(f"{snoozed} auto-snoozed")
+    return "\n".join(parts)
+
+
 # ── Entry point ───────────────────────────────────────────────────────
 
 

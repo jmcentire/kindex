@@ -155,6 +155,37 @@ class Store:
             except Exception:
                 pass
 
+        if current_version < 5:
+            # v5: add reminders table
+            try:
+                c.executescript("""
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        body TEXT DEFAULT '',
+                        priority TEXT DEFAULT 'normal',
+                        status TEXT DEFAULT 'active',
+                        reminder_type TEXT DEFAULT 'once',
+                        schedule TEXT DEFAULT '',
+                        next_due TEXT NOT NULL,
+                        last_fired TEXT,
+                        snooze_until TEXT,
+                        snooze_count INTEGER DEFAULT 0,
+                        channels TEXT DEFAULT '[]',
+                        related_node_id TEXT,
+                        tags TEXT DEFAULT '',
+                        extra TEXT DEFAULT '{}',
+                        created_at TEXT DEFAULT (datetime('now')),
+                        updated_at TEXT DEFAULT (datetime('now'))
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+                    CREATE INDEX IF NOT EXISTS idx_reminders_next_due ON reminders(next_due);
+                    CREATE INDEX IF NOT EXISTS idx_reminders_priority ON reminders(priority);
+                """)
+                c.commit()
+            except Exception:
+                pass
+
         if current_version < SCHEMA_VERSION:
             c.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'",
@@ -800,6 +831,163 @@ class Store:
         self.update_node(node_id, extra=extra)
         self._log("update_state", node_id, node.get("title", ""),
                   details={"state": state})
+
+    # ── Reminders ───────────────────────────────────────────────────────
+
+    def add_reminder(
+        self,
+        title: str,
+        next_due: str,
+        *,
+        reminder_id: str | None = None,
+        body: str = "",
+        priority: str = "normal",
+        reminder_type: str = "once",
+        schedule: str = "",
+        channels: list[str] | None = None,
+        related_node_id: str | None = None,
+        tags: str = "",
+        extra: dict | None = None,
+    ) -> str:
+        """Insert a reminder. Returns its ID."""
+        rid = reminder_id or _uuid()
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO reminders
+               (id, title, body, priority, status, reminder_type, schedule,
+                next_due, channels, related_node_id, tags, extra,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (rid, title, body, priority, reminder_type, schedule,
+             next_due, _jdumps(channels or []), related_node_id or "",
+             tags, _jdumps(extra or {}), now, now),
+        )
+        self.conn.commit()
+        self._log("add_reminder", rid, title,
+                  details={"priority": priority, "next_due": next_due,
+                           "type": reminder_type})
+        return rid
+
+    def get_reminder(self, reminder_id: str) -> dict | None:
+        """Fetch a reminder by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._reminder_to_dict(row)
+
+    def update_reminder(self, reminder_id: str, **fields) -> None:
+        """Update specific fields on a reminder."""
+        allowed = {
+            "title", "body", "priority", "status", "reminder_type",
+            "schedule", "next_due", "last_fired", "snooze_until",
+            "snooze_count", "channels", "related_node_id", "tags", "extra",
+        }
+        updates = []
+        values = []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("channels", "extra"):
+                v = _jdumps(v)
+            updates.append(f"{k} = ?")
+            values.append(v)
+        if not updates:
+            return
+        updates.append("updated_at = ?")
+        values.append(_now())
+        values.append(reminder_id)
+        self.conn.execute(
+            f"UPDATE reminders SET {', '.join(updates)} WHERE id = ?",
+            values,
+        )
+        self.conn.commit()
+
+    def delete_reminder(self, reminder_id: str) -> None:
+        """Delete a reminder."""
+        self.conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        self.conn.commit()
+        self._log("delete_reminder", reminder_id)
+
+    def list_reminders(
+        self,
+        status: str | None = None,
+        priority: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List reminders with optional filters."""
+        clauses = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if priority:
+            clauses.append("priority = ?")
+            params.append(priority)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        rows = self.conn.execute(
+            f"""SELECT * FROM reminders{where}
+                ORDER BY
+                    CASE priority
+                        WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                        WHEN 'normal' THEN 2 WHEN 'low' THEN 3
+                    END,
+                    next_due ASC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        return [self._reminder_to_dict(r) for r in rows]
+
+    def due_reminders(self, as_of: str | None = None) -> list[dict]:
+        """Get all reminders that are due now (active past due or snoozed past snooze_until)."""
+        now = as_of or _now()
+        rows = self.conn.execute(
+            """SELECT * FROM reminders
+               WHERE (status = 'active' AND next_due <= ?)
+                  OR (status = 'snoozed' AND snooze_until <= ?)
+               ORDER BY
+                   CASE priority
+                       WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                       WHEN 'normal' THEN 2 WHEN 'low' THEN 3
+                   END,
+                   next_due ASC""",
+            (now, now),
+        ).fetchall()
+        return [self._reminder_to_dict(r) for r in rows]
+
+    def snooze_reminder(
+        self, reminder_id: str, snooze_until: str, increment_count: bool = True,
+    ) -> None:
+        """Set a reminder to snoozed status."""
+        fields: dict[str, Any] = {
+            "status": "snoozed",
+            "snooze_until": snooze_until,
+        }
+        if increment_count:
+            r = self.get_reminder(reminder_id)
+            if r:
+                fields["snooze_count"] = r.get("snooze_count", 0) + 1
+        self.update_reminder(reminder_id, **fields)
+        self._log("snooze_reminder", reminder_id, "",
+                  details={"snooze_until": snooze_until})
+
+    def complete_reminder(self, reminder_id: str) -> None:
+        """Mark a reminder as completed."""
+        self.update_reminder(reminder_id, status="completed")
+        self._log("complete_reminder", reminder_id)
+
+    def _reminder_to_dict(self, row: sqlite3.Row) -> dict:
+        """Convert a reminder row to dict with JSON parsing."""
+        d = dict(row)
+        for key in ("channels", "extra"):
+            if key in d and isinstance(d[key], str):
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
 
     # ── Stats ──────────────────────────────────────────────────────────
 

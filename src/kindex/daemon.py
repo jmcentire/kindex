@@ -59,6 +59,11 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["stats"] = stats
     results["orphan_count"] = len(orphans)
 
+    # 6. Check reminders
+    reminder_results = _check_reminders(config, store, verbose=verbose)
+    results["reminders_fired"] = reminder_results.get("fired", 0)
+    results["reminders_auto_snoozed"] = reminder_results.get("auto_snoozed", 0)
+
     # Update run marker
     set_run_marker(store)
 
@@ -108,6 +113,23 @@ def _process_inbox(config: "Config", store: "Store", verbose: bool = False) -> i
         md_file.rename(processed_dir / md_file.name)
 
     return count
+
+
+def _check_reminders(config: "Config", store: "Store", verbose: bool = False) -> dict:
+    """Run the reminder check cycle."""
+    if not config.reminders.enabled:
+        return {"fired": 0, "auto_snoozed": 0}
+
+    from .reminders import auto_snooze_stale, check_and_fire
+
+    fired = check_and_fire(store, config)
+    auto_snoozed = auto_snooze_stale(store, config)
+
+    if verbose and fired:
+        for r in fired:
+            print(f"  Fired reminder: {r['title']}")
+
+    return {"fired": len(fired), "auto_snoozed": auto_snoozed}
 
 
 def last_run_marker(config: "Config") -> str:

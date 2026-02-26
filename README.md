@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.5.1](https://img.shields.io/badge/version-0.5.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.6.0](https://img.shields.io/badge/version-0.6.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-479%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -25,7 +25,7 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Claude Code now has 16 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`.
+Claude Code now has 21 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, `remind_list`, `remind_snooze`, `remind_done`, `remind_check`.
 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json
@@ -44,7 +44,12 @@ With LLM-powered extraction:
 pip install kindex[llm]
 ```
 
-With everything (LLM + vectors + MCP):
+With reminders (natural language time parsing):
+```bash
+pip install kindex[reminders]
+```
+
+With everything (LLM + vectors + MCP + reminders):
 ```bash
 pip install kindex[all]
 ```
@@ -134,6 +139,13 @@ kin tag start auth-refactor --focus "OAuth2 flow" --remaining "tokens,tests"
 kin tag segment --focus "Token storage" --summary "Flow design done"
 kin tag resume auth-refactor   # context block for new session
 kin tag end --summary "All done"
+
+# Reminders — never forget, never nag
+kin remind create "standup" --at "every weekday at 9am" --priority high
+kin remind create "reply to Kevin" --at "in 30 minutes" --priority urgent
+kin remind list
+kin remind snooze --reminder-id <id> --duration 1h
+kin remind done --reminder-id <id>
 ```
 
 ## .kin Voice & Inheritance
@@ -182,8 +194,14 @@ LLM cache tiers (kin ask):
   Tier 2: query-relevant context           <- cached per-topic @ 10% cost
   Tier 3: user question                    <- full price, tiny
 
+Reminders:
+  reminders table (SQLite)    <- separate from knowledge graph
+  Time parsing:  dateparser (NL) + dateutil.rrule (recurrence) + cronsim (cron)
+  Channels:      system (macOS) | slack | email | claude (hook) | terminal
+  Daemon:        launchd/cron every 5 min -> check due -> notify -> auto-snooze
+
 Three integration paths:
-  MCP plugin --> Claude calls tools natively (search, add, learn, ...)
+  MCP plugin --> Claude calls tools natively (search, add, learn, remind, ...)
   CLI hooks  --> SessionStart / PreCompact / Stop lifecycle events
   Adapters   --> Entry-point discovery for custom ingestion sources
 ```
@@ -194,7 +212,7 @@ Three integration paths:
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
-## CLI Reference (43 commands)
+## CLI Reference (44 commands)
 
 ### Core
 | Command | Description |
@@ -218,6 +236,7 @@ Three integration paths:
 | `kin decay` | Apply weight decay to stale nodes/edges |
 | `kin recent` | Recently active nodes |
 | `kin tag [action]` | Session tags: start, update, segment, pause, end, resume, list, show |
+| `kin remind [action]` | Reminders: create, list, show, snooze, done, cancel, check |
 
 ### Graph Analytics
 | Command | Description |
@@ -298,13 +317,29 @@ defaults:
   hops: 2
   min_weight: 0.1
   mode: bfs
+
+reminders:
+  enabled: true
+  check_interval: 300            # 5 min daemon cycle
+  default_channels: [system]     # system, slack, email, claude, terminal
+  snooze_duration: 900           # 15 min default snooze
+  auto_snooze_timeout: 300       # auto-snooze after 5 min inaction
+  idle_suppress_after: 600       # suppress if idle > 10 min
+  channels:
+    slack:
+      enabled: false
+      webhook_url: ""
+    email:
+      enabled: false
+      smtp_host: ""
+      to_addr: ""
 ```
 
 ## Development
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 479 tests
+make test         # run 547 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```
