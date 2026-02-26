@@ -172,6 +172,57 @@ def install_crontab(config: "Config", dry_run: bool = False) -> list[str]:
     return actions
 
 
+def install_reminder_daemon(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install macOS launchd plist for reminder checks (every 5 min).
+
+    Creates ~/Library/LaunchAgents/com.kindex.reminders.plist
+    Separate from the main cron plist to keep heavy ingestion at 30 min.
+    """
+    actions = []
+    kin_path = _find_kin_path()
+    launch_agents = Path.home() / "Library" / "LaunchAgents"
+    plist_path = launch_agents / "com.kindex.reminders.plist"
+    log_dir = config.data_path / "logs"
+    interval = config.reminders.check_interval
+
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kindex.reminders</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{kin_path}</string>
+        <string>remind</string>
+        <string>check</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>{interval}</integer>
+    <key>StandardOutPath</key>
+    <string>{log_dir}/reminders.log</string>
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/reminders-error.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
+
+    if not dry_run:
+        launch_agents.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        plist_path.write_text(plist_content)
+        subprocess.run(["launchctl", "load", str(plist_path)],
+                       capture_output=True, timeout=5)
+        actions.append(f"Installed reminder daemon: {plist_path}")
+        actions.append(f"Check interval: {interval}s")
+    else:
+        actions.append(f"Would install: {plist_path}")
+
+    return actions
+
+
 def _find_kin_path() -> str:
     """Find the kin executable path."""
     result = subprocess.run(["which", "kin"], capture_output=True, text=True, timeout=5)

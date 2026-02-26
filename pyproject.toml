@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindex"
-version = "0.5.1"
+version = "0.6.0"
 description = "The memory layer Claude Code doesn't have — persistent knowledge graph for AI workflows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,14 +23,16 @@ dependencies = [
     "pyyaml>=6.0",
     "networkx>=3.0",
     "numpy>=1.24",
+    "python-dateutil>=2.8",
 ]
 
 [project.optional-dependencies]
 llm = ["anthropic>=0.40"]
 vectors = ["sqlite-vec>=0.1", "sentence-transformers>=2.0"]
 mcp = ["mcp[cli]>=1.26.0"]
-dev = ["pytest>=7.0", "scipy>=1.10"]
-all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0", "mcp[cli]>=1.26.0"]
+reminders = ["dateparser>=1.1", "cronsim>=2.0"]
+dev = ["pytest>=7.0", "scipy>=1.10", "dateparser>=1.1"]
+all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0", "mcp[cli]>=1.26.0", "dateparser>=1.1", "cronsim>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/jmcentire/kindex"

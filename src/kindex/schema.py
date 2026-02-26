@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Audience scopes for tenancy model
 AUDIENCES = ("private", "team", "org", "public")
@@ -138,4 +138,29 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Reminders
+CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    priority TEXT DEFAULT 'normal',
+    status TEXT DEFAULT 'active',
+    reminder_type TEXT DEFAULT 'once',
+    schedule TEXT DEFAULT '',
+    next_due TEXT NOT NULL,
+    last_fired TEXT,
+    snooze_until TEXT,
+    snooze_count INTEGER DEFAULT 0,
+    channels TEXT DEFAULT '[]',
+    related_node_id TEXT,
+    tags TEXT DEFAULT '',
+    extra TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+CREATE INDEX IF NOT EXISTS idx_reminders_next_due ON reminders(next_due);
+CREATE INDEX IF NOT EXISTS idx_reminders_priority ON reminders(priority);
 """

@@ -19,7 +19,8 @@ if TYPE_CHECKING:
     from .budget import BudgetLedger
 
 
-def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750) -> str:
+def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
+                  config: Config | None = None) -> str:
     """Generate compact context injection (~500-750 tokens) for SessionStart hook.
 
     - Auto-detects topic from current working directory if not provided
@@ -162,6 +163,34 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750)
             lines.append("")
     except Exception:
         pass  # Don't break priming if sessions module has issues
+
+    # -- Due/upcoming reminders --
+    try:
+        if config and config.reminders.enabled:
+            upcoming_window = datetime.datetime.now() + datetime.timedelta(hours=1)
+            upcoming_iso = upcoming_window.isoformat(timespec="seconds")
+
+            due_now = store.due_reminders()
+            upcoming = [r for r in store.list_reminders(status="active")
+                        if r["next_due"] <= upcoming_iso]
+            due_ids = {d["id"] for d in due_now}
+            all_reminders = due_now + [r for r in upcoming if r["id"] not in due_ids]
+
+            if all_reminders:
+                lines.append("### Reminders")
+                for r in all_reminders[:5]:
+                    prefix = "**DUE NOW**" if r["id"] in due_ids else "upcoming"
+                    p_marker = f" [{r['priority']}]" if r.get("priority", "normal") != "normal" else ""
+                    lines.append(
+                        f"- {prefix}{p_marker}: {r['title']} "
+                        f"(due: {r['next_due'][:16]}, id: {r['id']})"
+                    )
+                    lines.append(
+                        f"  Use `kin remind done {r['id']}` or `kin remind snooze {r['id']}`"
+                    )
+                lines.append("")
+    except Exception:
+        pass  # Don't break priming
 
     return "\n".join(lines) + "\n"
 

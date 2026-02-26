@@ -2410,6 +2410,121 @@ def _now_short() -> str:
 # ── session tags ──────────────────────────────────────────────────────
 
 
+def cmd_remind(args):
+    """Reminder management — create, list, snooze, done, cancel, check."""
+    store = _store(args)
+    cfg = _config(args)
+    action = getattr(args, "remind_action", None)
+
+    if action == "create" or action is None:
+        from .reminders import create_reminder
+        title = " ".join(getattr(args, "title_words", []) or [])
+        time_spec = getattr(args, "at", None)
+        if not title or not time_spec:
+            print("Usage: kin remind create <title> --at <time>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            rid = create_reminder(
+                store, title, time_spec,
+                priority=getattr(args, "priority", None) or "normal",
+                channels=([c.strip() for c in args.channel.split(",") if c.strip()]
+                          if getattr(args, "channel", None) else None),
+                tags=getattr(args, "tag_str", "") or "",
+            )
+            r = store.get_reminder(rid)
+            if getattr(args, "json", False):
+                print(_dumps(r))
+            else:
+                print(f"Created reminder: {rid} (due: {r['next_due']})")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "list":
+        from .reminders import format_reminder_list
+        status_filter = getattr(args, "status", None)
+        if status_filter == "all":
+            status_filter = None
+        reminders = store.list_reminders(
+            status=status_filter,
+            priority=getattr(args, "priority", None),
+        )
+        if getattr(args, "json", False):
+            print(_dumps(reminders))
+        elif not reminders:
+            print("No reminders.")
+        else:
+            print(format_reminder_list(reminders))
+
+    elif action == "show":
+        from .reminders import format_reminder
+        rid = getattr(args, "reminder_id", None)
+        if not rid:
+            print("Usage: kin remind show --reminder-id <id>", file=sys.stderr)
+            store.close()
+            return
+        r = store.get_reminder(rid)
+        if r:
+            if getattr(args, "json", False):
+                print(_dumps(r))
+            else:
+                print(format_reminder(r))
+        else:
+            print(f"Reminder not found: {rid}", file=sys.stderr)
+
+    elif action == "snooze":
+        from .reminders import snooze_reminder, parse_duration
+        rid = getattr(args, "reminder_id", None)
+        if not rid:
+            print("Usage: kin remind snooze --reminder-id <id>", file=sys.stderr)
+            store.close()
+            return
+        duration = getattr(args, "duration", None)
+        duration_secs = parse_duration(duration) if duration else None
+        try:
+            new_time = snooze_reminder(store, rid, duration_secs, cfg)
+            print(f"Snoozed until: {new_time}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "done":
+        from .reminders import complete_reminder
+        rid = getattr(args, "reminder_id", None)
+        if not rid:
+            print("Usage: kin remind done --reminder-id <id>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            complete_reminder(store, rid)
+            print(f"Completed: {rid}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "cancel":
+        from .reminders import cancel_reminder
+        rid = getattr(args, "reminder_id", None)
+        if not rid:
+            print("Usage: kin remind cancel --reminder-id <id>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            cancel_reminder(store, rid)
+            print(f"Cancelled: {rid}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "check":
+        from .reminders import auto_snooze_stale, check_and_fire
+        fired = check_and_fire(store, cfg)
+        snoozed = auto_snooze_stale(store, cfg)
+        if getattr(args, "json", False):
+            print(_dumps({"fired": len(fired), "auto_snoozed": snoozed}))
+        else:
+            print(f"Checked: {len(fired)} fired, {snoozed} auto-snoozed")
+
+    store.close()
+
+
 def cmd_tag(args):
     """Session tag management — named work context handles."""
     store = _store(args)
@@ -3211,6 +3326,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tokens", type=int, default=1500, help="Token budget for resume context")
     _common(s)
     s.set_defaults(func=cmd_tag)
+
+    # remind
+    s = sub.add_parser("remind", help="Reminder management (create, list, snooze, done, cancel, check)")
+    s.add_argument("remind_action", nargs="?", default="create",
+                   choices=["create", "list", "show", "snooze", "done", "cancel", "check"])
+    s.add_argument("title_words", nargs="*", help="Reminder title (for create)")
+    s.add_argument("--at", help="Time spec: 'in 30 minutes', 'every weekday at 9am', etc.")
+    s.add_argument("--priority", choices=["low", "normal", "high", "urgent"])
+    s.add_argument("--channel", help="Notification channels (comma-separated)")
+    s.add_argument("--tag", dest="tag_str", help="Tags (comma-separated)")
+    s.add_argument("--status", help="Filter (for list): active, snoozed, fired, all")
+    s.add_argument("--reminder-id", help="Reminder ID (for show/snooze/done/cancel)")
+    s.add_argument("--duration", help="Snooze duration: 15m, 1h, 2h30m")
+    _common(s)
+    s.set_defaults(func=cmd_remind)
 
     return p
 
