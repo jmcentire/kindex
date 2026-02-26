@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.5.0](https://img.shields.io/badge/version-0.5.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.5.1](https://img.shields.io/badge/version-0.5.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![Tests](https://img.shields.io/badge/tests-479%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
@@ -304,7 +304,7 @@ defaults:
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 429 tests
+make test         # run 479 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```

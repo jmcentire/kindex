@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kindex — The memory layer Claude Code doesn't have</title>
-<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. Free Claude Code plugin with 13 MCP tools, 42 CLI commands, and cache-optimized LLM retrieval.">
+<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. Free Claude Code plugin with 16 MCP tools, 43 CLI commands, and cache-optimized LLM retrieval.">
 <style>
   :root {
     --bg: #0d1117;
@@ -262,7 +262,7 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.5.0</span>
+      <span class="badge green">v0.5.1</span>
       <span class="badge orange">Claude Code Plugin</span>
       <span class="badge blue">16 MCP Tools</span>
       <span class="badge purple">43 CLI Commands</span>
@@ -349,7 +349,7 @@
 <section>
   <div class="container">
     <h2>Install as Claude Code Plugin</h2>
-    <p>Two commands. Zero configuration. Claude gets 13 native tools for your knowledge graph.</p>
+    <p>Two commands. Zero configuration. Claude gets 16 native tools for your knowledge graph.</p>
     <div class="terminal mono">
 <span class="comment"># Install and register (one time)</span>
 <span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
@@ -370,6 +370,9 @@
 <span class="output">  graph_stats &mdash; centrality, communities, density</span>
 <span class="output">  changelog   &mdash; recent changes</span>
 <span class="output">  ingest      &mdash; ingest from external sources</span>
+<span class="output">  tag_start   &mdash; start a named session tag</span>
+<span class="output">  tag_update  &mdash; update/segment/pause/end a session tag</span>
+<span class="output">  tag_resume  &mdash; resume a session with full context</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
@@ -629,7 +632,7 @@ inherits:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.5.0 &middot; Claude Code Plugin &middot; 16 MCP Tools &middot; 43 CLI Commands &middot; 479 Tests</p>
+    <p style="margin-top: 8px;">v0.5.1 &middot; Claude Code Plugin &middot; 16 MCP Tools &middot; 43 CLI Commands &middot; 479 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
   </div>
 </footer>
