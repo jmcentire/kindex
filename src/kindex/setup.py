@@ -66,6 +66,30 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         actions.append("PreCompact hook already installed")
 
+    # Stop hook — guard for actionable reminders + session capture
+    stop_hooks = hooks.setdefault("Stop", [])
+    stop_guard_entry = {
+        "matcher": "",
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"{kin_path} stop-guard",
+                "timeout": 5000,
+            },
+            {
+                "type": "command",
+                "command": f'{kin_path} compact-hook --text "Session ended"',
+                "timeout": 5000,
+            },
+        ]
+    }
+    if not any("stop-guard" in str(h) for h in stop_hooks):
+        # Replace existing Stop hooks with the combined guard + compact entry
+        hooks["Stop"] = [stop_guard_entry]
+        actions.append("Added Stop hook: kin stop-guard + compact-hook")
+    else:
+        actions.append("Stop hook already installed")
+
     if not dry_run:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(data, indent=2) + "\n")

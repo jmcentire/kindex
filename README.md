@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.6.0](https://img.shields.io/badge/version-0.6.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.7.0](https://img.shields.io/badge/version-0.7.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-568%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -25,7 +25,7 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Claude Code now has 21 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, `remind_list`, `remind_snooze`, `remind_done`, `remind_check`.
+Claude Code now has 22 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, `remind_list`, `remind_snooze`, `remind_done`, `remind_check`, `remind_exec`.
 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json
@@ -109,6 +109,46 @@ Avg degree: 122.94
 ```
 
 192 nodes. 11,802 edges. 5 context tiers. Hybrid FTS5 + graph traversal in 142ms.
+
+## Getting Claude to Actually Use It
+
+Installing the MCP plugin gives Claude the tools. But Claude won't use them proactively unless you tell it to. Kindex ships with a recommended CLAUDE.md block that turns passive tools into active habits:
+
+```bash
+# Print the recommended directives
+kin setup-claude-md
+
+# Or auto-append to your global CLAUDE.md
+kin setup-claude-md --install
+```
+
+This adds session lifecycle rules (start/during/segment/end), explicit capture triggers (discoveries, decisions, key files, notable outputs), and search-before-add discipline. The difference between "Claude has a knowledge graph" and "Claude actively maintains a knowledge graph" is this block.
+
+The SessionStart hook (`kin setup-hooks`) reinforces these directives at the start of every session with a "Session directives" block that reminds Claude to use kindex MCP tools throughout the session.
+
+### What gets captured
+
+With the directives active, Claude will:
+- **Search** the graph before starting work and before adding nodes
+- **Add** discoveries, decisions, key files, notable outputs, and new terms as they emerge
+- **Link** related concepts when connections are found
+- **Learn** from long files and outputs via bulk extraction
+- **Tag** sessions to track work context across conversations
+- **Remind** with actions for deferred tasks (shell commands or headless Claude invocations)
+
+### Actionable Reminders
+
+Reminders can carry shell commands and/or natural-language instructions. When due, the daemon executes them automatically — simple commands run directly, complex tasks launch headless `claude -p`. A Stop hook guard blocks Claude from exiting when actionable reminders are pending.
+
+```bash
+# Kill a cloud instance in 1 hour (but download results first)
+kin remind create "Kill vast.ai instance" --at "in 1 hour" \
+  --action "vastai destroy instance 12345" \
+  --instructions "Download results from /workspace/ before killing"
+
+# Manual trigger
+kin remind exec --reminder-id <id>
+```
 
 ## Quick Start
 
@@ -199,6 +239,8 @@ Reminders:
   Time parsing:  dateparser (NL) + dateutil.rrule (recurrence) + cronsim (cron)
   Channels:      system (macOS) | slack | email | claude (hook) | terminal
   Daemon:        launchd/cron every 5 min -> check due -> notify -> auto-snooze
+  Actions:       shell commands run directly | complex tasks launch claude -p
+  Stop guard:    blocks session exit when actionable reminders pending
 
 Three integration paths:
   MCP plugin --> Claude calls tools natively (search, add, learn, remind, ...)
@@ -212,7 +254,7 @@ Three integration paths:
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
-## CLI Reference (44 commands)
+## CLI Reference (47 commands)
 
 ### Core
 | Command | Description |
@@ -236,7 +278,7 @@ Three integration paths:
 | `kin decay` | Apply weight decay to stale nodes/edges |
 | `kin recent` | Recently active nodes |
 | `kin tag [action]` | Session tags: start, update, segment, pause, end, resume, list, show |
-| `kin remind [action]` | Reminders: create, list, show, snooze, done, cancel, check |
+| `kin remind [action]` | Reminders: create, list, show, snooze, done, cancel, check, exec |
 
 ### Graph Analytics
 | Command | Description |
@@ -272,6 +314,8 @@ Three integration paths:
 | `kin config [show\|get\|set]` | View or edit configuration |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
 | `kin setup-cron` | Install periodic maintenance (launchd/crontab) |
+| `kin setup-claude-md` | Output/install recommended CLAUDE.md kindex directives |
+| `kin stop-guard` | Stop hook guard for actionable reminders |
 | `kin doctor` | Health check with graph enforcement (--fix) |
 | `kin migrate` | Import markdown topics into SQLite |
 | `kin budget` | LLM spend tracking |

@@ -181,16 +181,43 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
                 for r in all_reminders[:5]:
                     prefix = "**DUE NOW**" if r["id"] in due_ids else "upcoming"
                     p_marker = f" [{r['priority']}]" if r.get("priority", "normal") != "normal" else ""
+                    extra = r.get("extra") or {}
+                    action_marker = ""
+                    if extra.get("action_command") or extra.get("action_instructions"):
+                        a_status = extra.get("action_status", "pending")
+                        action_marker = f" [action: {a_status}]"
                     lines.append(
-                        f"- {prefix}{p_marker}: {r['title']} "
+                        f"- {prefix}{p_marker}{action_marker}: {r['title']} "
                         f"(due: {r['next_due'][:16]}, id: {r['id']})"
                     )
-                    lines.append(
-                        f"  Use `kin remind done {r['id']}` or `kin remind snooze {r['id']}`"
-                    )
+                    if extra.get("action_command"):
+                        lines.append(f"  Action: `{extra['action_command']}`")
+                    if extra.get("action_instructions"):
+                        lines.append(f"  Instructions: {extra['action_instructions'][:80]}")
+                    if action_marker:
+                        lines.append(
+                            f"  Use `kin remind exec {r['id']}` to run action, "
+                            f"`kin remind done {r['id']}` to dismiss, "
+                            f"or `kin remind snooze {r['id']}`"
+                        )
+                    else:
+                        lines.append(
+                            f"  Use `kin remind done {r['id']}` or `kin remind snooze {r['id']}`"
+                        )
                 lines.append("")
     except Exception:
         pass  # Don't break priming
+
+    # -- Session directives (always included) --
+    lines.append("### Session directives")
+    lines.append("You MUST use kindex MCP tools throughout this session:")
+    lines.append("- `search` before starting work and before adding nodes")
+    lines.append("- `add` for discoveries, decisions, key files, notable outputs, new terms")
+    lines.append("- `link` when you find connections between concepts")
+    lines.append("- `learn` after reading long files/outputs to bulk-extract concepts")
+    lines.append("- `tag_start`/`tag_update` to track session context")
+    lines.append("- `remind_create` with `action`/`instructions` for deferred tasks")
+    lines.append("")
 
     return "\n".join(lines) + "\n"
 
@@ -371,46 +398,25 @@ def generate_session_directive(store: Store) -> str:
     Returns markdown string with instructions for capturing knowledge during sessions.
     """
     lines = [
-        "## Kindex: Knowledge Capture Directives",
+        "## Kindex: Knowledge Capture (REQUIRED)",
         "",
-        "During this session, capture discoveries into the knowledge graph:",
+        "You MUST use kindex MCP tools throughout this session to capture knowledge.",
+        "Prefer MCP tools (`add`, `search`, `link`, `learn`) over CLI when available.",
         "",
-        "### Adding new concepts",
-        "When you discover a new concept, pattern, or technique:",
-        "```bash",
-        'kin add "concept title and brief description" --type concept',
-        "```",
+        "### What to capture",
+        "- **Discoveries**: patterns, findings, aha moments -- `add` as concept",
+        "- **Decisions**: choices made and why -- `add` as decision",
+        "- **Key files**: what a file does, why it exists -- `add` with file path",
+        "- **Notable outputs**: test results, errors, metrics -- `add` as concept",
+        "- **New terms**: domain jargon, recurring themes -- `add` as concept",
+        "- **Open questions**: things to investigate later -- `add` as question",
+        "- **Connections**: when two concepts relate -- `link` with reason",
         "",
-        "### Linking related ideas",
-        "When you find connections between ideas or concepts:",
-        "```bash",
-        'kin link "Source Concept" "Target Concept" relates_to --why "reason for connection"',
-        "```",
-        "",
-        "### Recording decisions",
-        "When a decision is made with rationale:",
-        "```bash",
-        'kin add "What was decided and why" --type decision',
-        "```",
-        "",
-        "### Capturing open questions",
-        "When an unresolved question emerges:",
-        "```bash",
-        'kin add "The open question" --type question',
-        "```",
-        "",
-        "### Operational nodes",
-        "For constraints, watches, or directives:",
-        "```bash",
-        'kin add "Rule or constraint text" --type constraint --trigger pre-commit --action warn',
-        'kin add "Thing to watch" --type watch --owner <user> --expires YYYY-MM-DD',
-        "```",
-        "",
-        "### Session-end capture",
-        "Before session ends, capture key learnings:",
-        "```bash",
-        "kin compact-hook --text 'Summary of key discoveries and decisions from this session'",
-        "```",
+        "### Rules",
+        "- Always `search` before `add` to avoid duplicates",
+        "- Use `learn` for bulk extraction from long text/files",
+        "- Use `tag_start`/`tag_update` to track session context",
+        "- Use `remind_create` with `action`/`instructions` for deferred tasks",
         "",
     ]
 

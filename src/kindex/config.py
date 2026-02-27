@@ -69,6 +69,8 @@ class EmailChannelConfig(BaseModel):
 
 class ClaudeChannelConfig(BaseModel):
     enabled: bool = True
+    headless_model: str = ""          # model for claude -p; empty = Claude default
+    max_budget_usd: float = 0.50      # spending cap per headless invocation
 
 
 class ChannelsConfig(BaseModel):
@@ -85,6 +87,8 @@ class ReminderConfig(BaseModel):
     snooze_duration: int = 900
     auto_snooze_timeout: int = 300
     idle_suppress_after: int = 600
+    action_enabled: bool = True        # enable action execution on reminder fire
+    stop_guard_window: int = 7200      # seconds (2h) — block exit if actions due within
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
 
 

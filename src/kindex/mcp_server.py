@@ -17,8 +17,13 @@ mcp = FastMCP(
     "kindex",
     instructions=(
         "Kindex is a persistent knowledge graph for AI-assisted workflows. "
-        "Use 'search' to find knowledge, 'add' to capture discoveries, "
-        "'context' for formatted context blocks, and 'status' for graph health. "
+        "You MUST use these tools proactively throughout every session. "
+        "Use 'search' before starting work and before adding to avoid duplicates. "
+        "Use 'add' to capture discoveries, decisions, key files, notable outputs, "
+        "and new terms you encounter. Use 'link' to connect related concepts. "
+        "Use 'learn' to bulk-extract knowledge from long text. "
+        "Use 'tag_start'/'tag_update'/'tag_resume' to track session context. "
+        "Use 'remind_create' with 'action'/'instructions' for deferred tasks. "
         "Nodes have types (concept, decision, skill, person, project, constraint, etc.) "
         "and are connected by weighted edges."
     ),
@@ -115,6 +120,9 @@ def _node_detail(store, node: dict) -> str:
 def search(query: str, top_k: int = 10) -> str:
     """Search the knowledge graph with hybrid FTS5 + graph traversal.
 
+    USE THIS: before starting work on a topic, before adding nodes (to avoid
+    duplicates), and whenever you need context about a concept.
+
     Uses Reciprocal Rank Fusion to merge full-text and graph results.
     Returns ranked nodes with scores.
     """
@@ -144,6 +152,10 @@ def add(
     audience: str = "private",
 ) -> str:
     """Add a knowledge node to the graph.
+
+    USE THIS: when you discover something notable -- a pattern, decision,
+    key file, surprising output, new term, or open question. Always search
+    first to avoid duplicates.
 
     The text becomes the node's title and content. Auto-extracts concepts
     and creates links to existing nodes when possible.
@@ -393,6 +405,10 @@ def suggest(limit: int = 10) -> str:
 @mcp.tool()
 def learn(text: str) -> str:
     """Extract knowledge from text and add it to the graph.
+
+    USE THIS: after reading long files, articles, command outputs, or completing
+    complex multi-step tasks. Summarize what happened and pass the text here
+    for automatic concept extraction and linking.
 
     Analyzes the text for concepts, decisions, questions, and connections.
     Creates nodes and links automatically.
@@ -783,7 +799,8 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
 
 @mcp.tool()
 def remind_create(text: str, when: str, priority: str = "normal",
-                  channels: str = "") -> str:
+                  channels: str = "", action: str = "",
+                  instructions: str = "") -> str:
     """Create a reminder with natural language time parsing.
 
     Args:
@@ -791,14 +808,24 @@ def remind_create(text: str, when: str, priority: str = "normal",
         when: When to fire: 'in 30 minutes', 'tomorrow at 3pm', 'every weekday at 9am'.
         priority: Priority level (low, normal, high, urgent).
         channels: Comma-separated notification channels (system, slack, email, claude).
+        action: Shell command to execute when the reminder fires (optional).
+        instructions: Natural language instructions for Claude to follow when due (optional).
     """
     store, config = _get_store()
     from .reminders import create_reminder
     channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
     try:
-        rid = create_reminder(store, text, when, priority=priority, channels=channel_list)
+        rid = create_reminder(
+            store, text, when,
+            priority=priority, channels=channel_list,
+            action_command=action,
+            action_instructions=instructions,
+        )
         r = store.get_reminder(rid)
-        return f"Created reminder: {rid} (next due: {r['next_due']})"
+        action_info = ""
+        if action or instructions:
+            action_info = f", action: {'shell' if action and not instructions else 'claude'}"
+        return f"Created reminder: {rid} (next due: {r['next_due']}{action_info})"
     except ValueError as e:
         return f"Error: {e}"
 
@@ -876,6 +903,24 @@ def remind_check() -> str:
     if snoozed:
         parts.append(f"{snoozed} auto-snoozed")
     return "\n".join(parts)
+
+
+@mcp.tool()
+def remind_exec(id: str) -> str:
+    """Manually trigger a reminder's action.
+
+    Args:
+        id: Reminder ID.
+    """
+    store, config = _get_store()
+    from .actions import execute_action, has_action
+    r = store.get_reminder(id)
+    if not r:
+        return f"Error: Reminder not found: {id}"
+    if not has_action(r):
+        return f"Error: Reminder {id} has no action defined."
+    result = execute_action(store, r, config)
+    return f"Action {result['status']}: {result.get('output', '')[:500]}"
 
 
 # ── Entry point ───────────────────────────────────────────────────────

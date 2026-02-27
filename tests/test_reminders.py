@@ -459,3 +459,247 @@ class TestReminderCLI:
         result = _run_cli("remind", "check", tmp_path=tmp_path)
         assert result.returncode == 0
         assert "Checked:" in result.stdout
+
+
+# ── Actions ────────────────────────────────────────────────────────
+
+
+class TestActionFields:
+    def test_has_action_false_for_plain(self, store):
+        from kindex.actions import has_action
+        rid = store.add_reminder("Plain", "2099-03-01T10:00:00")
+        r = store.get_reminder(rid)
+        assert not has_action(r)
+
+    def test_has_action_true_with_command(self, store):
+        from kindex.actions import has_action
+        rid = store.add_reminder(
+            "Actionable", "2099-03-01T10:00:00",
+            extra={"action_command": "echo hello", "action_status": "pending"},
+        )
+        r = store.get_reminder(rid)
+        assert has_action(r)
+
+    def test_has_action_true_with_instructions(self, store):
+        from kindex.actions import has_action
+        rid = store.add_reminder(
+            "Clever", "2099-03-01T10:00:00",
+            extra={"action_instructions": "Check the server status",
+                   "action_status": "pending"},
+        )
+        r = store.get_reminder(rid)
+        assert has_action(r)
+
+    def test_resolve_mode_auto_shell(self):
+        from kindex.actions import resolve_mode
+        assert resolve_mode({"action_command": "ls",
+                             "action_instructions": "",
+                             "action_mode": "auto"}) == "shell"
+
+    def test_resolve_mode_auto_claude(self):
+        from kindex.actions import resolve_mode
+        assert resolve_mode({"action_command": "ls",
+                             "action_instructions": "check it",
+                             "action_mode": "auto"}) == "claude"
+
+    def test_resolve_mode_explicit(self):
+        from kindex.actions import resolve_mode
+        assert resolve_mode({"action_mode": "shell"}) == "shell"
+        assert resolve_mode({"action_mode": "claude"}) == "claude"
+
+
+class TestExecuteShellAction:
+    def test_shell_success(self, store, config):
+        from kindex.actions import execute_action
+        rid = store.add_reminder(
+            "Echo test", "2099-03-01T10:00:00",
+            extra={"action_command": "echo hello-world",
+                   "action_mode": "shell", "action_status": "pending"},
+        )
+        r = store.get_reminder(rid)
+        result = execute_action(store, r, config)
+        assert result["status"] == "completed"
+        assert "hello-world" in result["output"]
+        # Verify stored result
+        r2 = store.get_reminder(rid)
+        assert r2["extra"]["action_status"] == "completed"
+        assert "hello-world" in r2["extra"]["action_result"]
+
+    def test_shell_failure(self, store, config):
+        from kindex.actions import execute_action
+        rid = store.add_reminder(
+            "Fail test", "2099-03-01T10:00:00",
+            extra={"action_command": "exit 1",
+                   "action_mode": "shell", "action_status": "pending"},
+        )
+        r = store.get_reminder(rid)
+        result = execute_action(store, r, config)
+        assert result["status"] == "failed"
+
+    def test_shell_timeout(self, store, config):
+        from kindex.actions import execute_action
+        rid = store.add_reminder(
+            "Slow", "2099-03-01T10:00:00",
+            extra={"action_command": "sleep 60",
+                   "action_mode": "shell", "action_status": "pending"},
+        )
+        r = store.get_reminder(rid)
+        result = execute_action(store, r, config, timeout=1)
+        assert result["status"] == "failed"
+        assert "Timed out" in result["output"]
+
+    def test_skip_already_completed(self, store, config):
+        from kindex.actions import execute_action
+        rid = store.add_reminder(
+            "Done", "2099-03-01T10:00:00",
+            extra={"action_command": "echo x",
+                   "action_mode": "shell", "action_status": "completed"},
+        )
+        r = store.get_reminder(rid)
+        result = execute_action(store, r, config)
+        assert result["status"] == "skipped"
+
+    def test_skip_no_action(self, store, config):
+        from kindex.actions import execute_action
+        rid = store.add_reminder("No action", "2099-03-01T10:00:00")
+        r = store.get_reminder(rid)
+        result = execute_action(store, r, config)
+        assert result["status"] == "skipped"
+
+
+class TestCreateReminderWithAction:
+    def test_create_with_command(self, store):
+        from kindex.reminders import create_reminder
+        rid = create_reminder(
+            store, "Kill instance", "in 1 hour",
+            action_command="vastai destroy instance 12345",
+        )
+        r = store.get_reminder(rid)
+        assert r["extra"]["action_command"] == "vastai destroy instance 12345"
+        assert r["extra"]["action_status"] == "pending"
+        assert r["extra"]["action_mode"] == "auto"
+
+    def test_create_with_instructions(self, store):
+        from kindex.reminders import create_reminder
+        rid = create_reminder(
+            store, "Review results", "in 2 hours",
+            action_instructions="Download data from vast.ai before killing",
+            action_command="vastai ssh-url 12345",
+        )
+        r = store.get_reminder(rid)
+        assert r["extra"]["action_instructions"] == "Download data from vast.ai before killing"
+        assert r["extra"]["action_command"] == "vastai ssh-url 12345"
+
+    def test_create_without_action_has_no_extra(self, store):
+        from kindex.reminders import create_reminder
+        rid = create_reminder(store, "Simple", "in 1 hour")
+        r = store.get_reminder(rid)
+        assert not r["extra"].get("action_command")
+
+
+class TestCheckAndFireWithActions:
+    def test_fires_and_executes_action(self, store, config, monkeypatch):
+        from kindex.reminders import check_and_fire
+        past = (datetime.datetime.now() - datetime.timedelta(minutes=5)).isoformat(
+            timespec="seconds")
+        store.add_reminder(
+            "Auto action", past,
+            extra={"action_command": "echo done",
+                   "action_mode": "shell", "action_status": "pending"},
+        )
+        monkeypatch.setattr("kindex.notify.dispatch", lambda *a, **kw: [])
+        monkeypatch.setattr("kindex.notify.is_user_idle", lambda c: False)
+
+        fired = check_and_fire(store, config)
+        assert len(fired) == 1
+        # After successful action, reminder should be completed
+        r = store.get_reminder(fired[0]["id"])
+        assert r["status"] == "completed"
+
+    def test_action_disabled_skips_execution(self, store, config, monkeypatch):
+        from kindex.reminders import check_and_fire
+        config.reminders.action_enabled = False
+        past = (datetime.datetime.now() - datetime.timedelta(minutes=5)).isoformat(
+            timespec="seconds")
+        store.add_reminder(
+            "Disabled", past,
+            extra={"action_command": "echo nope",
+                   "action_mode": "shell", "action_status": "pending"},
+        )
+        monkeypatch.setattr("kindex.notify.dispatch", lambda *a, **kw: [])
+        monkeypatch.setattr("kindex.notify.is_user_idle", lambda c: False)
+
+        fired = check_and_fire(store, config)
+        assert len(fired) == 1
+        r = store.get_reminder(fired[0]["id"])
+        assert r["status"] == "fired"
+
+
+class TestFormatReminderWithAction:
+    def test_format_shows_action_info(self, store):
+        from kindex.reminders import format_reminder
+        rid = store.add_reminder(
+            "With action", "2099-03-01T10:00:00",
+            extra={"action_command": "echo hello",
+                   "action_mode": "shell", "action_status": "pending"},
+        )
+        r = store.get_reminder(rid)
+        output = format_reminder(r)
+        assert "Action [shell]: pending" in output
+        assert "Command: echo hello" in output
+
+    def test_format_shows_result_on_completed(self, store):
+        from kindex.reminders import format_reminder
+        rid = store.add_reminder(
+            "Completed action", "2099-03-01T10:00:00",
+            extra={"action_command": "echo hello",
+                   "action_mode": "shell", "action_status": "completed",
+                   "action_result": "hello"},
+        )
+        r = store.get_reminder(rid)
+        output = format_reminder(r)
+        assert "Result: hello" in output
+
+
+class TestStopGuardCLI:
+    def test_stop_guard_blocks_with_pending(self, tmp_path):
+        import json as _json
+        result = _run_cli(
+            "remind", "create", "Kill instance",
+            "--at", "in 30 minutes",
+            "--action", "vastai destroy 123",
+            tmp_path=tmp_path,
+        )
+        assert result.returncode == 0
+
+        result = _run_cli("stop-guard", tmp_path=tmp_path)
+        assert result.returncode == 0
+        if result.stdout.strip():
+            data = _json.loads(result.stdout)
+            assert data["decision"] == "block"
+            assert "Kill instance" in data["message"]
+
+    def test_stop_guard_allows_without_pending(self, tmp_path):
+        result = _run_cli("stop-guard", tmp_path=tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+
+class TestReminderExecCLI:
+    def test_exec_via_cli(self, tmp_path):
+        result = _run_cli(
+            "remind", "create", "Echo test",
+            "--at", "in 1 hour",
+            "--action", "echo hello-exec",
+            tmp_path=tmp_path,
+        )
+        assert result.returncode == 0
+        # Extract the reminder ID from "Created reminder: <id> (due: ...)"
+        rid = result.stdout.split(":")[1].strip().split(" ")[0]
+
+        result = _run_cli(
+            "remind", "exec", "--reminder-id", rid,
+            tmp_path=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "completed" in result.stdout.lower() or "hello-exec" in result.stdout

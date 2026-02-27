@@ -258,12 +258,24 @@ def create_reminder(
     channels: list[str] | None = None,
     tags: str = "",
     related_node_id: str | None = None,
+    action_command: str = "",
+    action_instructions: str = "",
+    action_mode: str = "auto",
 ) -> str:
     """Create a new reminder. Returns the reminder ID."""
     if priority not in _VALID_PRIORITIES:
         raise ValueError(f"Invalid priority {priority!r}; must be one of {_VALID_PRIORITIES}")
 
     next_due, schedule, reminder_type = parse_time_spec(time_spec)
+
+    extra: dict | None = None
+    if action_command or action_instructions:
+        extra = {
+            "action_command": action_command,
+            "action_instructions": action_instructions,
+            "action_mode": action_mode,
+            "action_status": "pending",
+        }
 
     return store.add_reminder(
         title,
@@ -275,6 +287,7 @@ def create_reminder(
         channels=channels,
         tags=tags,
         related_node_id=related_node_id,
+        extra=extra,
     )
 
 
@@ -371,6 +384,9 @@ def check_and_fire(
 ) -> list[dict]:
     """Main check cycle: find due reminders and fire notifications.
 
+    If a reminder has an action and ``config.reminders.action_enabled`` is True,
+    executes the action.  Successful actions auto-complete the reminder.
+
     Returns list of fired reminders.
     """
     if not config.reminders.enabled:
@@ -396,6 +412,19 @@ def check_and_fire(
 
         # Dispatch notification
         dispatch(r, config, channel_names=channels)
+
+        # Execute action if present and enabled
+        if config.reminders.action_enabled:
+            from .actions import execute_action, has_action
+            if has_action(r):
+                result = execute_action(store, r, config)
+                if result.get("status") == "completed":
+                    if r["reminder_type"] == "recurring":
+                        advance_recurring(store, r["id"])
+                    else:
+                        store.complete_reminder(r["id"])
+                    fired.append(r)
+                    continue
 
         if r["reminder_type"] == "recurring":
             # Advance to next occurrence
@@ -458,6 +487,20 @@ def format_reminder(reminder: dict) -> str:
         lines.append(f"    Snoozed until: {reminder['snooze_until']}")
     if reminder.get("snooze_count", 0) > 0:
         lines.append(f"    Snoozed {reminder['snooze_count']} time(s)")
+
+    # Action info
+    extra = reminder.get("extra") or {}
+    if extra.get("action_command") or extra.get("action_instructions"):
+        a_status = extra.get("action_status", "pending")
+        a_mode = extra.get("action_mode", "auto")
+        lines.append(f"    Action [{a_mode}]: {a_status}")
+        if extra.get("action_command"):
+            lines.append(f"      Command: {extra['action_command']}")
+        if extra.get("action_instructions"):
+            lines.append(f"      Instructions: {extra['action_instructions'][:80]}")
+        if extra.get("action_result") and a_status in ("completed", "failed"):
+            lines.append(f"      Result: {extra['action_result'][:120]}")
+
     return "\n".join(lines)
 
 
