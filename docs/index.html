@@ -262,10 +262,10 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.6.0</span>
+      <span class="badge green">v0.7.0</span>
       <span class="badge orange">Claude Code Plugin</span>
-      <span class="badge blue">21 MCP Tools</span>
-      <span class="badge purple">44 CLI Commands</span>
+      <span class="badge blue">22 MCP Tools</span>
+      <span class="badge purple">46 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -306,10 +306,51 @@
         <p>Named work context handles that replace manual resume files. Start a tag, track focus and remaining items, segment by topic, and resume seamlessly in new sessions. <code>kin tag start</code> / <code>kin tag resume</code>.</p>
       </div>
       <div class="card">
-        <h3>Reminders</h3>
-        <p>Natural language scheduling with recurring support. Activity-aware delivery via configurable channels (system notification, Slack, email, terminal). Auto-snooze if no action. Priority levels. <code>kin remind "standup" --at "every weekday at 9am"</code>.</p>
+        <h3>Reminders &amp; Actions</h3>
+        <p>Natural language scheduling with recurring support. Reminders can carry shell commands and Claude instructions &mdash; the daemon executes them automatically when due. A Stop hook guard blocks session exit when actionable reminders are pending. <code>kin remind create "deploy" --at "in 1h" --action "..."</code>.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- Encouraging Claude -->
+<section>
+  <div class="container">
+    <h2>Getting Claude to Actually Use It</h2>
+    <div class="callout">
+      <strong>Installing tools is not enough. Claude won't use them proactively unless you tell it to.</strong>
+      <p>Kindex ships with a recommended CLAUDE.md block that turns passive tools into active habits. The difference between "Claude has a knowledge graph" and "Claude actively maintains a knowledge graph" is one command.</p>
+    </div>
+    <div class="terminal mono">
+<span class="comment"># Print the recommended CLAUDE.md directives</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-claude-md</span>
+
+<span class="comment"># Or auto-append to ~/.claude/CLAUDE.md</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-claude-md</span> <span class="flag">--install</span>
+
+<span class="comment"># Install lifecycle hooks (SessionStart + Stop guard)</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">The directives add:</p>
+    <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: 8px;">
+      <div class="card">
+        <h3>Session Lifecycle</h3>
+        <p>Start/segment/end rules so Claude tags every session and tracks context across conversations.</p>
+      </div>
+      <div class="card">
+        <h3>Capture Triggers</h3>
+        <p>Explicit rules for what to <code>add</code>: discoveries, decisions, key files, notable outputs, new terms, open questions.</p>
+      </div>
+      <div class="card">
+        <h3>Search Discipline</h3>
+        <p>Always <code>search</code> before <code>add</code>. Always check existing knowledge before starting work. No duplicates.</p>
+      </div>
+      <div class="card">
+        <h3>Bulk Extraction</h3>
+        <p>Use <code>learn</code> after reading long files or completing complex tasks to auto-extract and index concepts.</p>
+      </div>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">The SessionStart hook reinforces these directives at every session start and after context compaction, so Claude never forgets.</p>
   </div>
 </section>
 
@@ -353,7 +394,7 @@
 <section>
   <div class="container">
     <h2>Install as Claude Code Plugin</h2>
-    <p>Two commands. Zero configuration. Claude gets 21 native tools for your knowledge graph.</p>
+    <p>Two commands. Zero configuration. Claude gets 22 native tools for your knowledge graph.</p>
     <div class="terminal mono">
 <span class="comment"># Install and register (one time)</span>
 <span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
@@ -382,6 +423,7 @@
 <span class="output">  remind_snooze &mdash; snooze a reminder</span>
 <span class="output">  remind_done   &mdash; complete a reminder</span>
 <span class="output">  remind_check  &mdash; fire due reminders now</span>
+<span class="output">  remind_exec   &mdash; execute a reminder's action</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
@@ -460,6 +502,8 @@
   Time parsing:  dateparser (NL) + dateutil.rrule (recurrence) + cronsim (cron)
   Channels:      <span class="highlight">system</span> (macOS) | <span class="highlight">slack</span> | <span class="highlight">email</span> | <span class="highlight">claude</span> (hook) | <span class="highlight">terminal</span>
   Daemon:        launchd/cron every 5 min ── check due ── notify ── auto-snooze
+  Actions:       shell commands run directly | complex tasks launch <span class="highlight">claude -p</span>
+  Stop guard:    blocks session exit when actionable reminders pending
 
 <span class="green">Three integration paths:</span>
   MCP plugin ──&gt; Claude calls tools natively (search, add, learn, remind, ...)
@@ -554,7 +598,7 @@ inherits:
 <section>
   <div class="container">
     <h2>CLI Reference</h2>
-    <p style="color: var(--text-dim); margin-bottom: 24px;">44 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, and <code>--json</code> flags.</p>
+    <p style="color: var(--text-dim); margin-bottom: 24px;">47 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, and <code>--json</code> flags.</p>
 
     <div class="cmd-group">
       <h3>Core</h3>
@@ -580,7 +624,7 @@ inherits:
         <tr><td><code>kin decay</code></td><td>Apply weight decay to stale nodes/edges</td></tr>
         <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
         <tr><td><code>kin tag [action]</code></td><td>Session tags: start, update, segment, pause, end, resume, list, show</td></tr>
-        <tr><td><code>kin remind [action]</code></td><td>Reminders: create, list, show, snooze, done, cancel, check</td></tr>
+        <tr><td><code>kin remind [action]</code></td><td>Reminders: create, list, show, snooze, done, cancel, check, exec</td></tr>
       </table>
     </div>
 
@@ -624,6 +668,8 @@ inherits:
         <tr><td><code>kin config [show|get|set]</code></td><td>View or edit configuration</td></tr>
         <tr><td><code>kin setup-hooks</code></td><td>Install lifecycle hooks into Claude Code</td></tr>
         <tr><td><code>kin setup-cron</code></td><td>Install periodic maintenance (launchd/crontab)</td></tr>
+        <tr><td><code>kin setup-claude-md</code></td><td>Output/install recommended CLAUDE.md directives</td></tr>
+        <tr><td><code>kin stop-guard</code></td><td>Stop hook guard for actionable reminders</td></tr>
         <tr><td><code>kin doctor</code></td><td>Health check with graph enforcement</td></tr>
         <tr><td><code>kin migrate</code></td><td>Import markdown topics into SQLite</td></tr>
         <tr><td><code>kin budget</code></td><td>LLM spend tracking</td></tr>
@@ -648,7 +694,7 @@ inherits:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.6.0 &middot; Claude Code Plugin &middot; 21 MCP Tools &middot; 44 CLI Commands &middot; 547 Tests</p>
+    <p style="margin-top: 8px;">v0.7.0 &middot; Claude Code Plugin &middot; 22 MCP Tools &middot; 46 CLI Commands &middot; 568 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
   </div>
 </footer>

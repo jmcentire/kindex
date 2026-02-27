@@ -2431,6 +2431,9 @@ def cmd_remind(args):
                 channels=([c.strip() for c in args.channel.split(",") if c.strip()]
                           if getattr(args, "channel", None) else None),
                 tags=getattr(args, "tag_str", "") or "",
+                action_command=getattr(args, "action_command", "") or "",
+                action_instructions=getattr(args, "action_instructions", "") or "",
+                action_mode=getattr(args, "action_mode", "auto") or "auto",
             )
             r = store.get_reminder(rid)
             if getattr(args, "json", False):
@@ -2513,6 +2516,28 @@ def cmd_remind(args):
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
 
+    elif action == "exec":
+        from .actions import execute_action, has_action
+        rid = getattr(args, "reminder_id", None)
+        if not rid:
+            print("Usage: kin remind exec --reminder-id <id>", file=sys.stderr)
+            store.close()
+            return
+        r = store.get_reminder(rid)
+        if not r:
+            print(f"Reminder not found: {rid}", file=sys.stderr)
+            store.close()
+            return
+        if not has_action(r):
+            print(f"Reminder {rid} has no action defined.", file=sys.stderr)
+            store.close()
+            return
+        result = execute_action(store, r, cfg)
+        if getattr(args, "json", False):
+            print(_dumps(result))
+        else:
+            print(f"Action {result['status']}: {result.get('output', '')[:200]}")
+
     elif action == "check":
         from .reminders import auto_snooze_stale, check_and_fire
         fired = check_and_fire(store, cfg)
@@ -2523,6 +2548,65 @@ def cmd_remind(args):
             print(f"Checked: {len(fired)} fired, {snoozed} auto-snoozed")
 
     store.close()
+
+
+def cmd_stop_guard(args):
+    """Stop hook guard: block session exit if actionable reminders are pending.
+
+    Outputs JSON with ``decision: "block"`` if there are pending actionable
+    reminders due within the stop_guard_window.  Otherwise outputs nothing.
+    """
+    import json as _json
+
+    store = _store(args)
+    cfg = _config(args)
+
+    if not cfg.reminders.enabled or not cfg.reminders.action_enabled:
+        store.close()
+        return
+
+    from .actions import get_action_fields, has_action
+
+    window_seconds = cfg.reminders.stop_guard_window
+    cutoff = (
+        datetime.datetime.now() + datetime.timedelta(seconds=window_seconds)
+    ).isoformat(timespec="seconds")
+
+    # Active reminders due within the window
+    all_active = store.list_reminders(status="active")
+    pending = []
+    for r in all_active:
+        if not has_action(r):
+            continue
+        fields = get_action_fields(r)
+        if fields["action_status"] != "pending":
+            continue
+        if r["next_due"] <= cutoff:
+            pending.append(r)
+
+    # Also check already-due reminders still pending
+    due_now = store.due_reminders()
+    due_ids = {r["id"] for r in pending}
+    for r in due_now:
+        if r["id"] in due_ids:
+            continue
+        if not has_action(r):
+            continue
+        fields = get_action_fields(r)
+        if fields["action_status"] == "pending":
+            pending.append(r)
+
+    store.close()
+
+    if pending:
+        titles = [r["title"] for r in pending[:5]]
+        msg = (
+            f"BLOCKED: {len(pending)} actionable reminder(s) pending. "
+            f"Handle before exiting: {', '.join(titles)}. "
+            f"Use `kin remind exec <id>` to run or `kin remind done <id>` to dismiss."
+        )
+        result = {"decision": "block", "message": msg}
+        print(_json.dumps(result))
 
 
 def cmd_tag(args):
@@ -2810,6 +2894,81 @@ def cmd_setup_cron(args):
 
     for a in actions:
         print(f"  {a}")
+
+
+def cmd_setup_claude_md(args):
+    """Output recommended CLAUDE.md block for kindex integration.
+
+    kin setup claude-md           — print to stdout
+    kin setup claude-md --install — append to ~/.claude/CLAUDE.md if not present
+    """
+    block = _kindex_claude_md_block()
+
+    if getattr(args, "install", False):
+        claude_md = Path.home() / ".claude" / "CLAUDE.md"
+        if claude_md.exists():
+            existing = claude_md.read_text()
+            if "Kindex (REQUIRED" in existing or "kindex MCP tools" in existing:
+                print("Kindex directives already present in CLAUDE.md")
+                return
+            with open(claude_md, "a") as f:
+                f.write("\n" + block)
+            print(f"Appended kindex directives to {claude_md}")
+        else:
+            claude_md.parent.mkdir(parents=True, exist_ok=True)
+            claude_md.write_text(block)
+            print(f"Created {claude_md} with kindex directives")
+    else:
+        print(block)
+
+
+def _kindex_claude_md_block() -> str:
+    """Generate the recommended CLAUDE.md block for kindex integration."""
+    return """\
+## Kindex (REQUIRED -- follow these in every session)
+
+Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
+`show`, `link`, `list_nodes`, `status`, `ask`, `suggest`, `learn`, `graph_stats`, \
+`changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, \
+`remind_exec`) are always available. Use them.
+
+### Session lifecycle (do this every session)
+1. **Start**: call `tag_start` with a name and focus for the current task, OR \
+`tag_resume` if continuing previous work
+2. **During**: follow the capture rules below -- this is the whole point of kindex
+3. **Segment**: when switching topics, call `tag_update` with `action=segment`, \
+summarizing what was done
+4. **End**: call `tag_update` with `action=end` and a summary before the session closes
+
+### What to capture (use MCP `add` tool or `learn` for bulk text)
+- **Discoveries**: new patterns, surprising findings, "aha" moments -- `add` as concept
+- **Decisions**: architectural choices, trade-offs made, why X over Y -- `add` as decision
+- **Key files**: when you discover what a file does or why it exists -- `add` as concept \
+with the file path
+- **Notable outputs**: test results, build errors, performance numbers, API responses \
+worth remembering
+- **New topics/keywords**: domain terms, project jargon, recurring themes -- `add` as concept
+- **Questions**: open problems, things to investigate later -- `add` as question
+- **Connections**: when two concepts relate -- `link` them with a reason
+
+### What NOT to capture
+- Trivial file reads, routine git operations, boilerplate
+- Anything already in the graph -- always `search` before adding
+
+### When to search
+- **Before starting work**: `search` or `context` to see what is already known
+- **Before adding**: `search` to avoid duplicates
+- **When stuck**: `ask` the graph -- it may already have the answer
+
+### Bulk capture
+- After reading a long file, article, or output: use `learn` to extract and index \
+multiple concepts at once
+- After a complex multi-step task: use `learn` with a summary of what happened and why
+
+### Reminders with actions
+- Use `remind_create` with `action` and/or `instructions` for deferred tasks
+- The daemon will execute shell commands or launch headless Claude when they come due
+"""
 
 
 # ── config ────────────────────────────────────────────────────────────
@@ -3245,6 +3404,14 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_setup_cron)
 
+    # setup-claude-md
+    s = sub.add_parser("setup-claude-md",
+                       help="Output recommended CLAUDE.md kindex directives")
+    s.add_argument("--install", action="store_true",
+                   help="Append to ~/.claude/CLAUDE.md (if not already present)")
+    _common(s)
+    s.set_defaults(func=cmd_setup_claude_md)
+
     # config
     s = sub.add_parser("config", help="View or edit configuration")
     s.add_argument("config_action", nargs="?", default="show",
@@ -3330,7 +3497,7 @@ def build_parser() -> argparse.ArgumentParser:
     # remind
     s = sub.add_parser("remind", help="Reminder management (create, list, snooze, done, cancel, check)")
     s.add_argument("remind_action", nargs="?", default="create",
-                   choices=["create", "list", "show", "snooze", "done", "cancel", "check"])
+                   choices=["create", "list", "show", "snooze", "done", "cancel", "check", "exec"])
     s.add_argument("title_words", nargs="*", help="Reminder title (for create)")
     s.add_argument("--at", help="Time spec: 'in 30 minutes', 'every weekday at 9am', etc.")
     s.add_argument("--priority", choices=["low", "normal", "high", "urgent"])
@@ -3339,8 +3506,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", help="Filter (for list): active, snoozed, fired, all")
     s.add_argument("--reminder-id", help="Reminder ID (for show/snooze/done/cancel)")
     s.add_argument("--duration", help="Snooze duration: 15m, 1h, 2h30m")
+    s.add_argument("--action", dest="action_command", help="Shell command to execute when due")
+    s.add_argument("--instructions", dest="action_instructions",
+                   help="NL instructions for Claude (triggers claude -p mode)")
+    s.add_argument("--action-mode", dest="action_mode",
+                   choices=["shell", "claude", "auto"], default="auto",
+                   help="Execution mode (default: auto)")
     _common(s)
     s.set_defaults(func=cmd_remind)
+
+    # stop-guard (Claude Code Stop hook)
+    s = sub.add_parser("stop-guard", help="Stop hook guard for actionable reminders")
+    _common(s)
+    s.set_defaults(func=cmd_stop_guard)
 
     return p
 

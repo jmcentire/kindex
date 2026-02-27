@@ -30,6 +30,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "kin stop-guard",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
             "command": "kin compact-hook --text \"Session ended\"",
             "timeout": 5000
           }

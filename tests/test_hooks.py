@@ -186,14 +186,14 @@ class TestWriteInboxItem:
 
 class TestGenerateSessionDirective:
     def test_generate_session_directive(self, store):
-        """Verifies directive contains kin commands."""
+        """Verifies directive contains capture instructions."""
         from kindex.hooks import generate_session_directive
 
         output = generate_session_directive(store)
 
-        assert "kin add" in output
-        assert "kin link" in output
         assert "Knowledge Capture" in output
+        assert "`add`" in output
+        assert "`link`" in output
         assert "concept" in output.lower()
         assert "decision" in output.lower()
 
