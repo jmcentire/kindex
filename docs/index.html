@@ -262,7 +262,7 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.7.0</span>
+      <span class="badge green">v0.8.0</span>
       <span class="badge orange">Claude Code Plugin</span>
       <span class="badge blue">22 MCP Tools</span>
       <span class="badge purple">46 CLI Commands</span>
@@ -308,6 +308,10 @@
       <div class="card">
         <h3>Reminders &amp; Actions</h3>
         <p>Natural language scheduling with recurring support. Reminders can carry shell commands and Claude instructions &mdash; the daemon executes them automatically when due. A Stop hook guard blocks session exit when actionable reminders are pending. <code>kin remind create "deploy" --at "in 1h" --action "..."</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Adaptive Scheduling</h3>
+        <p>The cron daemon dynamically adjusts its check interval based on the nearest pending reminder. Reminder in 3 days? Check daily. Day of? Hourly. Within the hour? Every 5 minutes. No reminders? Daemon sleeps. Zero wasted cycles.</p>
       </div>
     </div>
   </div>
@@ -501,7 +505,8 @@
   reminders table (SQLite)      separate from knowledge graph
   Time parsing:  dateparser (NL) + dateutil.rrule (recurrence) + cronsim (cron)
   Channels:      <span class="highlight">system</span> (macOS) | <span class="highlight">slack</span> | <span class="highlight">email</span> | <span class="highlight">claude</span> (hook) | <span class="highlight">terminal</span>
-  Daemon:        launchd/cron every 5 min ── check due ── notify ── auto-snooze
+  Daemon:        launchd/cron <span class="highlight">adaptive interval</span> ── check due ── notify ── auto-snooze
+  Scheduling:    adaptive tiers (&gt;7d=daily, &gt;1d=hourly, &gt;1h=10min, &lt;1h=5min, none=disabled)
   Actions:       shell commands run directly | complex tasks launch <span class="highlight">claude -p</span>
   Stop guard:    blocks session exit when actionable reminders pending
 
@@ -694,7 +699,7 @@ inherits:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.7.0 &middot; Claude Code Plugin &middot; 22 MCP Tools &middot; 46 CLI Commands &middot; 568 Tests</p>
+    <p style="margin-top: 8px;">v0.8.0 &middot; Claude Code Plugin &middot; 22 MCP Tools &middot; 46 CLI Commands &middot; 591 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
   </div>
 </footer>

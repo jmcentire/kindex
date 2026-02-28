@@ -989,6 +989,20 @@ class Store:
                     pass
         return d
 
+    def nearest_pending_reminder(self) -> str | None:
+        """Return the ISO timestamp of the nearest pending reminder, or None."""
+        row = self.conn.execute(
+            """SELECT MIN(CASE
+                 WHEN status = 'active' THEN next_due
+                 WHEN status = 'snoozed' THEN snooze_until
+               END) AS nearest
+               FROM reminders
+               WHERE status IN ('active', 'snoozed')"""
+        ).fetchone()
+        if row is None or row["nearest"] is None:
+            return None
+        return row["nearest"]
+
     # ── Stats ──────────────────────────────────────────────────────────
 
     def stats(self) -> dict:

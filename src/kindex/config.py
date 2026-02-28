@@ -80,6 +80,19 @@ class ChannelsConfig(BaseModel):
     claude: ClaudeChannelConfig = Field(default_factory=ClaudeChannelConfig)
 
 
+class ScheduleTier(BaseModel):
+    threshold: int   # seconds until nearest reminder
+    interval: int    # check interval to use
+
+
+_DEFAULT_TIERS = [
+    ScheduleTier(threshold=604800, interval=86400),   # > 7 days -> daily
+    ScheduleTier(threshold=86400, interval=3600),     # > 1 day -> hourly
+    ScheduleTier(threshold=3600, interval=600),       # > 1 hour -> 10 min
+    ScheduleTier(threshold=0, interval=300),          # <= 1 hour -> 5 min
+]
+
+
 class ReminderConfig(BaseModel):
     enabled: bool = True
     check_interval: int = 300
@@ -90,6 +103,9 @@ class ReminderConfig(BaseModel):
     action_enabled: bool = True        # enable action execution on reminder fire
     stop_guard_window: int = 7200      # seconds (2h) — block exit if actions due within
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    adaptive_scheduling: bool = True   # dynamically adjust cron interval
+    min_interval: int = 300            # floor for adaptive scheduling (5 min)
+    schedule_tiers: list[ScheduleTier] = Field(default_factory=lambda: list(_DEFAULT_TIERS))
 
 
 class Config(BaseModel):

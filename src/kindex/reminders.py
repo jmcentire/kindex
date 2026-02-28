@@ -13,6 +13,17 @@ if TYPE_CHECKING:
 
 _VALID_PRIORITIES = ("low", "normal", "high", "urgent")
 
+
+def _try_repack(store: "Store") -> None:
+    """Best-effort repack of cron schedule after reminder state changes."""
+    try:
+        from .config import load_config
+        from .scheduling import repack_schedule
+        config = load_config()
+        repack_schedule(store, config)
+    except Exception:
+        pass  # never let scheduling errors break reminder operations
+
 # Day-of-week mappings for rrule BYDAY
 _DOW_MAP = {
     "monday": "MO", "tuesday": "TU", "wednesday": "WE",
@@ -277,7 +288,7 @@ def create_reminder(
             "action_status": "pending",
         }
 
-    return store.add_reminder(
+    rid = store.add_reminder(
         title,
         next_due,
         body=body,
@@ -289,6 +300,8 @@ def create_reminder(
         related_node_id=related_node_id,
         extra=extra,
     )
+    _try_repack(store)
+    return rid
 
 
 def snooze_reminder(
@@ -310,6 +323,7 @@ def snooze_reminder(
     snooze_until_dt = _now_dt() + datetime.timedelta(seconds=duration_seconds)
     snooze_until = snooze_until_dt.isoformat(timespec="seconds")
     store.snooze_reminder(reminder_id, snooze_until)
+    _try_repack(store)
     return snooze_until
 
 
@@ -323,6 +337,7 @@ def complete_reminder(store: Store, reminder_id: str) -> None:
         advance_recurring(store, reminder_id)
     else:
         store.complete_reminder(reminder_id)
+    _try_repack(store)
 
 
 def cancel_reminder(store: Store, reminder_id: str) -> None:
@@ -331,6 +346,7 @@ def cancel_reminder(store: Store, reminder_id: str) -> None:
     if r is None:
         raise ValueError(f"Reminder not found: {reminder_id}")
     store.update_reminder(reminder_id, status="cancelled")
+    _try_repack(store)
 
 
 def advance_recurring(store: Store, reminder_id: str) -> str | None:

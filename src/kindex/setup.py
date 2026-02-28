@@ -99,15 +99,17 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
 
 
 def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
-    """Install macOS launchd plist for kin cron (every 30 min).
+    """Install macOS launchd plist for kin cron.
 
     Creates ~/Library/LaunchAgents/com.kindex.cron.plist
+    Uses config.reminders.check_interval for the initial interval.
     """
     actions = []
     kin_path = _find_kin_path()
     launch_agents = Path.home() / "Library" / "LaunchAgents"
     plist_path = launch_agents / "com.kindex.cron.plist"
     log_dir = config.data_path / "logs"
+    interval = config.reminders.check_interval
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -121,7 +123,7 @@ def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
         <string>cron</string>
     </array>
     <key>StartInterval</key>
-    <integer>1800</integer>
+    <integer>{interval}</integer>
     <key>StandardOutPath</key>
     <string>{log_dir}/cron.log</string>
     <key>StandardErrorPath</key>
@@ -145,6 +147,18 @@ def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
         actions.append(f"Would install: {plist_path}")
 
     return actions
+
+
+def reload_launchd() -> bool:
+    """Unload and reload the cron plist. Returns True if successful."""
+    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
+    if not plist_path.exists():
+        return False
+    subprocess.run(["launchctl", "unload", str(plist_path)],
+                   capture_output=True, timeout=5)
+    result = subprocess.run(["launchctl", "load", str(plist_path)],
+                            capture_output=True, timeout=5)
+    return result.returncode == 0
 
 
 def uninstall_launchd(dry_run: bool = False) -> list[str]:
