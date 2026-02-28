@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.7.0](https://img.shields.io/badge/version-0.7.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.8.0](https://img.shields.io/badge/version-0.8.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-568%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-591%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -238,7 +238,8 @@ Reminders:
   reminders table (SQLite)    <- separate from knowledge graph
   Time parsing:  dateparser (NL) + dateutil.rrule (recurrence) + cronsim (cron)
   Channels:      system (macOS) | slack | email | claude (hook) | terminal
-  Daemon:        launchd/cron every 5 min -> check due -> notify -> auto-snooze
+  Daemon:        launchd/cron adaptive interval -> check due -> notify -> auto-snooze
+  Scheduling:    adaptive tiers (>7d=daily, >1d=hourly, >1h=10min, <1h=5min, none=disabled)
   Actions:       shell commands run directly | complex tasks launch claude -p
   Stop guard:    blocks session exit when actionable reminders pending
 
@@ -364,7 +365,9 @@ defaults:
 
 reminders:
   enabled: true
-  check_interval: 300            # 5 min daemon cycle
+  check_interval: 300            # 5 min base interval
+  adaptive_scheduling: true      # adjust interval based on nearest reminder
+  min_interval: 300              # floor for adaptive scheduling
   default_channels: [system]     # system, slack, email, claude, terminal
   snooze_duration: 900           # 15 min default snooze
   auto_snooze_timeout: 300       # auto-snooze after 5 min inaction
@@ -383,7 +386,7 @@ reminders:
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 547 tests
+make test         # run 591 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```

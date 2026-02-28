@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindex"
-version = "0.7.0"
+version = "0.8.0"
 description = "The memory layer Claude Code doesn't have — persistent knowledge graph for AI workflows"
 readme = "README.md"
 requires-python = ">=3.10"

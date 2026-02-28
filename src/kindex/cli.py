@@ -2352,6 +2352,16 @@ def cmd_cron(args):
         print(f"  Graph: {stats.get('nodes', 0)} nodes, "
               f"{stats.get('edges', 0)} edges, "
               f"{results.get('orphan_count', 0)} orphans")
+        repack = results.get("repack", {})
+        if repack:
+            interval = repack.get("interval", "?")
+            action = repack.get("action", "?")
+            if action == "unchanged":
+                print(f"  Cron interval: {interval}s (unchanged)")
+            elif action == "updated":
+                print(f"  Cron interval: {repack.get('previous', '?')}s -> {interval}s (adaptive)")
+            elif action == "disabled":
+                print(f"  Cron interval: disabled (no pending reminders)")
 
     store.close()
 

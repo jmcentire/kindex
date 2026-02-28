@@ -67,6 +67,14 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     # Update run marker
     set_run_marker(store)
 
+    # Adaptive scheduling: repack cron interval based on nearest reminder
+    try:
+        from .scheduling import repack_schedule
+        repack = repack_schedule(store, config)
+        results["repack"] = repack
+    except Exception:
+        pass  # don't let scheduling errors break cron
+
     return results
 
 
