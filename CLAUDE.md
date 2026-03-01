@@ -65,6 +65,18 @@ kin prime --for hook
 
 This auto-detects the current project from `$PWD` and outputs a context block with relevant knowledge, active constraints, and recent changes.
 
+## Release Checklist
+
+When asked to release, follow these steps exactly. Do NOT install twine or attempt manual PyPI upload — it's fully automated.
+
+1. Run full test suite: `pytest tests/ -v`
+2. Bump version in `pyproject.toml`, `src/kindex/__init__.py`, and README badge
+3. Commit version bump and all changes
+4. Push to main: `git push origin main`
+5. Tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
+6. Create GitHub release: `gh release create vX.Y.Z --title "..." --notes "..."`
+7. **Done.** GitHub Actions (`.github/workflows/publish.yml`) handles PyPI publish automatically via trusted publishing (OIDC) on tag push. The `sync-version` pre-commit hook auto-updates docs/index.html badges.
+
 ## Architecture Notes
 
 - Storage: SQLite with FTS5 full-text search, triggers for index sync

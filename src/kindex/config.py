@@ -73,11 +73,19 @@ class ClaudeChannelConfig(BaseModel):
     max_budget_usd: float = 0.50      # spending cap per headless invocation
 
 
+class TelegramChannelConfig(BaseModel):
+    enabled: bool = False
+    bot_token: str = ""           # from @BotFather
+    chat_id: str = ""             # user or group chat ID
+    bot_token_keychain: str = ""  # macOS Keychain service name (alternative to plaintext)
+
+
 class ChannelsConfig(BaseModel):
     system: SystemChannelConfig = Field(default_factory=SystemChannelConfig)
     slack: SlackChannelConfig = Field(default_factory=SlackChannelConfig)
     email: EmailChannelConfig = Field(default_factory=EmailChannelConfig)
     claude: ClaudeChannelConfig = Field(default_factory=ClaudeChannelConfig)
+    telegram: TelegramChannelConfig = Field(default_factory=TelegramChannelConfig)
 
 
 class ScheduleTier(BaseModel):

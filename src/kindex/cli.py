@@ -2348,6 +2348,18 @@ def cmd_cron(args):
         print(f"  Sessions ingested: {results.get('sessions', 0)}")
         print(f"  Inbox processed:   {results.get('inbox', 0)}")
         print(f"  Nodes decayed:     {results.get('decayed', 0)}")
+        print(f"  Link suggestions:  {results.get('link_suggestions', 0)}")
+        archived = results.get("orphans_archived", 0)
+        linked = results.get("orphans_linked", 0)
+        if archived or linked:
+            print(f"  Graph hygiene:     {archived} archived, {linked} auto-linked")
+        slow = results.get("slow_graph_archived", 0)
+        if slow:
+            print(f"  Slow graph:        {slow} nodes moved to archive")
+        w_expired = results.get("watches_expired", 0)
+        w_notified = results.get("watches_notified", 0)
+        if w_expired or w_notified:
+            print(f"  Watches:           {w_expired} expired, {w_notified} boosted")
         stats = results.get("stats", {})
         print(f"  Graph: {stats.get('nodes', 0)} nodes, "
               f"{stats.get('edges', 0)} edges, "
@@ -2362,6 +2374,68 @@ def cmd_cron(args):
                 print(f"  Cron interval: {repack.get('previous', '?')}s -> {interval}s (adaptive)")
             elif action == "disabled":
                 print(f"  Cron interval: disabled (no pending reminders)")
+
+    store.close()
+
+
+# ── archive (slow graph) ──────────────────────────────────────────────
+
+def cmd_archive(args):
+    """Manage the slow graph archive."""
+    from .archive import list_archives, search_archives, restore_node, archive_cycle
+
+    store = _store(args)
+    cfg = _config(args)
+    action = getattr(args, "archive_action", "list")
+
+    if action == "list":
+        archives = list_archives(cfg)
+        if not archives:
+            print("No archives yet. Stale nodes move here during cron cycles.")
+            store.close()
+            return
+        total_nodes = 0
+        total_size = 0.0
+        for a in archives:
+            total_nodes += a.get("nodes", 0)
+            total_size += a.get("size_mb", 0)
+            created = a.get("created_at", "?")
+            print(f"  {a['name']}: {a.get('nodes', 0)} nodes, "
+                  f"{a.get('edges', 0)} edges, {a['size_mb']}MB "
+                  f"(created {created})")
+        print(f"\nTotal: {len(archives)} archives, {total_nodes} nodes, "
+              f"{total_size:.1f}MB")
+
+    elif action == "search":
+        query = getattr(args, "query", "")
+        if not query:
+            print("Usage: kin archive search <query>")
+            store.close()
+            return
+        results = search_archives(cfg, query)
+        if not results:
+            print(f"No archived nodes matching '{query}'")
+        else:
+            for r in results:
+                print(f"  [{r['type']}] {r['title']} "
+                      f"(id={r['id']}, archived={r['archived_at']}, "
+                      f"from={r['archive_file']})")
+
+    elif action == "restore":
+        node_id = getattr(args, "node_id", "") or getattr(args, "query", "")
+        if not node_id:
+            print("Usage: kin archive restore <node-id>")
+            store.close()
+            return
+        ok = restore_node(cfg, store, node_id, verbose=True)
+        if ok:
+            print(f"Restored {node_id} to fast graph.")
+        else:
+            print(f"Node {node_id} not found in any archive.")
+
+    elif action == "run":
+        count = archive_cycle(cfg, store, verbose=True)
+        print(f"Archived {count} nodes to slow graph.")
 
     store.close()
 
@@ -2415,6 +2489,145 @@ def _now_short() -> str:
     """Short timestamp for watch output."""
     import datetime as _dt
     return _dt.datetime.now(tz=None).strftime("%H:%M:%S")
+
+
+# ── tasks ─────────────────────────────────────────────────────────────
+
+
+def cmd_task(args):
+    """Graph-connected task management."""
+    store = _store(args)
+    action = getattr(args, "task_action", "list")
+
+    if action == "add":
+        from .tasks import create_task
+        title = " ".join(getattr(args, "title_words", []) or [])
+        if not title:
+            print("Usage: kin task add <title> [--priority N] [--due ...] [--link ...]",
+                  file=sys.stderr)
+            store.close()
+            return
+        link_to = None
+        if getattr(args, "link_to", None):
+            link_to = [s.strip() for s in args.link_to.split(",") if s.strip()]
+
+        task_id = create_task(
+            store, title,
+            priority=getattr(args, "priority", 3) or 3,
+            due=getattr(args, "due", None),
+            scope=getattr(args, "scope", "contextual") or "contextual",
+            effort=getattr(args, "effort", None),
+            link_to=link_to,
+            project_path=os.getcwd(),
+        )
+        if getattr(args, "json", False):
+            print(_dumps(store.get_node(task_id)))
+        else:
+            print(f"Created task: {task_id}")
+
+    elif action == "list":
+        from .tasks import list_tasks, format_task_list
+        status_filter = getattr(args, "status", None) or "open"
+        tasks = list_tasks(
+            store,
+            status=status_filter,
+            scope=getattr(args, "scope", None) if getattr(args, "scope", "contextual") != "contextual" else None,
+            domain=getattr(args, "domain", None),
+        )
+        if getattr(args, "json", False):
+            print(_dumps(tasks))
+        elif not tasks:
+            print("No tasks found.")
+        else:
+            print(format_task_list(tasks))
+
+    elif action == "show":
+        from .tasks import format_task
+        task_id = getattr(args, "task_id", None)
+        if not task_id:
+            print("Usage: kin task show --task-id <id>", file=sys.stderr)
+            store.close()
+            return
+        node = store.get_node(task_id)
+        if node and node.get("type") == "task":
+            if getattr(args, "json", False):
+                print(_dumps(node))
+            else:
+                print(format_task(node))
+        else:
+            print(f"Task not found: {task_id}", file=sys.stderr)
+
+    elif action == "done":
+        from .tasks import complete_task
+        task_id = getattr(args, "task_id", None)
+        if not task_id:
+            print("Usage: kin task done --task-id <id>", file=sys.stderr)
+            store.close()
+            return
+        result = complete_task(store, task_id)
+        if result:
+            print(f"Completed: {result['title']}")
+        else:
+            print(f"Task not found: {task_id}", file=sys.stderr)
+
+    elif action == "cancel":
+        from .tasks import cancel_task
+        task_id = getattr(args, "task_id", None)
+        if not task_id:
+            print("Usage: kin task cancel --task-id <id>", file=sys.stderr)
+            store.close()
+            return
+        result = cancel_task(store, task_id)
+        if result:
+            print(f"Cancelled: {result['title']}")
+        else:
+            print(f"Task not found: {task_id}", file=sys.stderr)
+
+    elif action == "update":
+        from .tasks import update_task
+        task_id = getattr(args, "task_id", None)
+        if not task_id:
+            print("Usage: kin task update --task-id <id> [--priority N] [--due ...]",
+                  file=sys.stderr)
+            store.close()
+            return
+        fields = {}
+        if getattr(args, "priority", None):
+            fields["priority"] = args.priority
+        if getattr(args, "due", None):
+            fields["due"] = args.due
+        if getattr(args, "effort", None):
+            fields["effort"] = args.effort
+        if getattr(args, "scope", None):
+            fields["scope"] = args.scope
+        if getattr(args, "status", None):
+            fields["task_status"] = args.status
+        result = update_task(store, task_id, **fields)
+        if result:
+            print(f"Updated: {result['title']}")
+        else:
+            print(f"Task not found: {task_id}", file=sys.stderr)
+
+    elif action == "nearby":
+        from .tasks import nearby_tasks, format_task_list
+        from .retrieve import detect_domain_from_path, hybrid_search
+        cwd = os.getcwd()
+        domains = detect_domain_from_path(store, cwd)
+        topic = " ".join(domains) if domains else os.path.basename(cwd)
+
+        results = hybrid_search(store, topic, top_k=5)
+        seed_ids = [r["id"] for r in results]
+
+        tasks = nearby_tasks(store, seed_ids, max_hops=2)
+        if getattr(args, "json", False):
+            print(_dumps(tasks))
+        elif not tasks:
+            print("No nearby tasks for this context.")
+        else:
+            print(f"Tasks near: {topic}")
+            print(format_task_list(tasks))
+
+    store.close()
 
 
 # ── session tags ──────────────────────────────────────────────────────
@@ -2617,6 +2830,79 @@ def cmd_stop_guard(args):
         )
         result = {"decision": "block", "message": msg}
         print(_json.dumps(result))
+
+
+def cmd_prompt_check(args):
+    """UserPromptSubmit hook: inject due reminders into conversation context.
+
+    Outputs plain text to stdout that Claude Code adds as visible context.
+    Designed to be fast (<2s). Outputs nothing if no reminders are due.
+    """
+    store = _store(args)
+    cfg = _config(args)
+
+    if not cfg.reminders.enabled:
+        store.close()
+        return
+
+    due = store.due_reminders()
+    if not due:
+        store.close()
+        return
+
+    # Also check tasks that are urgent/overdue
+    task_lines = []
+    try:
+        from .tasks import list_tasks
+        urgent_tasks = list_tasks(store, status="open", limit=5)
+        for t in urgent_tasks:
+            extra = t.get("extra") or {}
+            p = extra.get("priority", 3)
+            due_date = extra.get("due", "")
+            if p <= 2 or (due_date and due_date[:10] <= datetime.date.today().isoformat()):
+                p_label = {1: "URGENT", 2: "HIGH"}.get(p, "")
+                task_lines.append(f"  - [{p_label}] {t['title']} (id: {t['id']})")
+    except Exception:
+        pass
+
+    # ANSI codes for visual distinction
+    BOLD = "\033[1m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    CYAN = "\033[96m"
+    RESET = "\033[0m"
+    BEL = "\a"
+
+    lines = []
+    lines.append(f"{BEL}<system-reminder>")
+    lines.append(f"{BOLD}{RED}{'=' * 50}")
+    lines.append(f"  KINDEX REMINDERS DUE ({len(due)})")
+    lines.append(f"{'=' * 50}{RESET}")
+    for r in due[:5]:
+        priority = r.get("priority", "normal")
+        p_color = RED if priority in ("urgent", "high") else YELLOW
+        p_marker = f" {p_color}[{priority.upper()}]{RESET}" if priority != "normal" else ""
+        extra = r.get("extra") or {}
+        lines.append(f"  {BOLD}{CYAN}-{RESET}{p_marker} {r['title']} (due: {r['next_due'][:16]}, id: {r['id']})")
+        if extra.get("action_instructions"):
+            lines.append(f"    Instructions: {extra['action_instructions'][:100]}")
+        if extra.get("action_command"):
+            lines.append(f"    Action: `{extra['action_command']}`")
+    lines.append("")
+    lines.append(f"{BOLD}Act on these NOW:{RESET}")
+    lines.append(f"  - `kin remind done <id>` to complete")
+    lines.append(f"  - `kin remind snooze <id>` to defer")
+    lines.append(f"  - `kin remind exec <id>` to run action")
+
+    if task_lines:
+        lines.append("")
+        lines.append(f"{BOLD}{RED}URGENT TASKS:{RESET}")
+        lines.extend(task_lines)
+
+    lines.append("</system-reminder>")
+
+    print("\n".join(lines))
+    store.close()
 
 
 def cmd_tag(args):
@@ -3477,6 +3763,16 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_cron)
 
+    # archive (slow graph)
+    s = sub.add_parser("archive", help="Manage slow graph archives")
+    s.add_argument("archive_action", nargs="?", default="list",
+                   choices=["list", "search", "restore", "run"],
+                   help="Action (default: list)")
+    s.add_argument("query", nargs="?", help="Search query or node ID (for search/restore)")
+    s.add_argument("--node-id", help="Node ID to restore")
+    _common(s)
+    s.set_defaults(func=cmd_archive)
+
     # watch
     s = sub.add_parser("watch", help="Watch for new sessions and ingest them")
     s.add_argument("--interval", type=int, default=60,
@@ -3504,6 +3800,23 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_tag)
 
+    # task
+    s = sub.add_parser("task", help="Graph-connected task management")
+    s.add_argument("task_action", nargs="?", default="list",
+                   choices=["add", "list", "show", "done", "cancel", "update", "nearby"])
+    s.add_argument("title_words", nargs="*", help="Task title (for add)")
+    s.add_argument("--priority", type=int, choices=[1, 2, 3, 4, 5], default=3,
+                   help="Priority: 1=urgent 2=high 3=normal 4=low 5=someday")
+    s.add_argument("--due", help="Due date: 'tomorrow', '2026-03-15', 'in 3 days'")
+    s.add_argument("--scope", choices=["global", "contextual"], default="contextual")
+    s.add_argument("--link", dest="link_to", help="Link to nodes (ID or title, comma-separated)")
+    s.add_argument("--task-id", help="Task ID (for show/done/cancel/update)")
+    s.add_argument("--status", help="Filter: open, in_progress, done, all")
+    s.add_argument("--effort", choices=["small", "medium", "large"])
+    s.add_argument("--domain", help="Filter by domain")
+    _common(s)
+    s.set_defaults(func=cmd_task)
+
     # remind
     s = sub.add_parser("remind", help="Reminder management (create, list, snooze, done, cancel, check)")
     s.add_argument("remind_action", nargs="?", default="create",
@@ -3529,6 +3842,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("stop-guard", help="Stop hook guard for actionable reminders")
     _common(s)
     s.set_defaults(func=cmd_stop_guard)
+
+    # prompt-check (Claude Code UserPromptSubmit hook)
+    s = sub.add_parser("prompt-check", help="Check for due reminders on prompt submit")
+    _common(s)
+    s.set_defaults(func=cmd_prompt_check)
 
     return p
 

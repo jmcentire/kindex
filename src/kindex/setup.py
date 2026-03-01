@@ -66,6 +66,22 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         actions.append("PreCompact hook already installed")
 
+    # UserPromptSubmit hook — inject due reminders mid-session
+    prompt_submit = hooks.setdefault("UserPromptSubmit", [])
+    prompt_hook = {
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": f"{kin_path} prompt-check",
+            "timeout": 2000
+        }]
+    }
+    if not any("prompt-check" in str(h) for h in prompt_submit):
+        prompt_submit.append(prompt_hook)
+        actions.append("Added UserPromptSubmit hook: kin prompt-check")
+    else:
+        actions.append("UserPromptSubmit hook already installed")
+
     # Stop hook — guard for actionable reminders + session capture
     stop_hooks = hooks.setdefault("Stop", [])
     stop_guard_entry = {

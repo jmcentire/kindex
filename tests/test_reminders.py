@@ -703,3 +703,55 @@ class TestReminderExecCLI:
         )
         assert result.returncode == 0
         assert "completed" in result.stdout.lower() or "hello-exec" in result.stdout
+
+
+class TestPromptCheckCLI:
+    def test_prompt_check_no_due(self, tmp_path):
+        """No output when no reminders are due."""
+        result = _run_cli("prompt-check", tmp_path=tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_prompt_check_with_due(self, tmp_path):
+        """Outputs reminder context when reminders are due."""
+        from kindex.store import Store
+        from kindex.config import Config
+        import datetime
+
+        cfg = Config(data_dir=str(tmp_path))
+        store = Store(cfg)
+        # Create reminder due in the past via store directly
+        past = (datetime.datetime.now() - datetime.timedelta(minutes=5)).isoformat(timespec="seconds")
+        store.add_reminder("Prompt test reminder", next_due=past)
+        store.close()
+
+        result = _run_cli("prompt-check", tmp_path=tmp_path)
+        assert result.returncode == 0
+        assert "KINDEX REMINDERS DUE" in result.stdout
+        assert "Prompt test reminder" in result.stdout
+        assert "kin remind done" in result.stdout
+
+    def test_prompt_check_with_action(self, tmp_path):
+        """Shows action details for actionable reminders."""
+        from kindex.store import Store
+        from kindex.config import Config
+        import datetime
+
+        cfg = Config(data_dir=str(tmp_path))
+        store = Store(cfg)
+        past = (datetime.datetime.now() - datetime.timedelta(minutes=5)).isoformat(timespec="seconds")
+        store.add_reminder(
+            "Action reminder", next_due=past,
+            extra={
+                "action_command": "echo hello",
+                "action_instructions": "Run the echo command",
+                "action_mode": "auto",
+                "action_status": "pending",
+            },
+        )
+        store.close()
+
+        result = _run_cli("prompt-check", tmp_path=tmp_path)
+        assert result.returncode == 0
+        assert "Action reminder" in result.stdout
+        assert "echo hello" in result.stdout
