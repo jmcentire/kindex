@@ -10,7 +10,7 @@ AUDIENCES = ("private", "team", "org", "public")
 # Knowledge node types
 NODE_TYPES = (
     "concept", "document", "session", "person", "project",
-    "decision", "question", "artifact", "skill",
+    "decision", "question", "artifact", "skill", "task",
 )
 
 # Operational node types — what must hold, what to verify, what to watch
@@ -26,7 +26,7 @@ ALL_NODE_TYPES = NODE_TYPES + OPERATIONAL_TYPES
 # Edge types — bidirectional by convention
 EDGE_TYPES = (
     "relates_to", "answers", "contradicts", "implements", "depends_on",
-    "spawned_from", "supersedes", "exemplifies", "context_of",
+    "spawned_from", "supersedes", "exemplifies", "context_of", "blocks",
 )
 
 CREATE_TABLES = """

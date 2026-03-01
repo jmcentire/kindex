@@ -41,11 +41,13 @@ class TestSetupHooks:
 
         assert any("SessionStart" in a for a in actions)
         assert any("PreCompact" in a for a in actions)
+        assert any("UserPromptSubmit" in a for a in actions)
 
         # Verify settings file was updated
         data = json.loads(settings.read_text())
         assert "hooks" in data
         assert "SessionStart" in data["hooks"]
+        assert "UserPromptSubmit" in data["hooks"]
 
     def test_setup_hooks_idempotent(self, tmp_path):
         """Installing twice should not duplicate hooks."""

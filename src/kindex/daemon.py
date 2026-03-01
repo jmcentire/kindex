@@ -59,7 +59,29 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["stats"] = stats
     results["orphan_count"] = len(orphans)
 
-    # 6. Check reminders
+    # 6. Suggest cross-component links
+    suggestion_count = _suggest_links(store, verbose=verbose)
+    results["link_suggestions"] = suggestion_count
+
+    # 7. Graph hygiene — archive stale orphans, auto-link viable ones
+    hygiene = _graph_hygiene(store, verbose=verbose)
+    results["orphans_archived"] = hygiene.get("archived", 0)
+    results["orphans_linked"] = hygiene.get("linked", 0)
+
+    # 8. Slow graph archival — move deeply decayed nodes to archive
+    try:
+        from .archive import archive_cycle
+        archived_to_slow = archive_cycle(config, store, verbose=verbose)
+        results["slow_graph_archived"] = archived_to_slow
+    except Exception:
+        results["slow_graph_archived"] = 0
+
+    # 9. Watch hygiene — expire overdue watches
+    watch_results = _check_watches(store, verbose=verbose)
+    results["watches_expired"] = watch_results.get("expired", 0)
+    results["watches_notified"] = watch_results.get("notified", 0)
+
+    # 10. Check reminders
     reminder_results = _check_reminders(config, store, verbose=verbose)
     results["reminders_fired"] = reminder_results.get("fired", 0)
     results["reminders_auto_snoozed"] = reminder_results.get("auto_snoozed", 0)
@@ -121,6 +143,163 @@ def _process_inbox(config: "Config", store: "Store", verbose: bool = False) -> i
         md_file.rename(processed_dir / md_file.name)
 
     return count
+
+
+def _suggest_links(store: "Store", verbose: bool = False) -> int:
+    """Find and store cross-component link suggestions."""
+    try:
+        from .graph import suggest_cross_component_links
+
+        suggestions = suggest_cross_component_links(store, max_suggestions=5)
+        count = 0
+        for s in suggestions:
+            # Check if this suggestion already exists
+            existing = store.pending_suggestions(limit=100)
+            already = any(
+                (e["concept_a"] == s["concept_a"] and e["concept_b"] == s["concept_b"])
+                or (e["concept_a"] == s["concept_b"] and e["concept_b"] == s["concept_a"])
+                for e in existing
+            )
+            if not already:
+                store.add_suggestion(
+                    concept_a=s["concept_a"],
+                    concept_b=s["concept_b"],
+                    reason=s["reason"],
+                    source="cron-auto-suggest",
+                )
+                count += 1
+                if verbose:
+                    print(f"  Suggested: {s['concept_a']} <-> {s['concept_b']}")
+
+        return count
+    except Exception:
+        return 0
+
+
+def _graph_hygiene(store: "Store", verbose: bool = False) -> dict:
+    """Archive stale orphans and auto-link viable ones.
+
+    Stale: orphan with weight < 0.15 and not updated in 30+ days.
+    Viable: orphan whose title FTS-matches existing connected nodes.
+    """
+    import datetime as _dt
+
+    results = {"archived": 0, "linked": 0}
+
+    try:
+        orphans = store.orphans()
+    except Exception:
+        return results
+
+    if not orphans:
+        return results
+
+    now = _dt.datetime.now()
+    stale_cutoff = now - _dt.timedelta(days=30)
+
+    for orphan in orphans:
+        oid = orphan["id"]
+        weight = orphan.get("weight", 0.5) or 0.5
+        title = orphan.get("title", "")
+        node_type = orphan.get("type", "concept")
+
+        # Skip task/session/checkpoint nodes — they have their own lifecycle
+        if node_type in ("task", "session", "checkpoint", "directive", "constraint"):
+            continue
+
+        # Parse updated_at
+        updated = orphan.get("updated_at", "")
+        try:
+            updated_dt = _dt.datetime.fromisoformat(updated) if updated else _dt.datetime.min
+        except (ValueError, TypeError):
+            updated_dt = _dt.datetime.min
+
+        is_stale = weight < 0.15 and updated_dt < stale_cutoff
+
+        if is_stale:
+            # Archive: set status to archived, drop weight to floor
+            store.update_node(oid, status="archived", weight=0.01)
+            results["archived"] += 1
+            if verbose:
+                print(f"  Archived orphan: {title} (w={weight:.2f})")
+            continue
+
+        # Try to auto-link viable orphans via FTS title match
+        if not title or len(title) < 3:
+            continue
+
+        matches = store.fts_search(title, limit=5)
+        for match in matches:
+            mid = match["id"]
+            if mid == oid:
+                continue
+            # Only link to nodes that already have edges (not other orphans)
+            if not store.edges_from(mid) and not store.edges_to(mid):
+                continue
+            # Create a low-weight link
+            store.add_edge(
+                oid, mid,
+                edge_type="relates_to",
+                weight=0.2,
+                provenance="auto-linked by graph hygiene",
+            )
+            results["linked"] += 1
+            if verbose:
+                print(f"  Linked orphan: {title} -> {match.get('title', mid)}")
+            break  # One link is enough to de-orphan
+
+    return results
+
+
+def _check_watches(store: "Store", verbose: bool = False) -> dict:
+    """Check watch nodes for expiry and flag triggered ones.
+
+    - Expired watches (past their expires date) get archived.
+    - Watches with check_command in extra get flagged for Claude attention.
+    """
+    import datetime as _dt
+
+    results = {"expired": 0, "notified": 0}
+
+    try:
+        # Query all active watch nodes (including those past expiry that
+        # haven't been archived yet — active_watches() filters those out)
+        watches = store.all_nodes(node_type="watch", status="active", limit=200)
+    except Exception:
+        return results
+
+    today = _dt.date.today().isoformat()
+
+    for w in watches:
+        extra = w.get("extra") or {}
+        expires = extra.get("expires", "")
+        wid = w["id"]
+
+        # Expire overdue watches
+        if expires and expires < today:
+            store.update_node(wid, status="archived")
+            results["expired"] += 1
+            if verbose:
+                print(f"  Expired watch: {w['title']} (was due {expires})")
+            continue
+
+        # Boost weight of watches approaching expiry (within 3 days)
+        if expires:
+            try:
+                exp_date = _dt.date.fromisoformat(expires)
+                days_left = (exp_date - _dt.date.today()).days
+                if 0 <= days_left <= 3:
+                    # Boost so it surfaces prominently in prime_context
+                    current_weight = w.get("weight", 0.5)
+                    if current_weight < 0.8:
+                        store.update_node(wid, weight=0.9)
+                        results["notified"] += 1
+                        if verbose:
+                            print(f"  Boosted watch: {w['title']} ({days_left}d left)")
+            except (ValueError, TypeError):
+                pass
+
+    return results
 
 
 def _check_reminders(config: "Config", store: "Store", verbose: bool = False) -> dict:

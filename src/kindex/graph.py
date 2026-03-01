@@ -321,3 +321,115 @@ def store_trailheads(store, top_k: int = 10) -> list[dict]:
             "betweenness": round(betweenness.get(nid, 0), 4),
         })
     return result
+
+
+def suggest_cross_component_links(
+    store,
+    max_suggestions: int = 10,
+) -> list[dict]:
+    """Find candidate links between disconnected graph components.
+
+    For each pair of components, picks the highest-weight node from each
+    and uses FTS title/domain overlap to find plausible connections.
+    Returns suggestions sorted by similarity score.
+    """
+    G = build_nx_from_store(store)
+    if not G or G.number_of_nodes() < 2:
+        return []
+
+    components = list(nx.weakly_connected_components(G))
+    if len(components) < 2:
+        return []
+
+    # Get representative nodes per component (top 3 by weight)
+    comp_reps: list[list[dict]] = []
+    for comp in components:
+        if len(comp) < 1:
+            continue
+        members = []
+        for nid in comp:
+            data = G.nodes[nid]
+            members.append({
+                "id": nid,
+                "title": data.get("title", ""),
+                "type": data.get("type", "concept"),
+                "weight": data.get("weight", 0),
+                "domains": data.get("domains", ""),
+            })
+        members.sort(key=lambda m: m["weight"], reverse=True)
+        comp_reps.append(members[:3])
+
+    # Compare representatives across components using keyword overlap
+    suggestions = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for i, reps_a in enumerate(comp_reps):
+        for j, reps_b in enumerate(comp_reps):
+            if j <= i:
+                continue
+            for a in reps_a:
+                for b in reps_b:
+                    pair = tuple(sorted([a["id"], b["id"]]))
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+
+                    score = _title_similarity(a["title"], b["title"])
+
+                    # Domain overlap bonus
+                    domains_a = _parse_domains(a["domains"])
+                    domains_b = _parse_domains(b["domains"])
+                    if domains_a and domains_b:
+                        overlap = domains_a & domains_b
+                        if overlap:
+                            score += 0.3 * len(overlap)
+
+                    if score > 0.1:
+                        suggestions.append({
+                            "concept_a": a["title"],
+                            "concept_b": b["title"],
+                            "id_a": a["id"],
+                            "id_b": b["id"],
+                            "score": round(score, 3),
+                            "reason": f"Cross-component link (similarity: {score:.2f})",
+                        })
+
+            if len(suggestions) >= max_suggestions * 3:
+                break
+        if len(suggestions) >= max_suggestions * 3:
+            break
+
+    suggestions.sort(key=lambda s: s["score"], reverse=True)
+    return suggestions[:max_suggestions]
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Simple word-overlap similarity between two titles."""
+    if not a or not b:
+        return 0.0
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    stop = {"the", "a", "an", "is", "in", "of", "to", "and", "for", "with", "on", "at", "by"}
+    words_a -= stop
+    words_b -= stop
+    if not words_a or not words_b:
+        return 0.0
+    overlap = words_a & words_b
+    if not overlap:
+        return 0.0
+    return len(overlap) / min(len(words_a), len(words_b))
+
+
+def _parse_domains(domains) -> set[str]:
+    """Parse domains from various formats (JSON string, list, etc.)."""
+    if isinstance(domains, list):
+        return {d.lower() for d in domains}
+    if isinstance(domains, str) and domains:
+        import json
+        try:
+            parsed = json.loads(domains)
+            if isinstance(parsed, list):
+                return {d.lower() for d in parsed}
+        except (json.JSONDecodeError, TypeError):
+            return {d.strip().lower() for d in domains.split(",") if d.strip()}
+    return set()

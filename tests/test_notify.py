@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from kindex.config import Config
@@ -11,6 +13,7 @@ from kindex.notify import (
     SlackChannel,
     EmailChannel,
     ClaudeChannel,
+    TelegramChannel,
     TerminalChannel,
     dispatch,
     get_channel,
@@ -44,25 +47,32 @@ class TestSystemChannel:
 
     def test_send_fallback(self, config, reminder, monkeypatch):
         ch = SystemChannel()
-        # Mock subprocess.run to simulate both failing
-        call_count = {"n": 0}
+        # Mock subprocess to simulate alerter not found, osascript fallback
+        call_count = {"run": 0, "popen": 0}
 
         def mock_run(*args, **kwargs):
-            call_count["n"] += 1
-
+            call_count["run"] += 1
             class FakeResult:
-                returncode = 1
+                returncode = 0
                 stdout = ""
                 stderr = ""
             return FakeResult()
 
+        class MockPopen:
+            def __init__(self, *args, **kwargs):
+                call_count["popen"] += 1
+
         import shutil
         monkeypatch.setattr(shutil, "which", lambda x: None)
+        # Also block the direct path check so terminal-notifier isn't found
+        real_isfile = os.path.isfile
+        monkeypatch.setattr("kindex.notify.os.path.isfile", lambda p: False)
         monkeypatch.setattr("kindex.notify.subprocess.run", mock_run)
+        monkeypatch.setattr("kindex.notify.subprocess.Popen", MockPopen)
 
         result = ch.send(reminder, config)
-        # Should have attempted osascript fallback
-        assert call_count["n"] >= 1
+        # Should have attempted osascript fallback via subprocess.run
+        assert call_count["run"] >= 1
 
 
 class TestSlackChannel:
@@ -162,9 +172,55 @@ class TestDispatch:
         assert any("Unknown channel" in r.message for r in results)
 
 
+class TestTelegramChannel:
+    def test_not_available_without_config(self, config):
+        ch = TelegramChannel()
+        assert not ch.is_available(config)
+
+    def test_available_with_config(self, config):
+        config.reminders.channels.telegram.enabled = True
+        config.reminders.channels.telegram.bot_token = "123:ABC"
+        config.reminders.channels.telegram.chat_id = "456"
+        ch = TelegramChannel()
+        assert ch.is_available(config)
+
+    def test_send_posts_to_api(self, config, reminder, monkeypatch):
+        config.reminders.channels.telegram.enabled = True
+        config.reminders.channels.telegram.bot_token = "123:ABC"
+        config.reminders.channels.telegram.chat_id = "456"
+
+        ch = TelegramChannel()
+
+        import urllib.request
+        requests_made = []
+
+        def mock_urlopen(req, **kwargs):
+            requests_made.append(req)
+            class FakeResponse:
+                status = 200
+                def read(self):
+                    return b'{"ok":true}'
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+        result = ch.send(reminder, config)
+        assert result.success
+        assert len(requests_made) == 1
+        assert "api.telegram.org" in requests_made[0].full_url
+
+    def test_send_no_token_fails(self, config, reminder):
+        config.reminders.channels.telegram.enabled = True
+        config.reminders.channels.telegram.chat_id = "456"
+        ch = TelegramChannel()
+        result = ch.send(reminder, config)
+        assert not result.success
+        assert "No bot token" in result.message
+
+
 class TestChannelRegistry:
     def test_get_channel(self):
-        for name in ("system", "slack", "email", "claude", "terminal"):
+        for name in ("system", "slack", "email", "claude", "telegram", "terminal"):
             assert get_channel(name) is not None
 
     def test_get_nonexistent(self):

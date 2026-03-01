@@ -91,14 +91,27 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
         lines.append("")
 
     if ops["watches"]:
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
         lines.append("### Watches")
-        for w in ops["watches"][:3]:
+        for w in ops["watches"][:5]:
             extra = w.get("extra") or {}
-            parts = [f"! {w['title']}"]
+            expires = extra.get("expires", "")
+            urgent = ""
+            if expires:
+                try:
+                    days_left = (_dt.date.fromisoformat(expires) - _dt.date.today()).days
+                    if days_left <= 0:
+                        urgent = " [OVERDUE]"
+                    elif days_left <= 3:
+                        urgent = f" [{days_left}d left]"
+                except (ValueError, TypeError):
+                    pass
+            parts = [f"! {w['title']}{urgent}"]
             if extra.get("owner"):
                 parts.append(f"@{extra['owner']}")
-            if extra.get("expires"):
-                parts.append(f"(expires {extra['expires']})")
+            if expires:
+                parts.append(f"(expires {expires})")
             entry = f"- {' '.join(parts)}"
             lines.append(entry)
             used += len(entry) + 1
@@ -139,7 +152,6 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
     # -- Active session tag --
     try:
         from .sessions import get_active_tag
-        import os
 
         active_tag = get_active_tag(store, project_path=os.getcwd())
         if active_tag:
@@ -208,15 +220,56 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
     except Exception:
         pass  # Don't break priming
 
+    # -- Contextual tasks --
+    try:
+        from .tasks import nearby_tasks, list_tasks, format_task_list
+
+        # Gather seeds from FTS results already computed above
+        seed_ids = [r["id"] for r in results[:5]] if results else []
+
+        # Find contextual tasks near these seeds
+        context_tasks = nearby_tasks(store, seed_ids, max_hops=2) if seed_ids else []
+
+        # Also include global tasks
+        global_tasks = list_tasks(store, status="open", scope="global", limit=5)
+        seen_ids = {t["id"] for t in context_tasks}
+        for gt in global_tasks:
+            if gt["id"] not in seen_ids:
+                context_tasks.append(gt)
+
+        if context_tasks:
+            lines.append("### Tasks")
+            for t in context_tasks[:5]:
+                extra = t.get("extra") or {}
+                p = extra.get("priority", 3)
+                p_label = {1: "P1/urgent", 2: "P2/high", 3: "P3", 4: "P4/low", 5: "P5"}.get(p, "P3")
+                due = extra.get("due", "")
+                due_str = f" (due: {due[:10]})" if due else ""
+                scope = " [global]" if extra.get("scope") == "global" else ""
+                lines.append(
+                    f"- [{p_label}]{scope} {t['title']}{due_str} (id: {t['id']})"
+                )
+            lines.append(
+                "  Use `task_done <id>` to complete, `task_add` to create new tasks"
+            )
+            lines.append("")
+    except Exception:
+        pass  # Don't break priming if tasks module has issues
+
     # -- Session directives (always included) --
     lines.append("### Session directives")
-    lines.append("You MUST use kindex MCP tools throughout this session:")
-    lines.append("- `search` before starting work and before adding nodes")
-    lines.append("- `add` for discoveries, decisions, key files, notable outputs, new terms")
-    lines.append("- `link` when you find connections between concepts")
-    lines.append("- `learn` after reading long files/outputs to bulk-extract concepts")
-    lines.append("- `tag_start`/`tag_update` to track session context")
-    lines.append("- `remind_create` with `action`/`instructions` for deferred tasks")
+    lines.append("You MUST use kindex MCP tools proactively — this is the user's external memory.")
+    lines.append("**Capture as you go** — don't batch, don't wait until the end:")
+    lines.append("- `search` FIRST to see what's known, and before every `add` to avoid duplicates")
+    lines.append("- `add` discoveries, decisions (--type decision), questions (--type question)")
+    lines.append("- `watch_add` for things needing monitoring (flaky tests, unstable APIs, pending items)")
+    lines.append("- `watch_resolve` when a watched issue is fixed or no longer relevant")
+    lines.append("- `link` aggressively — the graph's value is in connections, not isolated nodes")
+    lines.append("- `learn` after reading long files/outputs to bulk-extract knowledge")
+    lines.append("- `task_add` for work items — ALWAYS use link_to to connect to related concepts")
+    lines.append("- `task_done` to complete tasks, `task_list` to see what's open")
+    lines.append("- `remind_create` for time-based triggers (with `action` or `instructions`)")
+    lines.append("- `tag_start`/`tag_update` to track session focus and progress")
     lines.append("")
 
     return "\n".join(lines) + "\n"

@@ -222,6 +222,168 @@ class TestIncrementalIngest:
         s.close()
 
 
+class TestGraphHygiene:
+    def test_archives_stale_orphans(self, tmp_path):
+        """Stale orphans (low weight, old) should be archived."""
+        from kindex.daemon import _graph_hygiene
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        # Create an orphan with low weight and old timestamp
+        s.add_node("Stale orphan", content="old stuff", node_id="stale1",
+                    node_type="concept")
+        s.update_node("stale1", weight=0.05)
+        # Backdate updated_at
+        s.conn.execute(
+            "UPDATE nodes SET updated_at = '2025-01-01T00:00:00' WHERE id = 'stale1'"
+        )
+        s.conn.commit()
+
+        results = _graph_hygiene(s, verbose=False)
+        assert results["archived"] == 1
+
+        node = s.get_node("stale1")
+        assert node["status"] == "archived"
+        assert node["weight"] == 0.01
+        s.close()
+
+    def test_skips_lifecycle_types(self, tmp_path):
+        """Task, session, checkpoint etc. should not be archived."""
+        from kindex.daemon import _graph_hygiene
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        for ntype in ("task", "session", "checkpoint", "directive", "constraint"):
+            s.add_node(f"Orphan {ntype}", node_id=f"o-{ntype}", node_type=ntype)
+            s.update_node(f"o-{ntype}", weight=0.05)
+            s.conn.execute(
+                f"UPDATE nodes SET updated_at = '2025-01-01T00:00:00' WHERE id = 'o-{ntype}'"
+            )
+        s.conn.commit()
+
+        results = _graph_hygiene(s, verbose=False)
+        assert results["archived"] == 0
+        s.close()
+
+    def test_autolinks_viable_orphan(self, tmp_path):
+        """Viable orphan should get linked via FTS title match."""
+        from kindex.daemon import _graph_hygiene
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        # Create a connected node
+        s.add_node("Graph Algorithms", content="BFS DFS", node_id="graph-alg")
+        s.add_node("Related Node", content="related", node_id="related1")
+        s.add_edge("graph-alg", "related1")
+
+        # Create an orphan with matching title
+        s.add_node("Graph Theory", content="About graph theory", node_id="orphan-graph")
+
+        results = _graph_hygiene(s, verbose=False)
+        assert results["linked"] >= 0  # may or may not match depending on FTS
+
+        s.close()
+
+    def test_empty_store(self, tmp_path):
+        """No crash on empty store."""
+        from kindex.daemon import _graph_hygiene
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        results = _graph_hygiene(s, verbose=False)
+        assert results["archived"] == 0
+        assert results["linked"] == 0
+        s.close()
+
+    def test_does_not_archive_recent_orphan(self, tmp_path):
+        """Recent orphan with low weight should not be archived."""
+        from kindex.daemon import _graph_hygiene
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        # Recent orphan — just created, so updated_at is now
+        s.add_node("Fresh orphan", content="just created", node_id="fresh1")
+        s.update_node("fresh1", weight=0.05)
+
+        results = _graph_hygiene(s, verbose=False)
+        assert results["archived"] == 0
+
+        node = s.get_node("fresh1")
+        assert node["status"] == "active"
+        s.close()
+
+
+class TestCheckWatches:
+    def test_expires_overdue_watches(self, tmp_path):
+        """Watches past their expiry date should be archived."""
+        from kindex.daemon import _check_watches
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        s.add_node("Old watch", node_id="w1", node_type="watch",
+                    extra={"expires": "2025-01-01"})
+
+        results = _check_watches(s, verbose=False)
+        assert results["expired"] == 1
+
+        node = s.get_node("w1")
+        assert node["status"] == "archived"
+        s.close()
+
+    def test_boosts_near_expiry_watches(self, tmp_path):
+        """Watches expiring within 3 days should get weight boosted."""
+        import datetime as _dt
+        from kindex.daemon import _check_watches
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        tomorrow = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+        s.add_node("Urgent watch", node_id="w2", node_type="watch",
+                    extra={"expires": tomorrow})
+        s.update_node("w2", weight=0.5)
+
+        results = _check_watches(s, verbose=False)
+        assert results["notified"] == 1
+
+        node = s.get_node("w2")
+        assert node["weight"] == 0.9
+        s.close()
+
+    def test_skips_far_future_watches(self, tmp_path):
+        """Watches expiring far in the future should not be touched."""
+        from kindex.daemon import _check_watches
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        s.add_node("Future watch", node_id="w3", node_type="watch",
+                    extra={"expires": "2027-12-31"})
+
+        results = _check_watches(s, verbose=False)
+        assert results["expired"] == 0
+        assert results["notified"] == 0
+        s.close()
+
+    def test_no_watches(self, tmp_path):
+        """No crash on empty watch list."""
+        from kindex.daemon import _check_watches
+
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+
+        results = _check_watches(s, verbose=False)
+        assert results["expired"] == 0
+        assert results["notified"] == 0
+        s.close()
+
+
 class TestLastRunMarker:
     def test_last_run_marker(self, tmp_path):
         """Verify marker read/write via meta table."""

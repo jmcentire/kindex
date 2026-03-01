@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -46,34 +47,50 @@ class SystemChannel:
     def send(self, reminder: dict, config: Config) -> NotifyResult:
         title = reminder.get("title", "Reminder")
         body = reminder.get("body", "")
+        rid = reminder.get("id", "")
         priority = reminder.get("priority", "normal")
         sound = config.reminders.channels.system.sound
 
-        # Try terminal-notifier first
+        # Try alerter first (persistent, clean notification — no focus steal)
         try:
             import shutil
-            if shutil.which("terminal-notifier"):
-                cmd = [
-                    "terminal-notifier",
-                    "-title", f"Kindex: {title}",
-                    "-message", body or title,
-                    "-group", f"kindex-{reminder.get('id', '')}",
+
+            alerter = shutil.which("alerter")
+            if not alerter:
+                for candidate in ("/opt/homebrew/bin/alerter",
+                                  "/usr/local/bin/alerter"):
+                    if os.path.isfile(candidate):
+                        alerter = candidate
+                        break
+
+            if alerter:
+                alerter_cmd = [
+                    alerter,
+                    "--title", f"Kindex: {title}",
+                    "--message", body or title,
+                    "--group", f"kindex-{rid}",
+                    "--timeout", "300",
                 ]
                 if priority == "urgent":
-                    cmd.extend(["-sound", "Basso"])
+                    alerter_cmd.extend(["--sound", "Basso"])
                 elif sound and sound != "none":
-                    cmd.extend(["-sound", sound])
-                result = subprocess.run(cmd, capture_output=True, timeout=5)
-                if result.returncode == 0:
-                    return NotifyResult(True, "system", "terminal-notifier")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+                    alerter_cmd.extend(["--sound", sound])
+
+                subprocess.Popen(
+                    alerter_cmd,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                return NotifyResult(True, "system", "alerter")
+        except (FileNotFoundError, OSError):
             pass
 
-        # Fallback: osascript
+        # Fallback: osascript notification banner (non-modal, no focus steal)
         try:
             msg = (body or title).replace('"', '\\"')
             ttl = title.replace('"', '\\"')
-            script = f'display notification "{msg}" with title "Kindex: {ttl}"'
+            # Include reminder ID so user can act on it
+            full_msg = f'{msg}\\nkin remind done {rid} | kin remind snooze {rid}'
+            script = f'display notification "{full_msg}" with title "Kindex: {ttl}"'
             if sound and sound != "none":
                 script += f' sound name "{sound}"'
             subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
@@ -82,7 +99,7 @@ class SystemChannel:
             return NotifyResult(False, "system", str(e))
 
     def supports_actions(self) -> bool:
-        return False
+        return True
 
 
 class SlackChannel:
@@ -194,6 +211,60 @@ class ClaudeChannel:
         return True
 
 
+class TelegramChannel:
+    """Telegram Bot API notifications."""
+
+    name = "telegram"
+
+    def is_available(self, config: Config) -> bool:
+        tc = config.reminders.channels.telegram
+        return tc.enabled and bool(tc.chat_id) and bool(tc.bot_token or tc.bot_token_keychain)
+
+    def send(self, reminder: dict, config: Config) -> NotifyResult:
+        import json
+        import urllib.request
+
+        tc = config.reminders.channels.telegram
+        token = tc.bot_token
+        if not token and tc.bot_token_keychain:
+            token = _keychain_get(tc.bot_token_keychain)
+        if not token:
+            return NotifyResult(False, "telegram", "No bot token configured")
+
+        priority = reminder.get("priority", "normal")
+        emoji = {
+            "urgent": "\u26a0\ufe0f", "high": "\u2757",
+            "normal": "\U0001f514", "low": "\U0001f4dd",
+        }.get(priority, "\U0001f514")
+
+        title = reminder.get("title", "Reminder")
+        body = reminder.get("body", "")
+        text = f"{emoji} *Kindex Reminder*: {title}"
+        if body:
+            text += f"\n{body}"
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": tc.chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            return NotifyResult(True, "telegram")
+        except Exception as e:
+            return NotifyResult(False, "telegram", str(e))
+
+    def supports_actions(self) -> bool:
+        return False
+
+
 class TerminalChannel:
     """Terminal bell + stderr fallback (always available)."""
 
@@ -221,7 +292,8 @@ _CHANNELS: dict[str, NotificationChannel] = {}
 
 
 def _register_builtins() -> None:
-    for cls in (SystemChannel, SlackChannel, EmailChannel, ClaudeChannel, TerminalChannel):
+    for cls in (SystemChannel, SlackChannel, EmailChannel, ClaudeChannel,
+                TelegramChannel, TerminalChannel):
         ch = cls()
         _CHANNELS[ch.name] = ch
 

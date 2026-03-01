@@ -16,16 +16,50 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP(
     "kindex",
     instructions=(
-        "Kindex is a persistent knowledge graph for AI-assisted workflows. "
-        "You MUST use these tools proactively throughout every session. "
-        "Use 'search' before starting work and before adding to avoid duplicates. "
-        "Use 'add' to capture discoveries, decisions, key files, notable outputs, "
-        "and new terms you encounter. Use 'link' to connect related concepts. "
-        "Use 'learn' to bulk-extract knowledge from long text. "
-        "Use 'tag_start'/'tag_update'/'tag_resume' to track session context. "
-        "Use 'remind_create' with 'action'/'instructions' for deferred tasks. "
-        "Nodes have types (concept, decision, skill, person, project, constraint, etc.) "
-        "and are connected by weighted edges."
+        "Kindex is a persistent knowledge graph that remembers across sessions. "
+        "You MUST use these tools proactively — the user depends on this graph as external memory.\n\n"
+
+        "## Session lifecycle\n"
+        "1. START: `tag_start` or `tag_resume` to name this session\n"
+        "2. ORIENT: `search` the current topic to see what's already known\n"
+        "3. DURING: capture as you go (see node types below)\n"
+        "4. END: `tag_update` with action='end' and a summary\n\n"
+
+        "## What to capture (use `add` with the right node_type)\n"
+        "- concept: patterns, facts, key files, domain terms, how things work\n"
+        "- decision: architectural choices, trade-offs, why X over Y\n"
+        "- question: open problems, things to investigate later\n"
+        "- task: actionable work items — link to related concepts so they surface contextually\n"
+        "- skill: demonstrated abilities with evidence\n"
+        "- constraint: invariants that MUST hold (hard rules, with trigger/action: warn|verify|block)\n"
+        "- directive: behavioral guidelines, style rules (soft rules with scope)\n"
+        "- watch: things that need monitoring — known instabilities, flaky tests, "
+        "APIs that might break, items needing periodic attention (set owner + expires)\n"
+        "- checkpoint: pre-flight checklists — things to verify before an event\n\n"
+
+        "## When to use each tool\n"
+        "- `search`: ALWAYS before adding (avoid duplicates) and when starting work on a topic\n"
+        "- `add`: capture discoveries as they happen — don't batch, don't wait\n"
+        "- `link`: when you notice two concepts relate — specify the relationship type "
+        "(relates_to, depends_on, implements, contradicts, blocks, context_of)\n"
+        "- `learn`: after reading long files/outputs — bulk-extracts multiple concepts at once\n"
+        "- `task_add`: for work items — ALWAYS link to relevant concepts via link_to parameter\n"
+        "- `task_done`/`task_list`: manage tasks — they surface contextually via graph proximity\n"
+        "- `watch_add`: for ONGOING monitoring — flaky tests, unstable APIs, items to revisit. "
+        "Set owner and expires. Watches surface in every session's context automatically.\n"
+        "- `watch_resolve`: when a watched issue is fixed or no longer relevant\n"
+        "- `remind_create`: for TIME-BASED triggers — use `action` for shell commands, "
+        "`instructions` for Claude to follow when the reminder fires\n"
+        "- `suggest`: check for bridge opportunities between disconnected graph clusters\n"
+        "- `graph_heal`: diagnose graph health — find orphans, bridges, fading nodes\n"
+        "- `graph_merge`: merge duplicate nodes (moves edges, archives source)\n"
+        "- `ask`: query the graph conversationally\n\n"
+
+        "## Linking strategy\n"
+        "The graph's value is in connections. When you add a node, think: what does this relate to? "
+        "Use `link` aggressively. Edge types: relates_to (general), depends_on (prerequisite), "
+        "implements (realization), contradicts (tension), blocks (impediment), "
+        "context_of (background), answers (resolves a question), supersedes (replaces)."
     ),
 )
 
@@ -151,20 +185,25 @@ def add(
     domains: str = "",
     audience: str = "private",
 ) -> str:
-    """Add a knowledge node to the graph.
+    """Add a knowledge node to the graph. ALWAYS `search` first to avoid duplicates.
 
-    USE THIS: when you discover something notable -- a pattern, decision,
-    key file, surprising output, new term, or open question. Always search
-    first to avoid duplicates.
-
-    The text becomes the node's title and content. Auto-extracts concepts
-    and creates links to existing nodes when possible.
+    Choose the right node_type — it determines how the node behaves:
+    - concept: facts, patterns, key files, domain terms (default, most common)
+    - decision: "we chose X over Y because..." — architectural choices with rationale
+    - question: open problems to investigate later — gets surfaced until answered
+    - task: actionable work — prefer `task_add` instead (supports priority/due/linking)
+    - skill: demonstrated ability with evidence
+    - constraint: hard rule that MUST hold — set trigger/action in text (e.g. "never push to main without tests")
+    - directive: soft behavioral guideline with scope (e.g. "use snake_case in Python modules")
+    - watch: something needing periodic attention — flaky test, unstable API, known tech debt.
+      Set owner and expiry in text. Gets surfaced in every session until resolved or expired.
+    - checkpoint: pre-flight checklist item — verify before a specific event
 
     Args:
-        text: The knowledge to capture (used as both title and content).
-        node_type: Node type (concept, decision, question, skill, person, constraint, directive, watch).
-        domains: Comma-separated domain tags (e.g. "engineering,python").
-        audience: Visibility scope (private, team, org, public).
+        text: The knowledge to capture (becomes title + content). Be specific.
+        node_type: See types above. Default: concept.
+        domains: Comma-separated domain tags for contextual surfacing (e.g. "kindex,python").
+        audience: Visibility scope (private, team, org, public). Default: private.
     """
     store, config = _get_store()
     from .extract import keyword_extract
@@ -252,14 +291,26 @@ def link(
     weight: float = 0.5,
     reason: str = "",
 ) -> str:
-    """Create an edge between two nodes.
+    """Create an edge between two nodes. Links are the graph's primary value — use liberally.
+
+    Choose the right relationship type:
+    - relates_to: general connection (default)
+    - depends_on: A requires B to function
+    - implements: A is a concrete realization of B
+    - contradicts: A and B are in tension
+    - blocks: A prevents progress on B
+    - answers: A resolves question B
+    - supersedes: A replaces B
+    - context_of: A provides background for B
+    - spawned_from: A was derived from B
+    - exemplifies: A is an example of B
 
     Args:
         node_a: Source node ID or title.
         node_b: Target node ID or title.
-        relationship: Edge type (relates_to, answers, contradicts, implements, depends_on, etc.).
-        weight: Edge weight 0.0-1.0 (default 0.5).
-        reason: Why this connection exists.
+        relationship: Edge type (see above). Default: relates_to.
+        weight: Edge strength 0.0-1.0. Use 0.7+ for strong connections, 0.3-0.5 for weak ones.
+        reason: Why this connection exists (stored as provenance — always provide this).
     """
     store, _ = _get_store()
     a = store.get_node(node_a) or store.get_node_by_title(node_a)
@@ -505,6 +556,141 @@ def graph_stats() -> str:
             lines.append(f"  Cluster {i} ({len(comm)} nodes): {members}")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def graph_heal() -> str:
+    """Diagnose and report graph health issues with actionable recommendations.
+
+    Reports:
+    - Orphan nodes (no connections) — candidates for linking or archival
+    - Disconnected components — candidates for cross-component links
+    - Low-weight nodes approaching archive threshold
+    - Bridge edges (single points of failure in the graph)
+
+    Use this to understand what needs attention, then use `link`, `add`,
+    or other tools to fix issues.
+    """
+    store, _ = _get_store()
+    from .graph import store_bridges, store_stats
+
+    lines = ["# Graph Health Report\n"]
+
+    # Stats overview
+    stats = store_stats(store)
+    lines.append(f"Nodes: {stats.get('nodes', 0)}, Edges: {stats.get('edges', 0)}, "
+                 f"Components: {stats.get('components', 0)}, "
+                 f"Density: {stats.get('density', 0):.4f}\n")
+
+    # Orphans
+    orphans = store.orphans()
+    if orphans:
+        lines.append(f"## Orphans ({len(orphans)} — need links or archival)")
+        for o in orphans[:10]:
+            weight = o.get('weight', 0)
+            lines.append(f"  - [{o.get('type', '?')}] {o['title']} "
+                         f"(id={o['id']}, w={weight:.2f})")
+            if weight < 0.15:
+                lines.append(f"    -> Low weight, candidate for archival")
+            else:
+                lines.append(f"    -> Use `link` to connect to related nodes")
+        if len(orphans) > 10:
+            lines.append(f"  ... and {len(orphans) - 10} more")
+    else:
+        lines.append("## Orphans: None (healthy)")
+
+    # Bridges (single points of failure)
+    bridges = store_bridges(store, top_k=5)
+    if bridges:
+        lines.append(f"\n## Bridge Edges (critical connections)")
+        for b in bridges:
+            lines.append(f"  - {b['from_title']} <-> {b['to_title']} "
+                         f"(betweenness: {b['betweenness']:.4f})")
+        lines.append("  -> Consider adding parallel links to reduce fragility")
+
+    # Low-weight nodes approaching archive
+    try:
+        low = store.conn.execute(
+            """SELECT id, title, type, weight FROM nodes
+               WHERE status = 'active' AND weight < 0.1
+               ORDER BY weight ASC LIMIT 10"""
+        ).fetchall()
+        if low:
+            lines.append(f"\n## Fading Nodes ({len(low)} below 0.1 weight)")
+            for r in low:
+                lines.append(f"  - [{r['type']}] {r['title']} "
+                             f"(id={r['id']}, w={r['weight']:.3f})")
+            lines.append("  -> Access these nodes to refresh weight, or let them fade to archive")
+    except Exception:
+        pass
+
+    # Component info
+    if stats.get('components', 0) > 1:
+        lines.append(f"\n## Disconnected Components: {stats['components']}")
+        lines.append("  -> Use `suggest` to find cross-component link candidates")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def graph_merge(source_id: str, target_id: str, keep: str = "target") -> str:
+    """Merge two nodes that represent the same concept.
+
+    Moves all edges from the source node to the target node, then archives
+    the source. Use when you find duplicate or near-duplicate nodes.
+
+    Args:
+        source_id: Node to merge FROM (will be archived).
+        target_id: Node to merge INTO (will receive edges).
+        keep: Which node to keep: 'target' (default) or 'source'.
+    """
+    store, _ = _get_store()
+
+    if keep == "source":
+        source_id, target_id = target_id, source_id
+
+    source = store.get_node(source_id)
+    target = store.get_node(target_id)
+    if not source:
+        return f"Source node not found: {source_id}"
+    if not target:
+        return f"Target node not found: {target_id}"
+
+    # Move edges from source to target
+    moved = 0
+    for edge in store.edges_from(source_id):
+        if edge["to_id"] != target_id:
+            store.add_edge(target_id, edge["to_id"],
+                           edge_type=edge.get("type", "relates_to"),
+                           weight=edge.get("weight", 0.3),
+                           provenance=f"merged from {source['title']}")
+            moved += 1
+    for edge in store.edges_to(source_id):
+        if edge["from_id"] != target_id:
+            store.add_edge(edge["from_id"], target_id,
+                           edge_type=edge.get("type", "relates_to"),
+                           weight=edge.get("weight", 0.3),
+                           provenance=f"merged from {source['title']}")
+            moved += 1
+
+    # Merge content if source has content the target lacks
+    source_content = source.get("content", "")
+    target_content = target.get("content", "")
+    if source_content and source_content not in (target_content or ""):
+        merged_content = f"{target_content}\n\n[Merged from: {source['title']}]\n{source_content}"
+        store.update_node(target_id, content=merged_content)
+
+    # Boost target weight
+    source_weight = source.get("weight", 0.5)
+    target_weight = target.get("weight", 0.5)
+    store.update_node(target_id, weight=min(1.0, max(target_weight, source_weight)))
+
+    # Archive source
+    store.update_node(source_id, status="archived", weight=0.01,
+                      extra={"merged_into": target_id})
+
+    return (f"Merged '{source['title']}' into '{target['title']}': "
+            f"{moved} edges moved, source archived.")
 
 
 @mcp.tool()
@@ -792,6 +978,198 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
         return "\n".join(lines)
 
     return format_resume_context(store, name, max_tokens=tokens)
+
+
+# ── Tasks ─────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def task_add(text: str, priority: int = 3, due: str = "",
+             scope: str = "contextual", link_to: str = "",
+             effort: str = "") -> str:
+    """Add a task to the knowledge graph.
+
+    Tasks are graph-connected -- link them to concepts, projects, or other
+    nodes so they surface contextually when you're working in related areas.
+    Use link_to to connect tasks to existing graph nodes by ID or title.
+
+    Args:
+        text: Task title/description.
+        priority: 1=urgent 2=high 3=normal 4=low 5=someday.
+        due: Optional due date ('tomorrow', '2026-03-15', 'in 3 days').
+        scope: 'global' (always visible) or 'contextual' (surfaces by proximity).
+        link_to: Comma-separated node IDs or titles to link this task to.
+        effort: Optional effort estimate (small, medium, large).
+    """
+    store, _ = _get_store()
+    from .tasks import create_task
+    links = [s.strip() for s in link_to.split(",") if s.strip()] if link_to else None
+    task_id = create_task(
+        store, text,
+        priority=priority,
+        due=due or None,
+        scope=scope,
+        effort=effort or None,
+        link_to=links,
+    )
+    node = store.get_node(task_id)
+    extra = node.get("extra", {}) if node else {}
+    p_label = {1: "urgent", 2: "high", 3: "normal", 4: "low", 5: "someday"}.get(
+        extra.get("priority", 3), "normal")
+    due_info = f", due: {extra.get('due', '')}" if extra.get("due") else ""
+    return f"Created task: {task_id} [{p_label}]{due_info} — {text}"
+
+
+@mcp.tool()
+def task_list(status: str = "open", scope: str = "",
+              priority: str = "") -> str:
+    """List tasks, optionally filtered.
+
+    Args:
+        status: Filter: open, in_progress, done, all. Default: open.
+        scope: Filter: global, contextual, or empty for both.
+        priority: Max priority level to show (1-5). Empty for all.
+    """
+    store, _ = _get_store()
+    from .tasks import list_tasks, format_task_list
+    tasks = list_tasks(
+        store,
+        status=status,
+        scope=scope or None,
+    )
+    if priority:
+        try:
+            max_pri = int(priority)
+            tasks = [t for t in tasks
+                     if (t.get("extra") or {}).get("priority", 3) <= max_pri]
+        except ValueError:
+            pass
+    if not tasks:
+        return "No tasks found."
+    return format_task_list(tasks)
+
+
+@mcp.tool()
+def task_done(id: str) -> str:
+    """Mark a task as completed.
+
+    Args:
+        id: Task node ID.
+    """
+    store, _ = _get_store()
+    from .tasks import complete_task
+    result = complete_task(store, id)
+    if result:
+        return f"Completed: {result['title']} ({id})"
+    return f"Task not found: {id}"
+
+
+# ── Watches ──────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def watch_add(text: str, owner: str = "", expires: str = "",
+              link_to: str = "") -> str:
+    """Create a watch node for something needing periodic attention.
+
+    Watches surface in every session's context. Use for:
+    - Flaky tests, unstable APIs, known tech debt
+    - Pending decisions, things to revisit
+    - Anything Claude should keep an eye on
+
+    Args:
+        text: What to watch (becomes the node title).
+        owner: Who owns this watch (person or team).
+        expires: When this watch expires (YYYY-MM-DD). Auto-archived after expiry.
+        link_to: Comma-separated node IDs/titles to link this watch to.
+    """
+    store, _ = _get_store()
+    import os
+
+    extra = {"watch_status": "active"}
+    if owner:
+        extra["owner"] = owner
+    if expires:
+        extra["expires"] = expires
+
+    domains = []
+    project_path = os.environ.get("PWD", "")
+    if project_path:
+        extra["project_path"] = project_path
+
+    nid = store.add_node(
+        title=text,
+        content="",
+        node_type="watch",
+        domains=domains,
+        prov_activity="mcp-watch-add",
+        extra=extra,
+    )
+
+    # Link to specified nodes
+    if link_to:
+        for ref in link_to.split(","):
+            ref = ref.strip()
+            if not ref:
+                continue
+            target = store.get_node(ref) or store.get_node_by_title(ref)
+            if target:
+                store.add_edge(nid, target["id"], edge_type="relates_to",
+                               weight=0.5, provenance="watch context")
+
+    exp = f", expires {expires}" if expires else ""
+    own = f", owner: {owner}" if owner else ""
+    return f"Watch created: {text} (id={nid}{exp}{own})"
+
+
+@mcp.tool()
+def watch_list(status: str = "active") -> str:
+    """List watch nodes.
+
+    Args:
+        status: Filter by status: active (default), archived, all.
+    """
+    store, _ = _get_store()
+    if status == "all":
+        watches = store.all_nodes(node_type="watch", limit=50)
+    elif status == "archived":
+        watches = store.all_nodes(node_type="watch", status="archived", limit=50)
+    else:
+        watches = store.active_watches()
+
+    if not watches:
+        return "No watches found."
+
+    lines = [f"Watches ({len(watches)}):"]
+    for w in watches:
+        extra = w.get("extra") or {}
+        parts = [f"- {w['title']} (id={w['id']})"]
+        if extra.get("owner"):
+            parts.append(f"@{extra['owner']}")
+        if extra.get("expires"):
+            parts.append(f"expires {extra['expires']}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def watch_resolve(id: str, reason: str = "") -> str:
+    """Resolve/archive a watch node.
+
+    Args:
+        id: Watch node ID.
+        reason: Why this watch is being resolved.
+    """
+    store, _ = _get_store()
+    node = store.get_node(id)
+    if not node or node.get("type") != "watch":
+        return f"Watch not found: {id}"
+
+    extra = node.get("extra") or {}
+    extra["resolved_reason"] = reason
+    extra["watch_status"] = "resolved"
+    store.update_node(id, status="archived", extra=extra, weight=0.01)
+    return f"Resolved watch: {node['title']} ({id})"
 
 
 # ── Reminders ─────────────────────────────────────────────────────────
