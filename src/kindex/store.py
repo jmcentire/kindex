@@ -336,6 +336,7 @@ class Store:
         aka: list[str] | None = None,
         intent: str = "",
         domains: list[str] | None = None,
+        tags: list[str] | None = None,
         status: str = "active",
         audience: str = "private",
         weight: float = 0.5,
@@ -347,6 +348,9 @@ class Store:
         extra: dict | None = None,
     ) -> str:
         """Insert a node. Returns its ID."""
+        # Merge user-supplied tags into domains (supplement, never replace)
+        if tags:
+            domains = list(set((domains or []) + tags))
         nid = node_id or _uuid()
         now = _now()
         when = prov_when or now
@@ -423,7 +427,14 @@ class Store:
     def update_node(self, node_id: str, **fields) -> None:
         """Update specific fields on a node."""
         allowed = {"title", "content", "aka", "intent", "weight", "domains",
-                   "status", "audience", "prov_who", "prov_activity", "prov_why", "prov_source", "extra"}
+                   "tags", "status", "audience", "prov_who", "prov_activity",
+                   "prov_why", "prov_source", "extra"}
+        # Handle tags -> domains alias (tags supplement, never replace)
+        if "tags" in fields:
+            tag_vals = fields.pop("tags")
+            if isinstance(tag_vals, list):
+                existing = fields.get("domains") or []
+                fields["domains"] = list(set(existing + tag_vals))
         updates = {}
         for k, v in fields.items():
             if k not in allowed:
@@ -456,8 +467,9 @@ class Store:
     def all_nodes(self, node_type: str | None = None,
                   status: str | None = None,
                   audience: str | None = None,
+                  tags: list[str] | None = None,
                   limit: int = 500) -> list[dict]:
-        """List nodes with optional type/status/audience filters."""
+        """List nodes with optional type/status/audience/tags filters."""
         q = "SELECT * FROM nodes WHERE 1=1"
         params: list = []
         if node_type:
@@ -469,6 +481,10 @@ class Store:
         if audience:
             q += " AND audience = ?"
             params.append(audience)
+        if tags:
+            for tag in tags:
+                q += " AND domains LIKE ?"
+                params.append(f'%"{tag}"%')
         q += " ORDER BY weight DESC, updated_at DESC LIMIT ?"
         params.append(limit)
         rows = self.conn.execute(q, params).fetchall()
@@ -1029,6 +1045,7 @@ class Store:
                     d[key] = json.loads(d[key])
                 except (json.JSONDecodeError, TypeError):
                     pass
+        d["tags"] = d.get("domains") or []
         return d
 
     def node_ids(self) -> list[str]:

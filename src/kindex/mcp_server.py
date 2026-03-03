@@ -116,7 +116,7 @@ def _node_detail(store, node: dict) -> str:
         f"ID: {node['id']}",
     ]
     if node.get("domains"):
-        lines.append(f"Domains: {', '.join(node['domains'])}")
+        lines.append(f"Tags: {', '.join(node.get('tags') or node.get('domains') or [])}")
     if node.get("aka"):
         lines.append(f"AKA: {', '.join(node['aka'])}")
     if node.get("content"):
@@ -151,7 +151,7 @@ def _node_detail(store, node: dict) -> str:
 
 
 @mcp.tool()
-def search(query: str, top_k: int = 10) -> str:
+def search(query: str, top_k: int = 10, tags: str = "") -> str:
     """Search the knowledge graph with hybrid FTS5 + graph traversal.
 
     USE THIS: before starting work on a topic, before adding nodes (to avoid
@@ -159,11 +159,24 @@ def search(query: str, top_k: int = 10) -> str:
 
     Uses Reciprocal Rank Fusion to merge full-text and graph results.
     Returns ranked nodes with scores.
+
+    Args:
+        query: Search query text.
+        top_k: Maximum results to return.
+        tags: Comma-separated tags to filter results (only nodes with these tags).
     """
     store, _ = _get_store()
     from .retrieve import hybrid_search
 
-    results = hybrid_search(store, query, top_k=top_k)
+    fetch_k = top_k * 3 if tags else top_k
+    results = hybrid_search(store, query, top_k=fetch_k)
+
+    if tags:
+        filter_tags = {t.strip().lower() for t in tags.split(",") if t.strip()}
+        results = [r for r in results
+                   if filter_tags & {d.lower() for d in (r.get("domains") or r.get("tags") or [])}]
+        results = results[:top_k]
+
     if not results:
         return "No results found."
 
@@ -182,6 +195,7 @@ def search(query: str, top_k: int = 10) -> str:
 def add(
     text: str,
     node_type: str = "concept",
+    tags: str = "",
     domains: str = "",
     audience: str = "private",
 ) -> str:
@@ -202,12 +216,14 @@ def add(
     Args:
         text: The knowledge to capture (becomes title + content). Be specific.
         node_type: See types above. Default: concept.
-        domains: Comma-separated domain tags for contextual surfacing (e.g. "kindex,python").
+        tags: Comma-separated tags for contextual surfacing (e.g. "kindex,python").
+        domains: Alias for tags (deprecated, use tags instead).
         audience: Visibility scope (private, team, org, public). Default: private.
     """
     store, config = _get_store()
     from .extract import keyword_extract
 
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     domain_list = [d.strip() for d in domains.split(",") if d.strip()] if domains else []
 
     # Create the node
@@ -217,6 +233,7 @@ def add(
         content=text,
         node_type=node_type,
         domains=domain_list,
+        tags=tag_list,
         audience=audience,
         prov_activity="mcp-add",
     )
@@ -330,7 +347,8 @@ def list_nodes(
     node_type: str = "",
     status: str = "",
     audience: str = "",
-    limit: int = 50,
+    tags: str = "",
+    limit: int = 100,
 ) -> str:
     """List nodes in the knowledge graph with optional filters.
 
@@ -338,13 +356,16 @@ def list_nodes(
         node_type: Filter by type (concept, decision, skill, person, project, etc.).
         status: Filter by status (active, archived, deprecated).
         audience: Filter by audience (private, team, org, public).
+        tags: Filter by tags (comma-separated, AND logic — node must have all).
         limit: Maximum number of nodes to return.
     """
     store, _ = _get_store()
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     nodes = store.all_nodes(
         node_type=node_type or None,
         status=status or None,
         audience=audience or None,
+        tags=tag_list,
         limit=limit,
     )
     if not nodes:

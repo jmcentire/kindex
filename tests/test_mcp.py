@@ -206,3 +206,44 @@ class TestMCPResources:
         from kindex.mcp_server import resource_orphans
         result = resource_orphans()
         assert isinstance(result, str)
+
+
+class TestMCPTags:
+    def test_add_with_tags(self, patch_store):
+        from kindex.mcp_server import add
+        result = add("Tagged concept for testing", tags="python,ml")
+        assert "Created node" in result
+        store, _ = patch_store
+        node = store.get_node_by_title("Tagged concept for testing")
+        assert "python" in node["domains"]
+        assert "ml" in node["domains"]
+
+    def test_add_tags_supplement_domains(self, patch_store):
+        from kindex.mcp_server import add
+        result = add("Dual tagged item", tags="user-tag", domains="auto-tag")
+        assert "Created node" in result
+        store, _ = patch_store
+        node = store.get_node_by_title("Dual tagged item")
+        assert "user-tag" in node["domains"]
+        assert "auto-tag" in node["domains"]
+
+    def test_search_with_tags_filter(self, patch_store):
+        from kindex.mcp_server import search
+        result = search("coordination", tags="biology")
+        assert "Stigmergy" in result
+
+    def test_search_with_tags_excludes_non_matching(self, patch_store):
+        from kindex.mcp_server import search
+        result = search("coordination", tags="nonexistent")
+        assert "No results" in result
+
+    def test_list_nodes_with_tags(self, patch_store):
+        from kindex.mcp_server import list_nodes
+        result = list_nodes(tags="biology")
+        assert "Stigmergy" in result
+
+    def test_list_nodes_default_limit(self, patch_store):
+        import inspect
+        from kindex.mcp_server import list_nodes
+        sig = inspect.signature(list_nodes)
+        assert sig.parameters["limit"].default == 100

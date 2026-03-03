@@ -109,6 +109,61 @@ class TestFTS:
         assert results == []
 
 
+class TestTagFiltering:
+    def test_all_nodes_filter_single_tag(self, store):
+        store.add_node("A", domains=["python", "web"])
+        store.add_node("B", domains=["python", "ml"])
+        store.add_node("C", domains=["rust"])
+        results = store.all_nodes(tags=["python"])
+        assert len(results) == 2
+
+    def test_all_nodes_filter_multiple_tags_and_logic(self, store):
+        store.add_node("A", domains=["python", "web"])
+        store.add_node("B", domains=["python", "ml"])
+        results = store.all_nodes(tags=["python", "web"])
+        assert len(results) == 1
+        assert results[0]["title"] == "A"
+
+    def test_all_nodes_filter_no_match(self, store):
+        store.add_node("A", domains=["python"])
+        results = store.all_nodes(tags=["java"])
+        assert len(results) == 0
+
+    def test_add_node_with_tags_alias(self, store):
+        nid = store.add_node("X", tags=["alpha", "beta"])
+        node = store.get_node(nid)
+        assert "alpha" in node["domains"]
+        assert "beta" in node["domains"]
+        assert node["tags"] == node["domains"]
+
+    def test_add_node_tags_supplement_domains(self, store):
+        nid = store.add_node("Y", domains=["auto"], tags=["user"])
+        node = store.get_node(nid)
+        assert "auto" in node["domains"]
+        assert "user" in node["domains"]
+
+    def test_update_node_with_tags(self, store):
+        nid = store.add_node("Z", domains=["old"])
+        store.update_node(nid, tags=["new1", "new2"])
+        node = store.get_node(nid)
+        assert "new1" in node["domains"]
+        assert "new2" in node["domains"]
+
+    def test_row_to_dict_includes_tags(self, store):
+        nid = store.add_node("T", domains=["x", "y"])
+        node = store.get_node(nid)
+        assert "tags" in node
+        assert node["tags"] == ["x", "y"]
+
+    def test_tag_filter_no_partial_match(self, store):
+        """Tag 'ml' should not match 'html'."""
+        store.add_node("A", domains=["html"])
+        store.add_node("B", domains=["ml"])
+        results = store.all_nodes(tags=["ml"])
+        assert len(results) == 1
+        assert results[0]["title"] == "B"
+
+
 class TestStats:
     def test_stats(self, store):
         store.add_node("A", node_id="a")
