@@ -52,7 +52,7 @@ class TestContextBlock:
         block = format_context_block(populated_store, results, query="stigmergy")
         assert "Kindex" in block
         assert "Stigmergy" in block
-        assert "Active domains:" in block
+        assert "Active tags:" in block
 
     def test_empty(self, populated_store):
         block = format_context_block(populated_store, [], query="nothing")

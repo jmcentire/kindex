@@ -57,6 +57,12 @@ def cmd_search(args):
     from .retrieve import hybrid_search
     results = hybrid_search(store, query, top_k=args.top_k)
 
+    # --tags: filter by tag membership
+    if getattr(args, "tags", None):
+        filter_tags = {t.strip().lower() for t in args.tags.split(",") if t.strip()}
+        results = [r for r in results
+                   if filter_tags & {d.lower() for d in (r.get("domains") or [])}]
+
     # --mine: filter to nodes owned by current user
     if getattr(args, "mine", False):
         cfg = _config(args)
@@ -152,6 +158,7 @@ def cmd_add(args):
     ledger, cfg = _ledger(args)
     content = " ".join(args.note)
     node_type = args.type or "concept"
+    tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if getattr(args, "tags", None) else []
 
     # Resolve current user for provenance
     cfg = _config(args)
@@ -179,6 +186,7 @@ def cmd_add(args):
             content="",
             node_type=node_type,
             audience=args.audience or "private",
+            tags=tag_list,
             prov_activity="manual-add",
             prov_source="cli",
             prov_who=[current_user],
@@ -218,6 +226,7 @@ def cmd_add(args):
             content=concept.get("content", content),
             node_type=concept.get("type", node_type),
             domains=concept.get("domains", []),
+            tags=tag_list,
             prov_activity="manual-add",
             prov_source="cli",
             prov_who=[current_user],
@@ -232,6 +241,7 @@ def cmd_add(args):
             title += "..."
         nid = store.add_node(
             title=title, content=content, node_type=node_type,
+            tags=tag_list,
             prov_activity="manual-add", prov_source="cli",
             prov_who=[current_user],
         )
@@ -379,7 +389,7 @@ def cmd_show(args):
         print(f"**ID:** {node['id']}")
         print(f"**Weight:** {node['weight']:.2f}")
         print(f"**Status:** {node['status']}")
-        print(f"**Domains:** {', '.join(node.get('domains') or [])}")
+        print(f"**Tags:** {', '.join(node.get('tags') or node.get('domains') or [])}")
         if node.get("aka"):
             print(f"**AKA:** {', '.join(node['aka'])}")
         if node.get("intent"):
@@ -420,7 +430,13 @@ def cmd_show(args):
 
 def cmd_list(args):
     store = _store(args)
-    nodes = store.all_nodes(node_type=args.type, status=args.status, limit=args.limit or 100)
+    tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if getattr(args, "tags", None) else None
+    nodes = store.all_nodes(
+        node_type=args.type, status=args.status,
+        audience=getattr(args, "audience", None),
+        tags=tag_list,
+        limit=args.limit or 100,
+    )
 
     # --mine: filter to nodes owned by current user
     if getattr(args, "mine", False):
@@ -3431,6 +3447,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("search", help="Hybrid search (FTS + graph)")
     s.add_argument("query", nargs="+")
     s.add_argument("--top-k", type=int, default=10)
+    s.add_argument("--tags", help="Filter by tags (comma-separated)")
     s.add_argument("--mine", action="store_true", help="Only my nodes")
     _common(s)
     s.set_defaults(func=cmd_search)
@@ -3461,6 +3478,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--resets", help="Reset schedule (e.g. monday, monthly)")
     s.add_argument("--audience", choices=["private", "team", "org", "public"],
                    help="Audience scope")
+    s.add_argument("--tags", help="Comma-separated tags for contextual surfacing")
     _common(s)
     s.set_defaults(func=cmd_add)
 
@@ -3491,6 +3509,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("list", help="List nodes")
     s.add_argument("--type")
     s.add_argument("--status")
+    s.add_argument("--tags", help="Filter by tags (comma-separated)")
+    s.add_argument("--audience", choices=["private", "team", "org", "public"],
+                   help="Filter by audience scope")
     s.add_argument("--limit", type=int, default=100)
     s.add_argument("--mine", action="store_true", help="Only my nodes")
     _common(s)

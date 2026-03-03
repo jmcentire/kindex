@@ -46,12 +46,13 @@ pytest tests/ --cov=kindex --cov-report=term-missing
 
 When working in this codebase, follow these practices:
 
-- **Capture new knowledge**: When you learn something significant, use `kin add "<insight>"` to persist it.
+- **Capture new knowledge**: When you learn something significant, use `kin add "<insight>" --tags <domain1>,<domain2>` to persist it with tags.
 - **Create links**: When you discover a relationship between concepts, use `kin link <a> <b> <relationship> --why "<reason>"` to connect them.
-- **Track decisions**: Use `kin add "<decision>" --type decision` for architectural or design decisions.
+- **Track decisions**: Use `kin add "<decision>" --type decision --tags <project>` for architectural or design decisions.
 - **Record constraints**: Use `kin add "<rule>" --type constraint --trigger <event> --action <verify|warn|block>` for invariants.
 - **Flag attention items**: Use `kin add "<item>" --type watch --owner <person> --expires <date>` for things that need monitoring.
-- **Search before adding**: Use `kin search <term>` to check if knowledge already exists before duplicating.
+- **Search before adding**: Use `kin search <term>` or `kin search <term> --tags <domain>` to check if knowledge already exists before duplicating.
+- **Filter by tags**: Use `kin list --tags <tag1>,<tag2>` to find nodes by tag (AND logic). Tags supplement auto-categorization.
 - **Check status**: Use `kin status` to see graph health and active operational nodes.
 - **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update --focus "..."` or `kin tag segment --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end --summary "..."`. See `kin tag list` for all tags.
 

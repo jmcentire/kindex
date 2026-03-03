@@ -78,7 +78,7 @@ class TestAbridgedTier:
     def test_preserves_structure(self, populated_store):
         results = hybrid_search(populated_store, "stigmergy", top_k=5)
         block = format_context_block(populated_store, results, query="stigmergy", level="abridged")
-        assert "Active domains:" in block
+        assert "Active tags:" in block
         assert "Key concepts" in block
 
 
@@ -86,7 +86,7 @@ class TestSummarizedTier:
     def test_paragraph_form(self, populated_store):
         results = hybrid_search(populated_store, "stigmergy", top_k=5)
         block = format_context_block(populated_store, results, query="stigmergy", level="summarized")
-        assert "Domains:" in block
+        assert "Tags:" in block
         # Should be shorter than abridged
         abridged = format_context_block(populated_store, results, query="stigmergy", level="abridged")
         assert len(block) <= len(abridged)

@@ -211,7 +211,7 @@ def _format_full(store: Store, results: list[dict], query: str) -> str:
     lines = [
         "## Relevant Context (Kindex — auto-loaded)",
         f"**Level:** full | **Query:** {query}",
-        f"**Active domains:** [{', '.join(sorted(all_domains)[:8])}]",
+        f"**Active tags:** [{', '.join(sorted(all_domains)[:8])}]",
         "",
         "### Key concepts",
     ]
@@ -278,7 +278,7 @@ def _format_abridged(store: Store, results: list[dict], query: str) -> str:
 
     lines = [
         "## Relevant Context (Kindex — auto-loaded)",
-        f"**Level:** abridged | **Active domains:** [{', '.join(sorted(all_domains)[:8])}]",
+        f"**Level:** abridged | **Active tags:** [{', '.join(sorted(all_domains)[:8])}]",
         "",
         "### Key concepts",
     ]
@@ -332,7 +332,7 @@ def _format_summarized(store: Store, results: list[dict], query: str) -> str:
 
     lines = [
         "## Kindex Context (summarized)",
-        f"**Domains:** {', '.join(sorted(all_domains)[:6])}",
+        f"**Tags:** {', '.join(sorted(all_domains)[:6])}",
         "",
     ]
 
@@ -431,11 +431,11 @@ def generate_codebook(store: Store, min_weight: float = 0.5) -> tuple[str, str]:
 
     lines = []
     for i, n in enumerate(eligible, 1):
-        domains = ",".join(n.get("domains") or [])[:40]
+        tags = ",".join(n.get("tags") or n.get("domains") or [])[:40]
         title = (n.get("title") or n["id"])[:80]
         lines.append(
             f"#{i:03d} id:{n['id'][:8]} type:{n.get('type', 'concept')} "
-            f"w:{n.get('weight', 0):.2f} domains:[{domains}] \"{title}\""
+            f"w:{n.get('weight', 0):.2f} tags:[{tags}] \"{title}\""
         )
 
     header = f"[CODEBOOK v1 | {len(eligible)} entries]"

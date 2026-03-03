@@ -4,7 +4,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![v0.8.0](https://img.shields.io/badge/version-0.8.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-658%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-672%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -153,17 +153,22 @@ kin remind exec --reminder-id <id>
 ## Quick Start
 
 ```bash
-# Add knowledge
-kin add "Stigmergy is coordination through environmental traces"
+# Add knowledge (with optional tags)
+kin add "Stigmergy is coordination through environmental traces" --tags biology,coordination
 
 # Search with hybrid FTS5 + graph traversal
 kin search stigmergy
+kin search coordination --tags biology   # filter results by tag
 
 # Ask questions (with automatic classification)
 kin ask "How does weight decay work?"
 
 # Get context for AI injection
 kin context --topic stigmergy --level full
+
+# List and filter by tags
+kin list --tags python,ml              # nodes tagged with both
+kin list --type concept --tags ai      # combine type and tag filters
 
 # Track operational rules
 kin add "Never break the API contract" --type constraint --trigger pre-deploy --action block
@@ -260,11 +265,11 @@ Three integration paths:
 ### Core
 | Command | Description |
 |---------|-------------|
-| `kin search <query>` | Hybrid FTS5 + graph search with RRF merging |
+| `kin search <query>` | Hybrid FTS5 + graph search with RRF merging (--tags, --mine) |
 | `kin context` | Formatted context block for AI injection (--level, --tokens) |
-| `kin add <text>` | Quick capture with auto-extraction and linking |
+| `kin add <text>` | Quick capture with auto-extraction and linking (--tags, --type) |
 | `kin show <id>` | Full node details with edges, provenance, and state |
-| `kin list` | List nodes (--type, --status, --mine, --limit) |
+| `kin list` | List nodes (--type, --status, --tags, --audience, --mine, --limit) |
 | `kin ask <question>` | Question classification + LLM or context answer |
 
 ### Knowledge Management
