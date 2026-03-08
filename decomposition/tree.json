@@ -1,0 +1,502 @@
+{
+  "root_id": "root",
+  "nodes": {
+    "root": {
+      "component_id": "root",
+      "name": "Project Root",
+      "description": "Adopted codebase at /Users/jmcentire/Code/kindex",
+      "depth": 0,
+      "parent_id": "",
+      "children": [
+        "examples",
+        "src"
+      ],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "examples": {
+      "component_id": "examples",
+      "name": "Examples",
+      "description": "Package: examples",
+      "depth": 1,
+      "parent_id": "root",
+      "children": [
+        "examples_adapter-template"
+      ],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "examples_adapter-template": {
+      "component_id": "examples_adapter-template",
+      "name": "Adapter-Template",
+      "description": "Package: examples/adapter-template",
+      "depth": 2,
+      "parent_id": "examples",
+      "children": [
+        "examples_adapter-template_kindex_adapter_csv"
+      ],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "examples_adapter-template_kindex_adapter_csv": {
+      "component_id": "examples_adapter-template_kindex_adapter_csv",
+      "name": "Kindex Adapter Csv",
+      "description": "Module examples/adapter-template/kindex_adapter_csv.py: is_available, ingest",
+      "depth": 3,
+      "parent_id": "examples_adapter-template",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src": {
+      "component_id": "src",
+      "name": "Src",
+      "description": "Package: src",
+      "depth": 1,
+      "parent_id": "root",
+      "children": [
+        "src_kindex"
+      ],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex": {
+      "component_id": "src_kindex",
+      "name": "Kindex",
+      "description": "Package: src/kindex",
+      "depth": 2,
+      "parent_id": "src",
+      "children": [
+        "src_kindex_actions",
+        "src_kindex_analytics",
+        "src_kindex_archive",
+        "src_kindex_budget",
+        "src_kindex_cli",
+        "src_kindex_config",
+        "src_kindex_daemon",
+        "src_kindex_extract",
+        "src_kindex_graph",
+        "src_kindex_hooks",
+        "src_kindex_ingest",
+        "src_kindex_llm",
+        "src_kindex_mcp_server",
+        "src_kindex_models",
+        "src_kindex_notify",
+        "src_kindex_reminders",
+        "src_kindex_retrieve",
+        "src_kindex_scheduling",
+        "src_kindex_sessions",
+        "src_kindex_setup",
+        "src_kindex_store",
+        "src_kindex_tasks",
+        "src_kindex_vault",
+        "src_kindex_vectors",
+        "src_kindex_adapters"
+      ],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_actions": {
+      "component_id": "src_kindex_actions",
+      "name": "Actions",
+      "description": "Module src/kindex/actions.py: get_action_fields, has_action, resolve_mode, execute_action, _update_action_status (+3 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_analytics": {
+      "component_id": "src_kindex_analytics",
+      "name": "Analytics",
+      "description": "Module src/kindex/analytics.py: find_archive_db, session_stats, activity_heatmap",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_archive": {
+      "component_id": "src_kindex_archive",
+      "name": "Archive",
+      "description": "Module src/kindex/archive.py: archive_dir, _current_archive_path, _open_archive, _should_rotate, _rotate_archive (+7 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_budget": {
+      "component_id": "src_kindex_budget",
+      "name": "Budget",
+      "description": "Module src/kindex/budget.py: _today, _this_week_start, _this_month_start, __init__, _load (+10 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_cli": {
+      "component_id": "src_kindex_cli",
+      "name": "Cli",
+      "description": "Module src/kindex/cli.py: _json_default, _dumps, _config, _store, _ledger (+64 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_config": {
+      "component_id": "src_kindex_config",
+      "name": "Config",
+      "description": "Module src/kindex/config.py: _detect_user, _deep_merge, load_config, current_user, data_path (+7 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_daemon": {
+      "component_id": "src_kindex_daemon",
+      "name": "Daemon",
+      "description": "Module src/kindex/daemon.py: cron_run, _process_inbox, _suggest_links, _graph_hygiene, _check_watches (+6 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_extract": {
+      "component_id": "src_kindex_extract",
+      "name": "Extract",
+      "description": "Module src/kindex/extract.py: _get_client, llm_extract, keyword_extract, extract, llm_summarize_session",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_graph": {
+      "component_id": "src_kindex_graph",
+      "name": "Graph",
+      "description": "Module src/kindex/graph.py: build_nx, weighted_bfs, text_search, ppr, graph_stats (+11 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_hooks": {
+      "component_id": "src_kindex_hooks",
+      "name": "Hooks",
+      "description": "Module src/kindex/hooks.py: prime_context, capture_session_end, write_inbox_item, generate_session_directive",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_ingest": {
+      "component_id": "src_kindex_ingest",
+      "name": "Ingest",
+      "description": "Module src/kindex/ingest.py: scan_projects, _project_slug, _infer_title, _extract_project_context, _infer_domains (+15 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_llm": {
+      "component_id": "src_kindex_llm",
+      "name": "Llm",
+      "description": "Module src/kindex/llm.py: get_client, calculate_cost, _estimate_cost, classify_for_graph, smart_search",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_mcp_server": {
+      "component_id": "src_kindex_mcp_server",
+      "name": "Mcp Server",
+      "description": "Module src/kindex/mcp_server.py: _get_store, _json, _node_summary, _node_detail, search (+37 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_models": {
+      "component_id": "src_kindex_models",
+      "name": "Models",
+      "description": "Module src/kindex/models.py: has_frontmatter, edge_to, frontmatter_dict, frontmatter_dict",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_notify": {
+      "component_id": "src_kindex_notify",
+      "name": "Notify",
+      "description": "Module src/kindex/notify.py: _register_builtins, get_channel, dispatch, get_idle_seconds, is_user_idle (+22 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_reminders": {
+      "component_id": "src_kindex_reminders",
+      "name": "Reminders",
+      "description": "Module src/kindex/reminders.py: _try_repack, _now, _now_dt, _parse_time_of_day, _compute_next_due (+12 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_retrieve": {
+      "component_id": "src_kindex_retrieve",
+      "name": "Retrieve",
+      "description": "Module src/kindex/retrieve.py: _strip_frontmatter, _rrf_merge, hybrid_search, auto_select_tier, format_context_block (+12 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_scheduling": {
+      "component_id": "src_kindex_scheduling",
+      "name": "Scheduling",
+      "description": "Module src/kindex/scheduling.py: _now_dt, nearest_reminder_seconds, compute_optimal_interval, repack_schedule, apply_schedule (+2 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_sessions": {
+      "component_id": "src_kindex_sessions",
+      "name": "Sessions",
+      "description": "Module src/kindex/sessions.py: _now, _normalize_tag, get_tag, get_active_tag, list_tags (+7 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_setup": {
+      "component_id": "src_kindex_setup",
+      "name": "Setup",
+      "description": "Module src/kindex/setup.py: install_claude_hooks, install_launchd, reload_launchd, uninstall_launchd, install_crontab (+2 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_store": {
+      "component_id": "src_kindex_store",
+      "name": "Store",
+      "description": "Module src/kindex/store.py: _json_default, _jdumps, _now, _uuid, __init__ (+50 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_tasks": {
+      "component_id": "src_kindex_tasks",
+      "name": "Tasks",
+      "description": "Module src/kindex/tasks.py: _now, _parse_priority, compute_task_weight, create_task, complete_task (+8 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_vault": {
+      "component_id": "src_kindex_vault",
+      "name": "Vault",
+      "description": "Module src/kindex/vault.py: parse_frontmatter, serialize_frontmatter, __init__, data_path, ensure_dirs (+12 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_vectors": {
+      "component_id": "src_kindex_vectors",
+      "name": "Vectors",
+      "description": "Module src/kindex/vectors.py: _check_vec, _get_model, is_available, embed_text, ensure_vec_table (+4 more)",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters": {
+      "component_id": "src_kindex_adapters",
+      "name": "Adapters",
+      "description": "Package: src/kindex/adapters",
+      "depth": 3,
+      "parent_id": "src_kindex",
+      "children": [
+        "src_kindex_adapters_base",
+        "src_kindex_adapters_claude_web",
+        "src_kindex_adapters_files",
+        "src_kindex_adapters_git_hooks",
+        "src_kindex_adapters_github",
+        "src_kindex_adapters_linear",
+        "src_kindex_adapters_pipeline",
+        "src_kindex_adapters_projects",
+        "src_kindex_adapters_registry",
+        "src_kindex_adapters_sessions"
+      ],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_base": {
+      "component_id": "src_kindex_adapters_base",
+      "name": "Base",
+      "description": "Module src/kindex/adapters/base.py: total, __str__, is_available, ingest",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_claude_web": {
+      "component_id": "src_kindex_adapters_claude_web",
+      "name": "Claude Web",
+      "description": "Module src/kindex/adapters/claude_web.py: _extract_text, _conversation_summary, is_available, ingest",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_files": {
+      "component_id": "src_kindex_adapters_files",
+      "name": "Files",
+      "description": "Module src/kindex/adapters/files.py: sha256_file, scan_registered_files, ingest_directory, is_available, ingest",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_git_hooks": {
+      "component_id": "src_kindex_adapters_git_hooks",
+      "name": "Git Hooks",
+      "description": "Module src/kindex/adapters/git_hooks.py: install_hooks, uninstall_hooks, ingest_recent_commits, _find_kin, is_available (+1 more)",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_github": {
+      "component_id": "src_kindex_adapters_github",
+      "name": "Github",
+      "description": "Module src/kindex/adapters/github.py: is_gh_available, ingest_issues, ingest_prs, ingest_commits, _link_to_project (+2 more)",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_linear": {
+      "component_id": "src_kindex_adapters_linear",
+      "name": "Linear",
+      "description": "Module src/kindex/adapters/linear.py: is_linear_available, _linear_query, ingest_issues, is_available, ingest",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_pipeline": {
+      "component_id": "src_kindex_adapters_pipeline",
+      "name": "Pipeline",
+      "description": "Module src/kindex/adapters/pipeline.py: run_adapter, run_all",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_projects": {
+      "component_id": "src_kindex_adapters_projects",
+      "name": "Projects",
+      "description": "Module src/kindex/adapters/projects.py: is_available, ingest",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_registry": {
+      "component_id": "src_kindex_adapters_registry",
+      "name": "Registry",
+      "description": "Module src/kindex/adapters/registry.py: register, discover, get, available, reset (+1 more)",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    },
+    "src_kindex_adapters_sessions": {
+      "component_id": "src_kindex_adapters_sessions",
+      "name": "Sessions",
+      "description": "Module src/kindex/adapters/sessions.py: is_available, ingest",
+      "depth": 4,
+      "parent_id": "src_kindex_adapters",
+      "children": [],
+      "contract": null,
+      "implementation_status": "pending",
+      "test_results": null
+    }
+  }
+}
