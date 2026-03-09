@@ -76,7 +76,10 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
 4. Push to main: `git push origin main`
 5. Tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
 6. Create GitHub release: `gh release create vX.Y.Z --title "..." --notes "..."`
-7. **Done.** GitHub Actions (`.github/workflows/publish.yml`) handles PyPI publish automatically via trusted publishing (OIDC) on tag push. The `sync-version` pre-commit hook auto-updates docs/index.html badges.
+7. Watch the workflow: `gh run watch <id> -R jmcentire/kindex` -- all three jobs (test, build, publish) must pass
+8. Verify on PyPI: `pip index versions kindex 2>/dev/null | head -1` or check https://pypi.org/project/kindex/
+
+**Definition of done:** The release is complete when (a) all workflow jobs are green, (b) the new version appears on PyPI, and (c) `pip install kindex==X.Y.Z` succeeds. If any job fails, fix the issue, bump to a new patch version, and repeat from step 1 -- do not re-tag or force-push an existing tag.
 
 ## Architecture Notes
 
