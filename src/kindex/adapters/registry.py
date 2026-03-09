@@ -127,5 +127,11 @@ def _register_builtins() -> None:
     except Exception:
         pass
 
+    try:
+        from .claude_web import adapter as claude_web
+        register(claude_web)
+    except Exception:
+        pass
+
 
 _register_builtins()

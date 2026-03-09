@@ -23,3 +23,5 @@ kin.yaml
 
 # MCP registry tokens
 .mcpregistry_*
+.envrc
+.direnv/
