@@ -9,9 +9,19 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import sys
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    print(
+        "Error: the 'mcp' package is not installed.\n"
+        "Install with: pip install kindex[mcp]  (or: uv tool install kindex[mcp])\n"
+        "See: https://github.com/jmcentire/kindex#installation",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 mcp = FastMCP(
     "kindex",
