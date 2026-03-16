@@ -1,0 +1,1083 @@
+"""Code structure adapter — ingest repository topology via ctags, cscope, tree-sitter.
+
+Extracts the structural skeleton and dependency graph of a codebase:
+- Tier 1: Module nodes (one per source file) with structural summaries
+- Tier 2: Symbol nodes (one per class/interface/type) with method signatures
+- Edges: imports (depends_on), inheritance (implements), containment (context_of)
+
+Tools degrade gracefully:
+- Tier A: ctags only (baseline, always available)
+- Tier B: ctags + cscope (C/C++ cross-references)
+- Tier C: ctags + tree-sitter (AST-based call graphs, import resolution)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import tempfile
+from fnmatch import fnmatch
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from .base import AdapterMeta, AdapterOption, IngestResult
+
+if TYPE_CHECKING:
+    from ..store import Store
+
+
+# ── Tool detection ──────────────────────────────────────────────────
+
+def _check_ctags() -> bool:
+    """Check for Universal Ctags (not Exuberant)."""
+    try:
+        r = subprocess.run(
+            ["ctags", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "Universal Ctags" in r.stdout
+    except Exception:
+        return False
+
+
+def _check_cscope() -> bool:
+    try:
+        r = subprocess.run(
+            ["cscope", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.returncode == 0 or "cscope" in (r.stdout + r.stderr).lower()
+    except Exception:
+        return False
+
+
+def _check_treesitter(language: str) -> object | None:
+    """Try to load a tree-sitter parser for the given language.
+
+    Returns the parser object or None.
+    """
+    # Map ctags language names to tree-sitter grammar packages
+    grammar_map = {
+        "Python": "tree_sitter_python",
+        "JavaScript": "tree_sitter_javascript",
+        "TypeScript": "tree_sitter_typescript",
+        "Rust": "tree_sitter_rust",
+        "Go": "tree_sitter_go",
+        "C": "tree_sitter_c",
+        "C++": "tree_sitter_cpp",
+        "Java": "tree_sitter_java",
+        "Ruby": "tree_sitter_ruby",
+    }
+    pkg = grammar_map.get(language)
+    if not pkg:
+        return None
+    try:
+        import importlib
+        import tree_sitter as ts  # type: ignore[import-untyped]
+        grammar_mod = importlib.import_module(pkg)
+        lang = ts.Language(grammar_mod.language())
+        parser = ts.Parser(lang)
+        return parser
+    except Exception:
+        return None
+
+
+# ── Repo / file detection ──────────────────────────────────────────
+
+def _detect_repo(path: Path) -> tuple[Path, str] | None:
+    """Find git repo root and derive a slug. Returns (root, slug) or None."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(path),
+        )
+        if r.returncode == 0:
+            root = Path(r.stdout.strip())
+            slug = root.name.lower().replace(" ", "-")
+            return root, slug
+    except Exception:
+        pass
+    return None
+
+
+def _git_ls_files(repo_root: Path) -> list[Path]:
+    """Get tracked files via git ls-files."""
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(repo_root),
+        )
+        if r.returncode == 0:
+            return [repo_root / f for f in r.stdout.strip().split("\n") if f]
+    except Exception:
+        pass
+    return []
+
+
+# Source file extensions ctags handles well
+_CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".c", ".h",
+    ".cpp", ".hpp", ".cc", ".cxx", ".hh", ".java", ".rb", ".php",
+    ".cs", ".swift", ".kt", ".kts", ".scala", ".lua", ".zig",
+    ".ex", ".exs", ".erl", ".hrl", ".hs", ".ml", ".mli", ".r",
+    ".sh", ".bash", ".zsh", ".vim", ".el",
+}
+
+_DEFAULT_EXCLUDES = [
+    "test_*", "*_test.*", "*_test_*", "tests/*", "test/*",
+    "vendor/*", "third_party/*", "node_modules/*", "__pycache__/*",
+    ".git/*", "dist/*", "build/*", "*.min.js", "*.min.css",
+]
+
+
+def _walk_files(root: Path, exclude: list[str]) -> list[Path]:
+    """Walk directory tree, filtering by code extensions and exclude patterns."""
+    files = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in _CODE_EXTENSIONS:
+            continue
+        rel = str(path.relative_to(root))
+        if any(fnmatch(rel, pat) for pat in exclude):
+            continue
+        # Skip hidden directories
+        if any(part.startswith(".") for part in path.relative_to(root).parts):
+            continue
+        files.append(path)
+    return files
+
+
+def _get_file_list(directory: Path, repo_root: Path | None,
+                   exclude: list[str]) -> list[Path]:
+    """Get list of source files, preferring git ls-files."""
+    if repo_root:
+        all_files = _git_ls_files(repo_root)
+        if all_files:
+            # Filter to code files within the target directory, apply excludes
+            result = []
+            for f in all_files:
+                if not f.suffix.lower() in _CODE_EXTENSIONS:
+                    continue
+                try:
+                    rel = str(f.relative_to(directory))
+                except ValueError:
+                    continue  # outside target directory
+                if any(fnmatch(rel, pat) for pat in exclude):
+                    continue
+                result.append(f)
+            return sorted(result)
+    return _walk_files(directory, exclude)
+
+
+# ── ctags extraction (Tier A) ──────────────────────────────────────
+
+def _run_ctags(files: list[Path], repo_root: Path) -> list[dict]:
+    """Run ctags on all files, return parsed JSON tags."""
+    if not files:
+        return []
+    # Write file list to a temp file to avoid arg length limits
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        for path in files:
+            f.write(str(path) + "\n")
+        listfile = f.name
+    try:
+        r = subprocess.run(
+            [
+                "ctags",
+                "--output-format=json",
+                "--fields=+nKSlri",
+                "-f", "-",
+                "-L", listfile,
+            ],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(repo_root),
+        )
+        if r.returncode != 0:
+            return []
+        tags = []
+        for line in r.stdout.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                tag = json.loads(line)
+                if tag.get("_type") == "tag":
+                    tags.append(tag)
+            except json.JSONDecodeError:
+                continue
+        return tags
+    except Exception:
+        return []
+    finally:
+        Path(listfile).unlink(missing_ok=True)
+
+
+def _group_by_file(tags: list[dict]) -> dict[str, list[dict]]:
+    """Group tags by file path."""
+    grouped: dict[str, list[dict]] = {}
+    for tag in tags:
+        path = tag.get("path", "")
+        if path:
+            grouped.setdefault(path, []).append(tag)
+    return grouped
+
+
+# ctags kind codes that become Tier 2 symbol nodes
+_CLASS_KINDS = {"class", "interface", "struct", "enum", "trait", "union", "type"}
+
+
+def _is_public(tag: dict) -> bool:
+    """Heuristic: is this symbol public/exported?"""
+    name = tag.get("name", "")
+    # Python private convention
+    if name.startswith("_") and not name.startswith("__"):
+        return False
+    # Access field if ctags provides it
+    access = tag.get("access", "")
+    if access and access in ("private", "protected"):
+        return False
+    return True
+
+
+def _build_module_content(rel_path: str, tags: list[dict]) -> str:
+    """Build structural summary for a module node."""
+    # Determine language from first tag
+    language = "Unknown"
+    for t in tags:
+        if t.get("language"):
+            language = t["language"]
+            break
+
+    # Count lines from the last tag's line number (approximate)
+    max_line = max((t.get("line", 0) for t in tags), default=0)
+
+    # Collect classes
+    classes = []
+    for t in tags:
+        if t.get("kind") in _CLASS_KINDS and _is_public(t):
+            inherits = t.get("inherits", "")
+            if inherits and inherits is not False:
+                classes.append(f"- {t['name']}({inherits})")
+            else:
+                classes.append(f"- {t['name']}")
+
+    # Collect top-level functions (no scope = not a method)
+    functions = []
+    for t in tags:
+        if t.get("kind") == "function" and not t.get("scope") and _is_public(t):
+            sig = t.get("signature", "()")
+            typeref = t.get("typeref", "")
+            ret = ""
+            if typeref and typeref.startswith("typename:"):
+                ret = f" -> {typeref.split(':', 1)[1]}"
+            functions.append(f"- {t['name']}{sig}{ret}")
+
+    # Collect imports
+    imports = []
+    for t in tags:
+        if t.get("kind") in ("namespace", "import"):
+            nameref = t.get("nameref", "")
+            if nameref and isinstance(nameref, str):
+                imports.append(nameref.replace("module:", ""))
+            else:
+                imports.append(t["name"])
+
+    parts = [f"Language: {language} | Path: {rel_path} | ~{max_line} lines"]
+    if classes:
+        parts.append("\n## Classes\n" + "\n".join(classes))
+    if functions:
+        parts.append("\n## Functions\n" + "\n".join(functions))
+    if imports:
+        parts.append("\n## Imports\n" + ", ".join(imports))
+
+    return "\n".join(parts)
+
+
+def _build_class_content(class_tag: dict, member_tags: list[dict],
+                         rel_path: str) -> str:
+    """Build content for a class/type symbol node."""
+    name = class_tag["name"]
+    line = class_tag.get("line", "?")
+    inherits = class_tag.get("inherits", "")
+
+    header = f"class {name}"
+    if inherits and inherits is not False:
+        header += f"({inherits})"
+    header += f" ({rel_path}:{line})"
+
+    # Public methods
+    methods = []
+    for m in member_tags:
+        if m.get("kind") == "member" and m.get("scope") == name and _is_public(m):
+            mname = m["name"]
+            if mname == "__init__":
+                continue  # skip constructor noise
+            sig = m.get("signature", "()")
+            typeref = m.get("typeref", "")
+            ret = ""
+            if typeref and isinstance(typeref, str) and typeref.startswith("typename:"):
+                ret = f" -> {typeref.split(':', 1)[1]}"
+            methods.append(f"- {mname}{sig}{ret}")
+
+    parts = [header]
+    if methods:
+        parts.append("\n## Methods\n" + "\n".join(methods))
+
+    return "\n".join(parts)
+
+
+def _extract_inheritance(tags: list[dict]) -> list[tuple[str, str, str]]:
+    """Extract (child_qualified, parent_name, file_path) from ctags inherits field."""
+    results = []
+    for t in tags:
+        inherits = t.get("inherits")
+        if inherits and isinstance(inherits, str):
+            path = t.get("path", "")
+            scope = t.get("scope", "")
+            child = f"{path}:{scope}.{t['name']}" if scope else f"{path}:{t['name']}"
+            # inherits can be comma-separated for multiple parents
+            for parent in inherits.split(","):
+                parent = parent.strip()
+                if parent:
+                    results.append((child, parent, path))
+    return results
+
+
+# ── cscope extraction (Tier B) ─────────────────────────────────────
+
+def _build_cscope_db(files: list[Path], repo_root: Path) -> Path | None:
+    """Build cscope cross-reference database in a temp directory.
+
+    Returns the temp directory path or None on failure.
+    """
+    # Filter to C/C++/ObjC files
+    c_extensions = {".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hh", ".m", ".mm"}
+    c_files = [f for f in files if f.suffix.lower() in c_extensions]
+    if not c_files:
+        return None
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="kindex-cscope-"))
+    namefile = tmpdir / "cscope.files"
+    namefile.write_text("\n".join(str(f) for f in c_files) + "\n")
+
+    try:
+        r = subprocess.run(
+            ["cscope", "-b", "-q", "-i", str(namefile)],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(tmpdir),
+        )
+        if r.returncode != 0:
+            return None
+        return tmpdir
+    except Exception:
+        return None
+
+
+def _cscope_query(cscope_dir: Path, query_type: int,
+                  symbol: str) -> list[dict]:
+    """Run a cscope line-mode query.
+
+    query_type: 0=symbol, 2=functions calling, 3=functions called by, 8=includes
+    Returns list of {file, function, line, text}.
+    """
+    try:
+        r = subprocess.run(
+            ["cscope", "-d", "-L", f"-{query_type}", symbol,
+             "-f", str(cscope_dir / "cscope.out")],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(cscope_dir),
+        )
+        if r.returncode != 0:
+            return []
+        results = []
+        for line in r.stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split(None, 3)
+            if len(parts) >= 4:
+                results.append({
+                    "file": parts[0],
+                    "function": parts[1],
+                    "line": parts[2],
+                    "text": parts[3],
+                })
+        return results
+    except Exception:
+        return []
+
+
+def _extract_cscope_includes(cscope_dir: Path,
+                             repo_root: Path) -> list[tuple[str, str]]:
+    """Extract #include relationships: (includer_relpath, included_relpath)."""
+    results = []
+    # Query type 8 = files including this file
+    # But we need to iterate over files — instead query for common headers
+    # Actually, cscope -L -8 "pattern" finds #include lines matching pattern
+    # More practical: parse cscope.out directly for includes
+    try:
+        r = subprocess.run(
+            ["cscope", "-d", "-L", "-8", ".*",
+             "-f", str(cscope_dir / "cscope.out")],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(cscope_dir),
+        )
+        if r.returncode != 0:
+            return results
+        for line in r.stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split(None, 3)
+            if len(parts) >= 4:
+                includer = parts[0]
+                # Extract included file from the #include text
+                text = parts[3]
+                included = ""
+                if '"' in text:
+                    # #include "foo.h"
+                    start = text.index('"') + 1
+                    end = text.index('"', start)
+                    included = text[start:end]
+                if included:
+                    try:
+                        includer_rel = str(Path(includer).relative_to(repo_root))
+                        results.append((includer_rel, included))
+                    except ValueError:
+                        results.append((includer, included))
+    except Exception:
+        pass
+    return results
+
+
+def _extract_cscope_calls(cscope_dir: Path, symbols: list[str],
+                          repo_root: Path) -> list[tuple[str, str]]:
+    """Extract caller->callee relationships for given symbols.
+
+    Returns (caller_name, callee_name) pairs.
+    """
+    results = []
+    for sym in symbols[:100]:  # cap to avoid excessive queries
+        # Query type 3: functions called by sym
+        callees = _cscope_query(cscope_dir, 3, sym)
+        for c in callees:
+            callee_func = c["function"]
+            if callee_func != "<global>" and callee_func != sym:
+                results.append((sym, callee_func))
+    return results
+
+
+# ── tree-sitter extraction (Tier C) ────────────────────────────────
+
+def _ts_extract_imports_python(tree: Any, source: bytes) -> list[tuple[str, str]]:
+    """Extract Python imports from tree-sitter AST.
+
+    Returns (local_name, module_path) pairs.
+    """
+    results = []
+    root = tree.root_node
+
+    def _walk(node: Any) -> None:
+        if node.type == "import_statement":
+            # import foo, import foo.bar
+            for child in node.children:
+                if child.type == "dotted_name":
+                    mod = source[child.start_byte:child.end_byte].decode()
+                    results.append((mod.split(".")[-1], mod))
+                elif child.type == "aliased_import":
+                    name_node = child.child_by_field_name("name")
+                    alias_node = child.child_by_field_name("alias")
+                    if name_node:
+                        mod = source[name_node.start_byte:name_node.end_byte].decode()
+                        local = mod
+                        if alias_node:
+                            local = source[alias_node.start_byte:alias_node.end_byte].decode()
+                        results.append((local, mod))
+        elif node.type == "import_from_statement":
+            # from foo import bar
+            mod_node = None
+            for child in node.children:
+                if child.type == "dotted_name" or child.type == "relative_import":
+                    mod_node = child
+                    break
+            if mod_node:
+                mod = source[mod_node.start_byte:mod_node.end_byte].decode()
+                for child in node.children:
+                    if child.type == "dotted_name" and child != mod_node:
+                        name = source[child.start_byte:child.end_byte].decode()
+                        results.append((name, f"{mod}.{name}"))
+                    elif child.type == "aliased_import":
+                        name_node = child.child_by_field_name("name")
+                        if name_node:
+                            name = source[name_node.start_byte:name_node.end_byte].decode()
+                            results.append((name, f"{mod}.{name}"))
+        else:
+            for child in node.children:
+                _walk(child)
+
+    _walk(root)
+    return results
+
+
+def _ts_extract_calls(tree: Any, source: bytes) -> list[tuple[str, str]]:
+    """Extract function calls from tree-sitter AST.
+
+    Returns (containing_function, called_function) pairs.
+    Only extracts direct calls within function/method bodies (depth 1).
+    """
+    results = []
+    root = tree.root_node
+
+    def _find_calls_in_function(func_node: Any, func_name: str) -> None:
+        """Walk a function body and find call expressions."""
+        for child in func_node.children:
+            if child.type == "block":
+                _walk_for_calls(child, func_name)
+
+    def _walk_for_calls(node: Any, func_name: str) -> None:
+        if node.type == "call":
+            # Get the function being called
+            callee = node.child_by_field_name("function")
+            if callee:
+                callee_name = source[callee.start_byte:callee.end_byte].decode()
+                # Strip self. prefix for method calls
+                if callee_name.startswith("self."):
+                    callee_name = callee_name[5:]
+                # Only keep simple names (foo, bar.baz), skip complex expressions
+                if callee_name and len(callee_name) < 80:
+                    results.append((func_name, callee_name))
+        for child in node.children:
+            _walk_for_calls(child, func_name)
+
+    def _walk_top(node: Any, scope: str = "") -> None:
+        if node.type in ("function_definition", "method_definition"):
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = source[name_node.start_byte:name_node.end_byte].decode()
+                qualified = f"{scope}.{name}" if scope else name
+                _find_calls_in_function(node, qualified)
+        elif node.type == "class_definition":
+            name_node = node.child_by_field_name("name")
+            cls_name = ""
+            if name_node:
+                cls_name = source[name_node.start_byte:name_node.end_byte].decode()
+            for child in node.children:
+                _walk_top(child, cls_name)
+        else:
+            for child in node.children:
+                _walk_top(child, scope)
+
+    _walk_top(root)
+    return results
+
+
+# ── Node ID helpers ────────────────────────────────────────────────
+
+def _module_id(repo_slug: str, rel_path: str) -> str:
+    h = hashlib.sha256(rel_path.encode()).hexdigest()[:12]
+    return f"code-mod-{repo_slug}-{h}"
+
+
+def _symbol_id(repo_slug: str, qualified_name: str) -> str:
+    h = hashlib.sha256(qualified_name.encode()).hexdigest()[:12]
+    return f"code-sym-{repo_slug}-{h}"
+
+
+def _file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ── Main ingestion ─────────────────────────────────────────────────
+
+def _link_to_project(store: "Store", repo_slug: str,
+                     node_ids: list[str]) -> None:
+    """Link code nodes to their project node if one exists."""
+    # Try to find project node by slug
+    project = store.get_node_by_title(repo_slug)
+    if not project:
+        nodes = store.all_nodes(node_type="project", limit=200)
+        for p in nodes:
+            extra = p.get("extra") or {}
+            path = extra.get("path", "")
+            title = p.get("title", "").lower()
+            if repo_slug in path.lower() or repo_slug in title:
+                project = p
+                break
+    if not project:
+        return
+    pid = project["id"]
+    for nid in node_ids:
+        try:
+            store.add_edge(
+                nid, pid,
+                edge_type="context_of",
+                weight=0.5,
+                provenance="code-ingest",
+                bidirectional=False,
+            )
+        except Exception:
+            pass
+
+
+def ingest_code(
+    store: "Store",
+    directory: str | Path,
+    *,
+    limit: int = 200,
+    verbose: bool = False,
+    exclude: list[str] | None = None,
+) -> IngestResult:
+    """Ingest code structure from a directory into the knowledge graph."""
+    directory = Path(directory).resolve()
+    if not directory.is_dir():
+        return IngestResult(errors=[f"Not a directory: {directory}"])
+
+    exclude_patterns = exclude or list(_DEFAULT_EXCLUDES)
+
+    # Detect repo
+    repo_info = _detect_repo(directory)
+    repo_root = repo_info[0] if repo_info else None
+    repo_slug = repo_info[1] if repo_info else directory.name.lower().replace(" ", "-")
+
+    # Detect available tools
+    has_cscope = _check_cscope()
+    # tree-sitter checked per-language later
+
+    # Get file list
+    files = _get_file_list(directory, repo_root, exclude_patterns)
+    if verbose:
+        print(f"  Found {len(files)} source files in {directory}")
+
+    if not files:
+        return IngestResult()
+
+    # Run ctags on all files
+    effective_root = repo_root or directory
+    tags = _run_ctags(files, effective_root)
+    if verbose:
+        print(f"  ctags produced {len(tags)} tags")
+
+    if not tags:
+        return IngestResult(errors=["ctags produced no output"])
+
+    grouped = _group_by_file(tags)
+
+    created = 0
+    updated = 0
+    skipped = 0
+    errors: list[str] = []
+    all_node_ids: list[str] = []
+
+    # Maps for edge creation: qualified_name -> node_id
+    symbol_node_ids: dict[str, str] = {}
+    module_node_ids: dict[str, str] = {}  # rel_path -> node_id
+
+    # Phase 1: Create module and symbol nodes from ctags
+    for abs_path_str, file_tags in grouped.items():
+        if created + updated >= limit:
+            break
+
+        abs_path = Path(abs_path_str)
+        try:
+            rel_path = str(abs_path.relative_to(effective_root))
+        except ValueError:
+            rel_path = abs_path_str
+
+        # --- Module node (Tier 1) ---
+        mod_id = _module_id(repo_slug, rel_path)
+        module_node_ids[rel_path] = mod_id
+
+        # Check if file changed (incremental)
+        existing = store.get_node(mod_id)
+        if existing:
+            old_hash = (existing.get("extra") or {}).get("file_hash", "")
+            try:
+                current_hash = _file_hash(abs_path)
+            except OSError:
+                skipped += 1
+                continue
+            if old_hash == current_hash:
+                skipped += 1
+                # Still record symbol IDs for edge creation
+                for t in file_tags:
+                    if t.get("kind") in _CLASS_KINDS and _is_public(t):
+                        scope = t.get("scope", "")
+                        qname = f"{rel_path}:{scope}.{t['name']}" if scope else f"{rel_path}:{t['name']}"
+                        sym_id = _symbol_id(repo_slug, qname)
+                        symbol_node_ids[qname] = sym_id
+                        symbol_node_ids[t["name"]] = sym_id  # short name too
+                continue
+
+        try:
+            current_hash = _file_hash(abs_path)
+        except OSError:
+            errors.append(f"Cannot read: {rel_path}")
+            continue
+
+        # Determine language
+        language = "Unknown"
+        for t in file_tags:
+            if t.get("language"):
+                language = t["language"]
+                break
+
+        content = _build_module_content(rel_path, file_tags)
+
+        # Count classes and functions
+        class_count = sum(1 for t in file_tags if t.get("kind") in _CLASS_KINDS)
+        func_count = sum(1 for t in file_tags
+                         if t.get("kind") == "function" and not t.get("scope"))
+
+        extra = {
+            "file_hash": current_hash,
+            "relative_path": rel_path,
+            "language": language,
+            "line_count": max((t.get("line", 0) for t in file_tags), default=0),
+            "class_count": class_count,
+            "function_count": func_count,
+            "tool_tier": "A",
+            "repo_root": str(effective_root),
+        }
+
+        title = rel_path  # Use relative path as title — most useful for search
+
+        if existing:
+            store.update_node(mod_id, content=content, extra=extra)
+            updated += 1
+        else:
+            store.add_node(
+                title=title,
+                content=content,
+                node_id=mod_id,
+                node_type="artifact",
+                domains=["code", language.lower()],
+                prov_source=str(abs_path),
+                prov_activity="code-ingest",
+                extra=extra,
+            )
+            created += 1
+        all_node_ids.append(mod_id)
+
+        if verbose:
+            print(f"  {'Updated' if existing else 'Created'} module: {rel_path}")
+
+        # --- Symbol nodes (Tier 2) — classes/interfaces/types ---
+        for t in file_tags:
+            if created + updated >= limit:
+                break
+            if t.get("kind") not in _CLASS_KINDS:
+                continue
+            if not _is_public(t):
+                continue
+
+            scope = t.get("scope", "")
+            qname = f"{rel_path}:{scope}.{t['name']}" if scope else f"{rel_path}:{t['name']}"
+            sym_id = _symbol_id(repo_slug, qname)
+            symbol_node_ids[qname] = sym_id
+            symbol_node_ids[t["name"]] = sym_id  # short name for edge matching
+
+            sym_existing = store.get_node(sym_id)
+
+            # Collect members of this class
+            members = [m for m in file_tags
+                       if m.get("scope") == t["name"]
+                       and m.get("scopeKind") in ("class", "struct", "enum")]
+            public_methods = [m["name"] for m in members
+                              if m.get("kind") == "member" and _is_public(m)
+                              and m["name"] != "__init__"]
+
+            sym_content = _build_class_content(t, members, rel_path)
+            inherits_raw = t.get("inherits", "")
+            inherits_list = []
+            if inherits_raw and isinstance(inherits_raw, str):
+                inherits_list = [p.strip() for p in inherits_raw.split(",") if p.strip()]
+
+            sym_extra = {
+                "kind": t["kind"],
+                "language": language,
+                "relative_path": rel_path,
+                "line": t.get("line", 0),
+                "qualified_name": qname,
+                "inherits": inherits_list,
+                "public_methods": public_methods,
+                "repo_root": str(effective_root),
+            }
+
+            sym_title = t["name"]
+            # Add scope for disambiguation
+            if scope:
+                sym_title = f"{scope}.{t['name']}"
+
+            if sym_existing:
+                store.update_node(sym_id, content=sym_content, extra=sym_extra)
+                updated += 1
+            else:
+                store.add_node(
+                    title=sym_title,
+                    content=sym_content,
+                    node_id=sym_id,
+                    node_type="concept",
+                    domains=["code", language.lower()],
+                    prov_source=f"{abs_path}:{t.get('line', 0)}",
+                    prov_activity="code-ingest",
+                    extra=sym_extra,
+                )
+                created += 1
+            all_node_ids.append(sym_id)
+
+            # Edge: symbol -> module (context_of)
+            try:
+                store.add_edge(
+                    sym_id, mod_id,
+                    edge_type="context_of",
+                    weight=0.6,
+                    provenance="code-ingest: defined in",
+                    bidirectional=False,
+                )
+            except Exception:
+                pass
+
+            if verbose:
+                print(f"    {'Updated' if sym_existing else 'Created'} class: {sym_title}")
+
+    # Phase 2: Create edges from inheritance
+    for child_qname, parent_name, _file_path in _extract_inheritance(tags):
+        child_id = symbol_node_ids.get(child_qname)
+        parent_id = symbol_node_ids.get(parent_name)
+        if child_id and parent_id:
+            try:
+                store.add_edge(
+                    child_id, parent_id,
+                    edge_type="implements",
+                    weight=0.7,
+                    provenance="code-ingest: inherits",
+                )
+            except Exception:
+                pass
+
+    # Phase 3: Import edges (module -> module)
+    for file_tags_list in grouped.values():
+        for t in file_tags_list:
+            if t.get("kind") not in ("namespace", "import"):
+                continue
+            nameref = t.get("nameref", "")
+            if not nameref or not isinstance(nameref, str):
+                continue
+            imported_module = nameref.replace("module:", "")
+            # Find the source file's module node
+            src_path = t.get("path", "")
+            try:
+                src_rel = str(Path(src_path).relative_to(effective_root))
+            except (ValueError, TypeError):
+                continue
+            src_mod_id = module_node_ids.get(src_rel)
+            if not src_mod_id:
+                continue
+            # Try to find target module node by matching imported name to rel_paths
+            target_mod_id = None
+            for rp, mid in module_node_ids.items():
+                stem = Path(rp).stem
+                if stem == imported_module or rp.replace("/", ".").replace(".py", "") == imported_module:
+                    target_mod_id = mid
+                    break
+            if target_mod_id and target_mod_id != src_mod_id:
+                try:
+                    store.add_edge(
+                        src_mod_id, target_mod_id,
+                        edge_type="depends_on",
+                        weight=0.5,
+                        provenance=f"code-ingest: imports {imported_module}",
+                        bidirectional=False,
+                    )
+                except Exception:
+                    pass
+
+    # Phase 4: cscope edges (Tier B) — C/C++ only
+    if has_cscope:
+        cscope_dir = _build_cscope_db(files, effective_root)
+        if cscope_dir:
+            try:
+                # Include edges
+                includes = _extract_cscope_includes(cscope_dir, effective_root)
+                for includer_rel, included in includes:
+                    src_id = module_node_ids.get(includer_rel)
+                    # Try to find the included file
+                    tgt_id = None
+                    for rp, mid in module_node_ids.items():
+                        if rp.endswith(included) or Path(rp).name == Path(included).name:
+                            tgt_id = mid
+                            break
+                    if src_id and tgt_id and src_id != tgt_id:
+                        try:
+                            store.add_edge(
+                                src_id, tgt_id,
+                                edge_type="depends_on",
+                                weight=0.5,
+                                provenance="code-ingest: #include",
+                                bidirectional=False,
+                            )
+                        except Exception:
+                            pass
+
+                # Call graph edges
+                class_symbols = [name for name in symbol_node_ids
+                                 if ":" not in name]  # short names only
+                calls = _extract_cscope_calls(cscope_dir, class_symbols, effective_root)
+                for caller, callee in calls:
+                    caller_id = symbol_node_ids.get(caller)
+                    callee_id = symbol_node_ids.get(callee)
+                    if caller_id and callee_id and caller_id != callee_id:
+                        try:
+                            store.add_edge(
+                                caller_id, callee_id,
+                                edge_type="relates_to",
+                                weight=0.4,
+                                provenance="code-ingest: calls (cscope)",
+                            )
+                        except Exception:
+                            pass
+
+                if verbose:
+                    print(f"  cscope: {len(includes)} includes, {len(calls)} call edges")
+            finally:
+                # Cleanup temp cscope files
+                import shutil
+                shutil.rmtree(cscope_dir, ignore_errors=True)
+
+            # Update tool tier in module extras
+            for mod_id in module_node_ids.values():
+                node = store.get_node(mod_id)
+                if node:
+                    extra = node.get("extra") or {}
+                    lang = extra.get("language", "")
+                    if lang in ("C", "C++", "Objective-C"):
+                        extra["tool_tier"] = "B"
+                        store.update_node(mod_id, extra=extra)
+
+    # Phase 5: tree-sitter edges (Tier C)
+    # Group files by language, try to load parser for each
+    lang_files: dict[str, list[tuple[str, Path]]] = {}
+    for abs_path_str, file_tags in grouped.items():
+        language = "Unknown"
+        for t in file_tags:
+            if t.get("language"):
+                language = t["language"]
+                break
+        if language != "Unknown":
+            abs_path = Path(abs_path_str)
+            try:
+                rel_path = str(abs_path.relative_to(effective_root))
+            except ValueError:
+                continue
+            lang_files.setdefault(language, []).append((rel_path, abs_path))
+
+    for language, file_list in lang_files.items():
+        parser = _check_treesitter(language)
+        if not parser:
+            continue
+
+        for rel_path, abs_path in file_list:
+            try:
+                source = abs_path.read_bytes()
+                tree = parser.parse(source)
+            except Exception:
+                continue
+
+            mod_id = module_node_ids.get(rel_path)
+            if not mod_id:
+                continue
+
+            # Import edges from tree-sitter (more accurate than ctags)
+            if language == "Python":
+                ts_imports = _ts_extract_imports_python(tree, source)
+                for local_name, mod_path in ts_imports:
+                    # Try to resolve to a module node
+                    target_id = None
+                    mod_parts = mod_path.replace(".", "/")
+                    for rp, mid in module_node_ids.items():
+                        if rp.replace(".py", "").endswith(mod_parts) or Path(rp).stem == local_name:
+                            target_id = mid
+                            break
+                    if target_id and target_id != mod_id:
+                        try:
+                            store.add_edge(
+                                mod_id, target_id,
+                                edge_type="depends_on",
+                                weight=0.5,
+                                provenance=f"code-ingest: imports {mod_path} (tree-sitter)",
+                                bidirectional=False,
+                            )
+                        except Exception:
+                            pass
+
+            # Call graph edges from tree-sitter
+            calls = _ts_extract_calls(tree, source)
+            for caller, callee in calls:
+                caller_id = symbol_node_ids.get(caller)
+                callee_id = symbol_node_ids.get(callee)
+                if caller_id and callee_id and caller_id != callee_id:
+                    try:
+                        store.add_edge(
+                            caller_id, callee_id,
+                            edge_type="relates_to",
+                            weight=0.4,
+                            provenance="code-ingest: calls (tree-sitter)",
+                        )
+                    except Exception:
+                        pass
+
+            # Update tool tier
+            node = store.get_node(mod_id)
+            if node:
+                extra = node.get("extra") or {}
+                if extra.get("tool_tier", "A") == "A":
+                    extra["tool_tier"] = "C"
+                    store.update_node(mod_id, extra=extra)
+
+        if verbose:
+            print(f"  tree-sitter: processed {len(file_list)} {language} files")
+
+    # Link all code nodes to project
+    _link_to_project(store, repo_slug, all_node_ids)
+
+    return IngestResult(created=created, updated=updated, skipped=skipped, errors=errors)
+
+
+# ── Adapter protocol wrapper ───────────────────────────────────────
+
+class CodeAdapter:
+    meta = AdapterMeta(
+        name="code",
+        description="Ingest code structure via ctags, cscope, and tree-sitter",
+        options=[
+            AdapterOption("directory", "Repository or directory to analyze", required=True),
+            AdapterOption("exclude", "Comma-separated exclude glob patterns"),
+        ],
+    )
+
+    def is_available(self) -> bool:
+        return _check_ctags()
+
+    def ingest(self, store: "Store", *, limit: int = 200, since: str | None = None,
+               verbose: bool = False, **kwargs: Any) -> IngestResult:
+        directory = kwargs.get("directory")
+        if not directory:
+            return IngestResult(errors=["--directory is required"])
+
+        exclude = None
+        exclude_str = kwargs.get("exclude", "")
+        if exclude_str:
+            exclude = [p.strip() for p in exclude_str.split(",") if p.strip()]
+
+        return ingest_code(
+            store, directory,
+            limit=limit, verbose=verbose, exclude=exclude,
+        )
+
+
+adapter = CodeAdapter()
