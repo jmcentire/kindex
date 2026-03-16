@@ -133,5 +133,11 @@ def _register_builtins() -> None:
     except Exception:
         pass
 
+    try:
+        from .code import adapter as code
+        register(code)
+    except Exception:
+        pass
+
 
 _register_builtins()

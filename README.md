@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.9.1](https://img.shields.io/badge/version-0.9.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.10.0](https://img.shields.io/badge/version-0.10.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-672%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-930%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -252,11 +252,24 @@ Three integration paths:
   MCP plugin --> Claude calls tools natively (search, add, learn, remind, ...)
   CLI hooks  --> SessionStart / PreCompact / Stop lifecycle events
   Adapters   --> Entry-point discovery for custom ingestion sources
+  Code       --> ctags + cscope + tree-sitter structural analysis
 ```
 
 ### Node Types
 
 **Knowledge**: concept, document, session, person, project, decision, question, artifact, skill
+
+### Code Intelligence
+
+Ingest repository structure with `kin ingest code --directory .`:
+
+- **Module nodes** (artifact) — one per source file with structural summary: classes, public functions, signatures, imports
+- **Symbol nodes** (concept) — one per class/interface/type with method signatures
+- **Edges** — imports (`depends_on`), inheritance (`implements`), containment (`context_of`), call graph (`relates_to`)
+- **Three extraction tiers** — ctags (100+ languages), cscope (C/C++ cross-refs), tree-sitter (AST call graphs)
+- **Incremental** — file hashing skips unchanged files on re-ingest
+
+Code structure lives in the same graph as your decisions, watches, and constraints. Search finds both what calls a function and what broke last time someone changed it.
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
@@ -307,7 +320,7 @@ Three integration paths:
 ### Ingestion & External Sources
 | Command | Description |
 |---------|-------------|
-| `kin ingest <source>` | Ingest from: projects, sessions, files, commits, github, linear, all |
+| `kin ingest <source>` | Ingest from: projects, sessions, files, commits, github, linear, code, all |
 | `kin cron` | One-shot maintenance cycle (for crontab/launchd) |
 | `kin watch` | Watch for new sessions and ingest them (--interval) |
 | `kin analytics` | Archive session analytics and activity heatmap |
