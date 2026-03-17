@@ -212,7 +212,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
     merged: dict = {}
     for p in _GLOBAL_PATHS:
         p = p.expanduser().resolve()
-        if p.exists():
+        if p.is_file():
             data = yaml.safe_load(p.read_text()) or {}
             merged = _deep_merge(merged, data)
             break  # use first global found
@@ -220,7 +220,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
     # Layer 2: local config (project-level) merges over global
     for p in _LOCAL_PATHS:
         p = p.expanduser().resolve()
-        if p.exists():
+        if p.is_file():
             data = yaml.safe_load(p.read_text()) or {}
             merged = _deep_merge(merged, data)
             break  # use first local found
