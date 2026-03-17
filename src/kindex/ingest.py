@@ -694,21 +694,54 @@ def _now_iso() -> str:
     return datetime.now(tz=None).isoformat(timespec="seconds")
 
 
+def _detect_repo_for_index(output_dir: Path) -> str | None:
+    """Detect git repo slug from output_dir for repo-scoped indexing."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(output_dir),
+        )
+        if r.returncode == 0:
+            root = Path(r.stdout.strip())
+            return root.name.lower().replace(" ", "-")
+    except Exception:
+        pass
+    return None
+
+
 def write_kin_index(store: "Store", output_dir: Path) -> Path:
     """Write a .kin/index.json file summarizing the graph for this project.
 
     This file is meant to be git-tracked, giving other tools a snapshot
-    of what Kindex knows about this project.
+    of what Kindex knows about this project.  When run inside a git repo,
+    the index is scoped to code nodes belonging to that repo only.
     """
-    nodes = store.all_nodes(limit=500)
+    repo_slug = _detect_repo_for_index(output_dir)
+
+    if repo_slug:
+        # Query code nodes belonging to this repo by ID prefix
+        mod_prefix = f"code-mod-{repo_slug}-"
+        sym_prefix = f"code-sym-{repo_slug}-"
+        rows = store.conn.execute(
+            "SELECT * FROM nodes WHERE id LIKE ? OR id LIKE ? "
+            "ORDER BY weight DESC, updated_at DESC",
+            (f"{mod_prefix}%", f"{sym_prefix}%"),
+        ).fetchall()
+        nodes = [store._row_to_dict(r) for r in rows]
+    else:
+        nodes = store.all_nodes(limit=500)
+
     index = {
         "version": 1,
         "generated_at": _now_iso(),
+        "repo": repo_slug,
         "node_count": len(nodes),
         "nodes": [
             {"id": n["id"], "title": n["title"], "type": n["type"],
              "weight": n["weight"], "domains": n.get("domains", [])}
-            for n in nodes[:100]  # Top 100 by weight
+            for n in nodes
         ],
         "domains": list(set(d for n in nodes for d in (n.get("domains") or []))),
     }
