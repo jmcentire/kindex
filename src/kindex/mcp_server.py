@@ -1332,6 +1332,131 @@ def remind_exec(id: str) -> str:
     return f"Action {result['status']}: {result.get('output', '')[:500]}"
 
 
+# ── Modes ─────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def mode_activate(name: str, session_context: str = "") -> str:
+    """Activate a conversation mode. Returns the priming artifact to inject.
+
+    Modes are state inductions, not instructions. They shift how you think,
+    not what you think about. Based on research showing induced understanding
+    outperforms direct instruction by 5.4x.
+
+    Built-in modes: collaborate, code, create, research, chat.
+    Custom modes can be created with mode_create.
+
+    Args:
+        name: Mode name (e.g. 'collaborate', 'code', 'create').
+        session_context: Optional prior session context to resume from.
+    """
+    store, _ = _get_store()
+    from .modes import activate_mode
+    return activate_mode(store, name, session_context=session_context or None)
+
+
+@mcp.tool()
+def mode_list() -> str:
+    """List available conversation modes (built-in and custom)."""
+    store, _ = _get_store()
+    from .modes import list_modes, format_mode_list, DEFAULT_MODES
+    modes = list_modes(store)
+    return format_mode_list(modes, defaults=DEFAULT_MODES)
+
+
+@mcp.tool()
+def mode_show(name: str) -> str:
+    """Show details of a conversation mode including its primer, boundary, and permissions.
+
+    Args:
+        name: Mode name.
+    """
+    store, _ = _get_store()
+    from .modes import get_mode, format_mode_detail, DEFAULT_MODES
+    mode = get_mode(store, name)
+    default = DEFAULT_MODES.get(name) if not mode else None
+    return format_mode_detail(name, mode=mode, default=default)
+
+
+@mcp.tool()
+def mode_create(name: str, primer: str, boundary: str, permissions: str,
+                description: str = "", link_to: str = "") -> str:
+    """Create a custom conversation mode from a primer, boundary, and permissions.
+
+    A primer is a state induction (~80 words) that establishes how to think.
+    A boundary defines what quality means for this mode.
+    Permissions state what's explicitly allowed (tangents, pushback, etc).
+
+    Args:
+        name: Mode name (short, lowercase, no spaces).
+        primer: The mode-setting passage. Under 80 words. Not instructions.
+        boundary: 2-3 sentences defining output quality for this mode.
+        permissions: What's explicitly permitted to keep the conversation alive.
+        description: Optional one-line description.
+        link_to: Comma-separated node IDs/titles to link this mode to.
+    """
+    store, _ = _get_store()
+    from .modes import create_mode
+    links = [s.strip() for s in link_to.split(",") if s.strip()] if link_to else None
+    mode_id = create_mode(
+        store, name,
+        primer=primer,
+        boundary=boundary,
+        permissions=permissions,
+        description=description,
+        link_to=links,
+    )
+    return f"Created mode: {name} ({mode_id})"
+
+
+@mcp.tool()
+def mode_export(name: str) -> str:
+    """Export a mode as a portable, PII-free artifact (JSON).
+
+    Args:
+        name: Mode name to export.
+    """
+    store, _ = _get_store()
+    from .modes import export_mode
+    import json
+    artifact = export_mode(store, name)
+    if not artifact:
+        return f"Mode not found: {name}"
+    return json.dumps(artifact, indent=2)
+
+
+@mcp.tool()
+def mode_import(artifact_json: str) -> str:
+    """Import a mode from a portable artifact (JSON string).
+
+    Args:
+        artifact_json: JSON string of the mode artifact.
+    """
+    store, _ = _get_store()
+    from .modes import import_mode
+    import json
+    try:
+        artifact = json.loads(artifact_json)
+    except json.JSONDecodeError as e:
+        return f"Invalid JSON: {e}"
+    try:
+        mode_id = import_mode(store, artifact)
+        return f"Imported mode: {artifact.get('name', '?')} ({mode_id})"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def mode_seed() -> str:
+    """Seed the default conversation modes into the graph. Idempotent."""
+    store, _ = _get_store()
+    from .modes import seed_defaults
+    created = seed_defaults(store)
+    if created:
+        return f"Seeded {len(created)} modes: {', '.join(created)}"
+    return "All default modes already exist."
+
+
 # ── Entry point ───────────────────────────────────────────────────────
 
 
