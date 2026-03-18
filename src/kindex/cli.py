@@ -2646,6 +2646,96 @@ def cmd_task(args):
     store.close()
 
 
+# ── modes ────────────────────────────────────────────────────────────
+
+
+def cmd_mode(args):
+    """Conversation mode management — activate, list, show, create, export, import, seed."""
+    store = _store(args)
+    action = getattr(args, "mode_action", "list")
+
+    if action == "activate":
+        from .modes import activate_mode
+        name = getattr(args, "mode_name", None)
+        if not name:
+            print("Usage: kin mode activate <name>", file=sys.stderr)
+            store.close()
+            return
+        ctx = getattr(args, "context", None)
+        result = activate_mode(store, name, session_context=ctx)
+        print(result)
+
+    elif action == "list":
+        from .modes import list_modes, format_mode_list, DEFAULT_MODES
+        modes = list_modes(store)
+        print(format_mode_list(modes, defaults=DEFAULT_MODES))
+
+    elif action == "show":
+        from .modes import get_mode, format_mode_detail, DEFAULT_MODES
+        name = getattr(args, "mode_name", None)
+        if not name:
+            print("Usage: kin mode show <name>", file=sys.stderr)
+            store.close()
+            return
+        mode = get_mode(store, name)
+        default = DEFAULT_MODES.get(name) if not mode else None
+        print(format_mode_detail(name, mode=mode, default=default))
+
+    elif action == "create":
+        from .modes import create_mode
+        name = getattr(args, "mode_name", None)
+        primer = getattr(args, "primer", None)
+        boundary = getattr(args, "boundary", None)
+        permissions = getattr(args, "permissions", None)
+        if not all([name, primer, boundary, permissions]):
+            print("Usage: kin mode create <name> --primer '...' --boundary '...' --permissions '...'",
+                  file=sys.stderr)
+            store.close()
+            return
+        desc = getattr(args, "description", "") or ""
+        mode_id = create_mode(store, name, primer=primer, boundary=boundary,
+                             permissions=permissions, description=desc)
+        print(f"Created mode: {name} ({mode_id})")
+
+    elif action == "export":
+        from .modes import export_mode
+        name = getattr(args, "mode_name", None)
+        if not name:
+            print("Usage: kin mode export <name>", file=sys.stderr)
+            store.close()
+            return
+        artifact = export_mode(store, name)
+        if artifact:
+            print(json.dumps(artifact, indent=2))
+        else:
+            print(f"Mode not found: {name}", file=sys.stderr)
+
+    elif action == "import":
+        from .modes import import_mode
+        fpath = getattr(args, "file", None)
+        if not fpath:
+            print("Usage: kin mode import <file.json>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            with open(fpath) as f:
+                artifact = json.load(f)
+            mode_id = import_mode(store, artifact)
+            print(f"Imported mode: {artifact.get('name', '?')} ({mode_id})")
+        except (json.JSONDecodeError, FileNotFoundError, ValueError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "seed":
+        from .modes import seed_defaults
+        created = seed_defaults(store)
+        if created:
+            print(f"Seeded {len(created)} modes: {', '.join(created)}")
+        else:
+            print("All default modes already exist.")
+
+    store.close()
+
+
 # ── session tags ──────────────────────────────────────────────────────
 
 
@@ -3858,6 +3948,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Execution mode (default: auto)")
     _common(s)
     s.set_defaults(func=cmd_remind)
+
+    # mode
+    s = sub.add_parser("mode", help="Conversation mode management")
+    s.add_argument("mode_action", nargs="?", default="list",
+                   choices=["activate", "list", "show", "create", "export", "import", "seed"])
+    s.add_argument("mode_name", nargs="?", help="Mode name")
+    s.add_argument("--primer", help="Primer text (for create)")
+    s.add_argument("--boundary", help="Boundary text (for create)")
+    s.add_argument("--permissions", help="Permissions text (for create)")
+    s.add_argument("--description", help="Mode description (for create)")
+    s.add_argument("--context", help="Session context to resume from (for activate)")
+    s.add_argument("--file", help="JSON file path (for import)")
+    _common(s)
+    s.set_defaults(func=cmd_mode)
 
     # stop-guard (Claude Code Stop hook)
     s = sub.add_parser("stop-guard", help="Stop hook guard for actionable reminders")
