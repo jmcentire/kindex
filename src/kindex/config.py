@@ -25,6 +25,13 @@ _LOCAL_PATHS = [
 _SEARCH_PATHS = _LOCAL_PATHS + _GLOBAL_PATHS
 
 
+class EmbeddingConfig(BaseModel):
+    provider: str = "local"      # "local", "openai", "gemini"
+    model: str = ""              # empty = provider default
+    api_key_env: str = ""        # empty = provider default env var
+    dimensions: int = 0          # 0 = provider default
+
+
 class LLMConfig(BaseModel):
     enabled: bool = False
     provider: str = "anthropic"
@@ -122,6 +129,7 @@ class Config(BaseModel):
     project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
     claude_dir: str = "~/.claude"
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)
