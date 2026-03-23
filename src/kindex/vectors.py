@@ -3,22 +3,54 @@
 Enables semantic similarity search when installed:
     pip install sqlite-vec sentence-transformers
 
+Supports multiple embedding providers:
+    - local: sentence-transformers (default, no API key needed)
+    - openai: OpenAI Embeddings API (requires OPENAI_API_KEY)
+    - gemini: Google Gemini Embeddings API (requires GEMINI_API_KEY)
+
 Falls back gracefully to FTS5 when unavailable.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .config import Config
+    from .config import Config, EmbeddingConfig
     from .store import Store
 
 _VEC_AVAILABLE = None
 _MODEL = None
-_EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 default
+
+# Provider defaults: model, dimensions, api_key_env
+PROVIDER_DEFAULTS = {
+    "local": {"model": "all-MiniLM-L6-v2", "dimensions": 384, "api_key_env": ""},
+    "openai": {"model": "text-embedding-3-small", "dimensions": 1536, "api_key_env": "OPENAI_API_KEY"},
+    "gemini": {"model": "gemini-embedding-001", "dimensions": 3072, "api_key_env": "GEMINI_API_KEY"},
+}
+
+
+def _resolve_embedding_config(config: Config | None) -> tuple[str, str, int, str]:
+    """Resolve provider, model, dimensions, api_key_env from config.
+
+    Returns (provider, model, dimensions, api_key_env).
+    """
+    if config is None:
+        defaults = PROVIDER_DEFAULTS["local"]
+        return "local", defaults["model"], defaults["dimensions"], ""
+
+    ec = config.embedding
+    provider = ec.provider
+    defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["local"])
+    model = ec.model or defaults["model"]
+    dims = ec.dimensions or defaults["dimensions"]
+    api_key_env = ec.api_key_env or defaults["api_key_env"]
+    return provider, model, dims, api_key_env
 
 
 def _check_vec() -> bool:
@@ -34,14 +66,15 @@ def _check_vec() -> bool:
     return _VEC_AVAILABLE
 
 
-def _get_model():
+def _get_model(model_name: str = "all-MiniLM-L6-v2"):
     """Lazy-load the sentence transformer model."""
     global _MODEL
-    if _MODEL is not None:
+    if _MODEL is not None and getattr(_MODEL, '_kindex_model_name', None) == model_name:
         return _MODEL
     try:
         from sentence_transformers import SentenceTransformer
-        _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+        _MODEL = SentenceTransformer(model_name)
+        _MODEL._kindex_model_name = model_name
         return _MODEL
     except ImportError:
         print("Warning: sentence-transformers not installed. "
@@ -49,24 +82,114 @@ def _get_model():
         return None
 
 
-def is_available() -> bool:
-    """Check if vector search is available."""
-    return _check_vec()
-
-
-def embed_text(text: str) -> list[float] | None:
-    """Embed a text string into a vector."""
-    model = _get_model()
+def _embed_local(text: str, model_name: str) -> list[float] | None:
+    """Embed text using local sentence-transformers."""
+    model = _get_model(model_name)
     if model is None:
         return None
     embedding = model.encode(text, normalize_embeddings=True)
     return embedding.tolist()
 
 
+def _embed_openai(text: str, model: str, dimensions: int, api_key_env: str) -> list[float] | None:
+    """Embed text using OpenAI Embeddings API."""
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        print(f"Warning: {api_key_env} not set. Cannot embed text.", file=sys.stderr)
+        return None
+
+    body = {"input": text, "model": model}
+    if dimensions:
+        body["dimensions"] = dimensions
+
+    try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/embeddings",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            return result["data"][0]["embedding"]
+    except Exception as e:
+        print(f"OpenAI embedding error: {e}", file=sys.stderr)
+        return None
+
+
+def _embed_gemini(text: str, model: str, dimensions: int, api_key_env: str) -> list[float] | None:
+    """Embed text using Google Gemini Embeddings API."""
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        print(f"Warning: {api_key_env} not set. Cannot embed text.", file=sys.stderr)
+        return None
+
+    body = {
+        "model": f"models/{model}",
+        "content": {"parts": [{"text": text}]},
+    }
+    if dimensions:
+        body["outputDimensionality"] = dimensions
+
+    try:
+        req = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            if "embedding" in result and "values" in result["embedding"]:
+                return result["embedding"]["values"]
+            return None
+    except Exception as e:
+        print(f"Gemini embedding error: {e}", file=sys.stderr)
+        return None
+
+
+_EMBED_DISPATCH = {
+    "local": lambda text, model, dims, key_env: _embed_local(text, model),
+    "openai": _embed_openai,
+    "gemini": _embed_gemini,
+}
+
+
+def is_available() -> bool:
+    """Check if vector search is available."""
+    return _check_vec()
+
+
+def embed_text(text: str, config: Config | None = None) -> list[float] | None:
+    """Embed a text string into a vector using the configured provider."""
+    provider, model, dims, api_key_env = _resolve_embedding_config(config)
+    fn = _EMBED_DISPATCH.get(provider)
+    if fn is None:
+        print(f"Warning: unknown embedding provider '{provider}'. "
+              f"Supported: {', '.join(PROVIDER_DEFAULTS)}", file=sys.stderr)
+        return None
+    return fn(text, model, dims, api_key_env)
+
+
+def _get_embedding_dim(config: Config | None) -> int:
+    """Get the embedding dimension for the configured provider."""
+    _, _, dims, _ = _resolve_embedding_config(config)
+    return dims
+
+
 def ensure_vec_table(store: Store) -> bool:
-    """Create the vector table if sqlite-vec is available."""
+    """Create the vector table if sqlite-vec is available.
+
+    Handles dimension changes from provider switches by recreating the table.
+    """
     if not _check_vec():
         return False
+
+    dim = _get_embedding_dim(store.config)
 
     try:
         import sqlite_vec
@@ -74,12 +197,30 @@ def ensure_vec_table(store: Store) -> bool:
         sqlite_vec.load(store.conn)
         store.conn.enable_load_extension(False)
 
+        # Check if dimension changed (provider switch)
+        store.conn.execute(
+            "CREATE TABLE IF NOT EXISTS vec_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        row = store.conn.execute(
+            "SELECT value FROM vec_meta WHERE key = 'embedding_dim'"
+        ).fetchone()
+        stored_dim = int(row[0]) if row else None
+
+        if stored_dim and stored_dim != dim:
+            print(f"Embedding dimension changed ({stored_dim} -> {dim}). "
+                  f"Recreating vector table.", file=sys.stderr)
+            store.conn.execute("DROP TABLE IF EXISTS node_vectors")
+
         store.conn.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS node_vectors USING vec0(
                 node_id TEXT PRIMARY KEY,
-                embedding float[{_EMBEDDING_DIM}]
+                embedding float[{dim}]
             )
         """)
+        store.conn.execute(
+            "INSERT OR REPLACE INTO vec_meta (key, value) VALUES ('embedding_dim', ?)",
+            (str(dim),),
+        )
         store.conn.commit()
         return True
     except Exception as e:
@@ -89,7 +230,7 @@ def ensure_vec_table(store: Store) -> bool:
 
 def upsert_embedding(store: Store, node_id: str, text: str) -> bool:
     """Compute and store an embedding for a node."""
-    embedding = embed_text(text)
+    embedding = embed_text(text, store.config)
     if embedding is None:
         return False
 
@@ -109,7 +250,7 @@ def vector_search(store: Store, query: str, top_k: int = 10) -> list[dict]:
     if not _check_vec():
         return []
 
-    embedding = embed_text(query)
+    embedding = embed_text(query, store.config)
     if embedding is None:
         return []
 
@@ -143,8 +284,17 @@ def _serialize_vec(embedding: list[float]) -> bytes:
 def index_all_nodes(store: Store, verbose: bool = False) -> int:
     """Index all nodes that don't have embeddings yet."""
     if not ensure_vec_table(store):
-        print("Vector search not available. Install: pip install sqlite-vec sentence-transformers",
-              file=sys.stderr)
+        provider = "unknown"
+        try:
+            provider, _, _, _ = _resolve_embedding_config(store.config)
+        except Exception:
+            pass
+        if provider == "local":
+            print("Vector search not available. Install: pip install sqlite-vec sentence-transformers",
+                  file=sys.stderr)
+        else:
+            print("Vector search not available. Install: pip install sqlite-vec",
+                  file=sys.stderr)
         return 0
 
     nodes = store.all_nodes(limit=10000)

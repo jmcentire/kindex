@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.11.0](https://img.shields.io/badge/version-0.11.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.12.0](https://img.shields.io/badge/version-0.12.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-930%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-945%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -260,7 +260,10 @@ Retrieval pipeline:
   FTS5 BM25 --+
   Graph BFS --+-- RRF merge -- tier formatter -- context block
   (vectors) --+                   |
-                          full | abridged | summarized | executive | index
+      |                   full | abridged | summarized | executive | index
+      |
+  Embedding providers (configurable):
+      local (sentence-transformers) | openai | gemini
 
 LLM cache tiers (kin ask):
   Tier 1: codebook (stable node index)     <- cached @ 10% cost
@@ -395,6 +398,12 @@ llm:
   cache_control: true              # Prompt caching (90% savings on repeated prefixes)
   codebook_min_weight: 0.5         # Min node weight for codebook inclusion
   tier2_max_tokens: 4000           # Token budget for query-relevant context
+
+embedding:
+  provider: local                  # local, openai, or gemini
+  # model: ""                      # empty = provider default
+  # api_key_env: ""                # empty = provider default (OPENAI_API_KEY / GEMINI_API_KEY)
+  # dimensions: 0                  # 0 = provider default (384 / 1536 / 3072)
 
 budget:
   daily: 0.50
