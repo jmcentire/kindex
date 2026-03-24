@@ -86,6 +86,16 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["reminders_fired"] = reminder_results.get("fired", 0)
     results["reminders_auto_snoozed"] = reminder_results.get("auto_snoozed", 0)
 
+    # 11. Lightweight dream — dedup + suggestion auto-apply
+    try:
+        from .dream import dream_lightweight
+        dream_results = dream_lightweight(config, store, verbose=verbose)
+        results["dream_merged"] = dream_results.get("merged", 0)
+        results["dream_suggestions_applied"] = dream_results.get("suggestions_applied", 0)
+    except Exception:
+        results["dream_merged"] = 0
+        results["dream_suggestions_applied"] = 0
+
     # Update run marker
     set_run_marker(store)
 

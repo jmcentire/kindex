@@ -2394,6 +2394,56 @@ def cmd_cron(args):
     store.close()
 
 
+# ── dream ─────────────────────────────────────────────────────────────
+
+def cmd_dream(args):
+    """Run knowledge consolidation (dream cycle)."""
+    store = _store(args)
+    cfg = _config(args)
+    verbose = getattr(args, "verbose", False)
+    dry_run = getattr(args, "dry_run", False)
+    detach = getattr(args, "detach", False)
+
+    # Determine mode
+    if getattr(args, "deep", False):
+        mode = "deep"
+    elif getattr(args, "lightweight", False):
+        mode = "lightweight"
+    else:
+        mode = "full"
+
+    if detach:
+        from .dream import detach_dream
+        pid = detach_dream(cfg, mode=mode)
+        if not args.json:
+            print(f"Dream detached (pid={pid}, mode={mode})")
+        else:
+            print(_dumps({"detached": True, "pid": pid, "mode": mode}))
+        store.close()
+        return
+
+    from .dream import dream_cycle
+    results = dream_cycle(cfg, store, mode=mode, verbose=verbose, dry_run=dry_run)
+
+    if args.json:
+        print(_dumps(results, indent=2))
+    else:
+        if results.get("skipped"):
+            print(f"Dream skipped: {results['skipped']}")
+        else:
+            prefix = "[DRY RUN] " if dry_run else ""
+            print(f"{prefix}Dream ({results.get('mode', mode)}) complete:")
+            print(f"  Merged:              {results.get('merged', 0)}")
+            print(f"  Suggested:           {results.get('suggested', 0)}")
+            print(f"  Suggestions applied: {results.get('suggestions_applied', 0)}")
+            if "edges_strengthened" in results:
+                print(f"  Edges strengthened:  {results['edges_strengthened']}")
+            if "cluster_summaries" in results:
+                print(f"  Cluster summaries:   {results['cluster_summaries']}")
+
+    store.close()
+
+
 # ── archive (slow graph) ──────────────────────────────────────────────
 
 def cmd_archive(args):
@@ -3875,6 +3925,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--verbose", "-v", action="store_true", help="Detailed logging")
     _common(s)
     s.set_defaults(func=cmd_cron)
+
+    # dream
+    s = sub.add_parser("dream", help="Knowledge consolidation (dream cycle)")
+    s.add_argument("--verbose", "-v", action="store_true", help="Detailed logging")
+    s.add_argument("--dry-run", action="store_true", help="Report without making changes")
+    s.add_argument("--lightweight", action="store_true",
+                   help="Fast path: dedup + suggestion auto-apply only")
+    s.add_argument("--deep", action="store_true",
+                   help="Include LLM-powered cluster consolidation")
+    s.add_argument("--detach", action="store_true",
+                   help="Fork detached subprocess and return immediately")
+    _common(s)
+    s.set_defaults(func=cmd_dream)
 
     # archive (slow graph)
     s = sub.add_parser("archive", help="Manage slow graph archives")

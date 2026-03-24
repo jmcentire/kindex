@@ -1,0 +1,4 @@
+budget: 15.0
+build_mode: unary
+shaping: false
+parallel_components: false

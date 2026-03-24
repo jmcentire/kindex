@@ -22,6 +22,8 @@ pytest tests/ --cov=kindex --cov-report=term-missing
 | Path | Purpose |
 |------|---------|
 | `src/kindex/cli.py` | CLI entry point and all `kin` subcommands |
+| `src/kindex/dream.py` | Dream cycle: fuzzy dedup, suggestion auto-apply, domain edges |
+| `src/kindex/dream_deep.py` | LLM-powered cluster consolidation (--deep mode only) |
 | `src/kindex/store.py` | SQLite + FTS5 storage layer |
 | `src/kindex/config.py` | Configuration loading and `Config` model |
 | `src/kindex/graph.py` | Graph analytics (centrality, communities, bridges) |

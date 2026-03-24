@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.13.0](https://img.shields.io/badge/version-0.13.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.14.0](https://img.shields.io/badge/version-0.14.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-948%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-980%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -150,6 +150,29 @@ kin remind create "Kill vast.ai instance" --at "in 1 hour" \
 kin remind exec --reminder-id <id>
 ```
 
+### Dream — Knowledge Consolidation
+
+Kindex dreams. After each Claude Code session, a detached background process runs fuzzy deduplication, auto-applies pending suggestions, and strengthens edges between nodes that share domains. Like memory consolidation during sleep — replay, strengthen important paths, prune noise.
+
+```bash
+# See what would happen (no changes)
+kin dream --dry-run
+
+# Run full consolidation
+kin dream
+
+# Fast path: dedup + suggestions only
+kin dream --lightweight
+
+# Include LLM-powered cluster summarisation
+kin dream --deep
+
+# Fork and return immediately (used by Stop hook)
+kin dream --detach --lightweight
+```
+
+Three triggers: manual CLI, periodic cron (step 11 of `kin cron`), and automatic detached subprocess on Claude Code session exit. File locking prevents concurrent cycles. The detached process uses `start_new_session=True` to survive Claude Code's exit.
+
 ### Conversation Modes
 
 Modes are reusable conversation-priming artifacts that induce a processing mode in an AI session. Based on research showing that induced understanding outperforms direct instruction by 5.4x, and that 15 tokens of mode-setting capture 98.8% of achievable priming benefit.
@@ -285,6 +308,13 @@ Reminders:
   Actions:       shell commands run directly | complex tasks launch claude -p
   Stop guard:    blocks session exit when actionable reminders pending
 
+Dream (kin dream):
+  Modes:         lightweight (<5s) | full (non-LLM) | deep (claude -p clusters)
+  Triggers:      CLI | cron step 11 | Stop hook (detached, start_new_session=True)
+  Dedup:         difflib.SequenceMatcher, 4-char title bucketing, 0.95 merge / 0.85 suggest
+  Consolidation: suggestion auto-apply, domain edge strengthening, cluster summarisation
+  Safety:        fcntl.flock exclusion, protected types skip, provenance tracking
+
 Three integration paths:
   MCP plugin --> Claude calls tools natively (search, add, learn, remind, ...)
   CLI hooks  --> SessionStart / PreCompact / Stop lifecycle events
@@ -310,7 +340,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
-## CLI Reference (48 commands)
+## CLI Reference (49 commands)
 
 ### Core
 | Command | Description |
@@ -360,6 +390,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 |---------|-------------|
 | `kin ingest <source>` | Ingest from: projects, sessions, files, commits, github, linear, code, all |
 | `kin cron` | One-shot maintenance cycle (for crontab/launchd) |
+| `kin dream` | Knowledge consolidation: dedup, suggestions, edge strengthening (--deep, --detach) |
 | `kin watch` | Watch for new sessions and ingest them (--interval) |
 | `kin analytics` | Archive session analytics and activity heatmap |
 | `kin index` | Write .kin/index.json for git tracking |
@@ -448,7 +479,7 @@ reminders:
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 591 tests
+make test         # run 980 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```

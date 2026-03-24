@@ -82,7 +82,7 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         actions.append("UserPromptSubmit hook already installed")
 
-    # Stop hook — guard for actionable reminders + session capture
+    # Stop hook — guard for actionable reminders + session capture + dream
     stop_hooks = hooks.setdefault("Stop", [])
     stop_guard_entry = {
         "matcher": "",
@@ -97,14 +97,30 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
                 "command": f'{kin_path} compact-hook --text "Session ended"',
                 "timeout": 5000,
             },
+            {
+                "type": "command",
+                "command": f"{kin_path} dream --detach --lightweight",
+                "timeout": 3000,
+            },
         ]
     }
     if not any("stop-guard" in str(h) for h in stop_hooks):
-        # Replace existing Stop hooks with the combined guard + compact entry
         hooks["Stop"] = [stop_guard_entry]
-        actions.append("Added Stop hook: kin stop-guard + compact-hook")
+        actions.append("Added Stop hook: kin stop-guard + compact-hook + dream")
+    elif not any("dream" in str(h) for h in stop_hooks):
+        # Existing stop-guard but no dream — add dream to existing entry
+        for entry in stop_hooks:
+            if isinstance(entry, dict) and "hooks" in entry:
+                hook_list = entry["hooks"]
+                if not any("dream" in str(h) for h in hook_list):
+                    hook_list.append({
+                        "type": "command",
+                        "command": f"{kin_path} dream --detach --lightweight",
+                        "timeout": 3000,
+                    })
+        actions.append("Added dream --detach to existing Stop hook")
     else:
-        actions.append("Stop hook already installed")
+        actions.append("Stop hook already installed (with dream)")
 
     if not dry_run:
         settings_path.parent.mkdir(parents=True, exist_ok=True)

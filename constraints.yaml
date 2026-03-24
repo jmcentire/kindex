@@ -1,0 +1,72 @@
+version: "1"
+project: kindex-dream
+constraints:
+  - id: CD001
+    boundary: no_node_deletion
+    condition: Dream cycle must never delete nodes — only merge (which archives source via graph_merge) or archive (set status=archived)
+    violation: Node removed from database during dream cycle
+    severity: must
+    rationale: Knowledge graph is append-only by design; deletion loses provenance and breaks edge references
+
+  - id: CD002
+    boundary: conservative_merge_threshold
+    condition: Auto-merge only when fuzzy similarity score >= 0.95; suggest when >= 0.85
+    violation: Nodes merged with similarity score below 0.95 without explicit user confirmation
+    severity: must
+    rationale: False-positive merges destroy distinct concepts and are hard to reverse even with archival
+
+  - id: CD003
+    boundary: no_llm_in_lightweight
+    condition: Lightweight and detach modes must never invoke LLM (claude -p or any subprocess calling claude)
+    violation: LLM subprocess spawned during lightweight or detach dream cycle
+    severity: must
+    rationale: Lightweight runs in Stop hook and cron — LLM calls are slow, expensive, and would block shutdown or balloon cron costs
+
+  - id: CD004
+    boundary: idempotent_operations
+    condition: Running dream N times on the same graph state must produce the same result as running once
+    violation: Second dream run creates duplicate suggestions, re-merges archived nodes, or duplicates summary nodes
+    severity: must
+    rationale: Dream runs from multiple triggers (cron, exit hook, manual) — non-idempotent operations cause graph pollution
+
+  - id: CD005
+    boundary: process_isolation
+    condition: Detached dream subprocess must use start_new_session=True and redirect stdio to log file
+    violation: Detached process inherits parent session or writes to stdout/stderr
+    severity: must
+    rationale: Without session isolation, Claude Code exit may SIGKILL the dream process; stdout writes to a closed pipe cause SIGPIPE crash
+
+  - id: CD006
+    boundary: file_lock_exclusion
+    condition: Only one dream cycle may run at a time, enforced by fcntl.flock on ~/.kindex/dream.lock
+    violation: Two concurrent dream cycles modify the graph simultaneously
+    severity: must
+    rationale: Concurrent merges and edge modifications on the same nodes cause data races in SQLite
+
+  - id: CD007
+    boundary: provenance_tracking
+    condition: All node/edge modifications during dream must set prov_activity="dream-cycle" or provenance="dream-cycle"
+    violation: Dream creates or modifies node/edge without dream-cycle provenance marker
+    severity: must
+    rationale: Users must be able to distinguish dream-generated content from human-captured knowledge; graph_heal and manual review depend on this
+
+  - id: CD008
+    boundary: protected_node_types
+    condition: Dream must never merge, archive, or modify nodes of type constraint, directive, or checkpoint
+    violation: Constraint, directive, or checkpoint node modified by dream cycle
+    severity: must
+    rationale: These node types represent hard rules and checklists — automated consolidation could silently weaken safety invariants
+
+  - id: CD009
+    boundary: lightweight_performance
+    condition: dream_lightweight() must complete in under 5 seconds for graphs with fewer than 5000 nodes
+    violation: Lightweight dream cycle exceeds 5 second wall time on a sub-5000-node graph
+    severity: should
+    rationale: Runs in Stop hook path — slow dreams block user from starting new sessions and degrade UX
+
+  - id: CD010
+    boundary: no_new_dependencies
+    condition: Dream implementation must use only stdlib and existing kindex dependencies — no new pip packages
+    violation: New entry added to pyproject.toml dependencies for dream feature
+    severity: must
+    rationale: Kindex is a lightweight tool; adding dependencies for fuzzy matching when difflib.SequenceMatcher exists in stdlib is unnecessary complexity
