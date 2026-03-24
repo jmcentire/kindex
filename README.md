@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.14.0](https://img.shields.io/badge/version-0.14.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.14.1](https://img.shields.io/badge/version-0.14.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![Tests](https://img.shields.io/badge/tests-980%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
@@ -25,7 +25,7 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Claude Code now has 29 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, `remind_list`, `remind_snooze`, `remind_done`, `remind_check`, `remind_exec`, `mode_activate`, `mode_list`, `mode_show`, `mode_create`, `mode_export`, `mode_import`, `mode_seed`.
+Claude Code now has 30 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, `remind_list`, `remind_snooze`, `remind_done`, `remind_check`, `remind_exec`, `mode_activate`, `mode_list`, `mode_show`, `mode_create`, `mode_export`, `mode_import`, `mode_seed`.
 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json

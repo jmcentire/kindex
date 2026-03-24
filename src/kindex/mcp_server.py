@@ -725,6 +725,41 @@ def graph_merge(source_id: str, target_id: str, keep: str = "target") -> str:
 
 
 @mcp.tool()
+def dream(
+    mode: str = "lightweight",
+    dry_run: bool = False,
+) -> str:
+    """Run knowledge consolidation (dream cycle).
+
+    Performs memory consolidation: fuzzy deduplication, suggestion
+    auto-application, and domain-based edge strengthening. Like sleep
+    consolidating memory — replay, strengthen, prune.
+
+    Args:
+        mode: 'lightweight' (fast, <5s), 'full' (non-LLM), or 'deep' (LLM clusters).
+        dry_run: If True, report what would happen without making changes.
+    """
+    store, config = _get_store()
+
+    from .dream import dream_cycle
+
+    results = dream_cycle(config, store, mode=mode, dry_run=dry_run)
+
+    if results.get("skipped"):
+        return f"Dream skipped: {results['skipped']}"
+
+    lines = [f"Dream ({results.get('mode', mode)}) complete:"]
+    lines.append(f"  Merged: {results.get('merged', 0)}")
+    lines.append(f"  Suggested: {results.get('suggested', 0)}")
+    lines.append(f"  Suggestions applied: {results.get('suggestions_applied', 0)}")
+    if "edges_strengthened" in results:
+        lines.append(f"  Edges strengthened: {results['edges_strengthened']}")
+    if "cluster_summaries" in results:
+        lines.append(f"  Cluster summaries: {results['cluster_summaries']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def changelog(since: str = "", days: int = 7) -> str:
     """Show recent changes to the knowledge graph.
 
