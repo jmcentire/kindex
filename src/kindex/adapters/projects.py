@@ -1,4 +1,4 @@
-"""Projects adapter — scan project directories and .kin files."""
+"""Projects adapter — scan project directories and .kin/config files."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 class ProjectsAdapter:
     meta = AdapterMeta(
         name="projects",
-        description="Scan project directories and .kin files for knowledge",
+        description="Scan project directories and .kin/config for knowledge",
     )
 
     def is_available(self) -> bool:

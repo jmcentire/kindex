@@ -222,31 +222,59 @@ class TestSynonymRings:
 # ── 4. Parent .kin walk ──────────────────────────────────────────────
 
 
-class TestParentKinWalk:
-    """Test find_parent_kin discovers .kin files up the directory tree."""
+def _write_kin_config(directory, content):
+    """Helper: create .kin/config inside a directory."""
+    kin_dir = directory / ".kin"
+    kin_dir.mkdir(exist_ok=True)
+    (kin_dir / "config").write_text(content)
 
-    def test_finds_nested_kin_files(self, tmp_path):
-        # Create nested structure with .kin files at different levels
+
+class TestParentKinWalk:
+    """Test find_parent_kin discovers .kin/config files up the directory tree."""
+
+    def test_finds_nested_kin_configs(self, tmp_path):
+        # Create nested structure with .kin/config at different levels
         deep = tmp_path / "a" / "b" / "c"
         deep.mkdir(parents=True)
 
-        (tmp_path / ".kin").write_text("name: root\n")
-        (tmp_path / "a" / ".kin").write_text("name: mid\n")
+        _write_kin_config(tmp_path, "name: root\n")
+        _write_kin_config(tmp_path / "a", "name: mid\n")
         # No .kin in b
-        (deep / ".kin").write_text("name: leaf\n")
+        _write_kin_config(deep, "name: leaf\n")
 
         from kindex.ingest import find_parent_kin
 
         found = find_parent_kin(deep)
         paths = [p.resolve() for p in found]
 
-        # Should find leaf (.../c/.kin), then mid (.../a/.kin), then root
-        assert (deep / ".kin").resolve() in paths
-        assert (tmp_path / "a" / ".kin").resolve() in paths
-        assert (tmp_path / ".kin").resolve() in paths
+        # Should find leaf, mid, root .kin/config files
+        assert (deep / ".kin" / "config").resolve() in paths
+        assert (tmp_path / "a" / ".kin" / "config").resolve() in paths
+        assert (tmp_path / ".kin" / "config").resolve() in paths
 
         # Leaf should come first (most specific)
-        assert paths[0] == (deep / ".kin").resolve()
+        assert paths[0] == (deep / ".kin" / "config").resolve()
+
+    def test_auto_upgrades_old_kin_file(self, tmp_path):
+        """Old-style .kin file is auto-upgraded during walk."""
+        deep = tmp_path / "child"
+        deep.mkdir()
+
+        # Old-style .kin file at root
+        (tmp_path / ".kin").write_text("name: old-root\n")
+        _write_kin_config(deep, "name: leaf\n")
+
+        from kindex.ingest import find_parent_kin
+
+        found = find_parent_kin(deep)
+        paths = [p.resolve() for p in found]
+
+        # Both should be found
+        assert (deep / ".kin" / "config").resolve() in paths
+        assert (tmp_path / ".kin" / "config").resolve() in paths
+        # Old file should have been upgraded
+        assert (tmp_path / ".kin").is_dir()
+        assert (tmp_path / ".kin" / "config").is_file()
 
     def test_no_kin_files(self, tmp_path):
         subdir = tmp_path / "empty"
@@ -262,13 +290,13 @@ class TestParentKinWalk:
 
     def test_defaults_to_cwd(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".kin").write_text("name: here\n")
+        _write_kin_config(tmp_path, "name: here\n")
 
         from kindex.ingest import find_parent_kin
 
         found = find_parent_kin()  # no argument — should use cwd
         assert any(
-            p.resolve() == (tmp_path / ".kin").resolve() for p in found
+            p.resolve() == (tmp_path / ".kin" / "config").resolve() for p in found
         )
 
 

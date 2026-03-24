@@ -109,9 +109,10 @@ class TestKinFiles:
         # First create the project nodes
         scan_projects(cfg, s)
 
-        # Add a .conv file
-        kin_file = projects_dir / "project-alpha" / ".kin"
-        kin_file.write_text("audience: team\ndomains: [engineering, ml]\n")
+        # Add a .kin/config
+        kin_dir = projects_dir / "project-alpha" / ".kin"
+        kin_dir.mkdir(exist_ok=True)
+        (kin_dir / "config").write_text("audience: team\ndomains: [engineering, ml]\n")
 
         count = scan_kin_files(cfg, s)
         assert count >= 1
@@ -127,7 +128,9 @@ class TestKinFiles:
 
         proj = projects_dir / "solo-project"
         proj.mkdir(parents=True)
-        (proj / ".kin").write_text(
+        kin_dir = proj / ".kin"
+        kin_dir.mkdir(exist_ok=True)
+        (kin_dir / "config").write_text(
             "title: Solo Project\naudience: private\n"
             "domains: [research]\ndescription: A research project.\n"
         )

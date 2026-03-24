@@ -300,11 +300,14 @@ def _extract_session_text(jsonl_path: Path, max_chars: int = 8000) -> str:
 
 
 def find_parent_kin(start_path: Path | None = None, max_depth: int = 10) -> list[Path]:
-    """Walk up from start_path (or cwd) to find .kin files.
+    """Walk up from start_path (or cwd) to find .kin/config files.
 
-    Returns list of .kin file paths from most specific (deepest) to root.
+    Returns list of config file paths from most specific (deepest) to root.
+    Auto-upgrades old .kin files to .kin/config on discovery.
     Stops at filesystem root or after max_depth levels.
     """
+    from .config import _maybe_upgrade_kin_file
+
     if start_path is None:
         start_path = Path.cwd()
     start_path = Path(start_path).resolve()
@@ -312,9 +315,15 @@ def find_parent_kin(start_path: Path | None = None, max_depth: int = 10) -> list
     found = []
     current = start_path
     for _ in range(max_depth):
-        kin_file = current / ".kin"
-        if kin_file.exists():
-            found.append(kin_file)
+        kin_entry = current / ".kin"
+        if kin_entry.is_dir():
+            config_file = kin_entry / "config"
+            if config_file.is_file():
+                found.append(config_file)
+        elif kin_entry.is_file():
+            upgraded = _maybe_upgrade_kin_file(kin_entry)
+            if upgraded and upgraded.is_file():
+                found.append(upgraded)
         parent = current.parent
         if parent == current:  # filesystem root
             break
@@ -323,39 +332,54 @@ def find_parent_kin(start_path: Path | None = None, max_depth: int = 10) -> list
     return found
 
 
-# ── .kin file support ────────────────────────────────────────────────
+# ── .kin directory support ────────────────────────────────────────────
 
 
 def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
-    """Scan project directories for .kin files (per-repo metadata).
+    """Scan project directories for .kin/config files (per-repo metadata).
 
-    A .kin file in a repo root provides Kindex-specific metadata:
+    A .kin/config file in a repo root provides Kindex-specific metadata:
       audience: team
       domains: [engineering, python]
       connects_to: [other-project-slug]
       description: What this project is about.
 
+    Auto-upgrades old .kin files to .kin/config on discovery.
     Returns count of updated nodes.
     """
     import yaml
+    from .config import _maybe_upgrade_kin_file
 
     count = 0
     for project_dir in config.resolved_project_dirs:
         if not project_dir.exists():
             continue
 
-        for conv_file in sorted(project_dir.rglob(".kin")):
-            project_root = conv_file.parent
+        for kin_entry in sorted(project_dir.rglob(".kin")):
+            # Resolve to the config file inside the .kin directory
+            if kin_entry.is_dir():
+                config_file = kin_entry / "config"
+                if not config_file.is_file():
+                    continue
+                project_root = kin_entry.parent
+            elif kin_entry.is_file():
+                upgraded = _maybe_upgrade_kin_file(kin_entry)
+                if not upgraded or not upgraded.is_file():
+                    continue
+                config_file = upgraded
+                project_root = kin_entry.parent
+            else:
+                continue
+
             slug = _project_slug(project_root)
 
             try:
-                data = yaml.safe_load(conv_file.read_text()) or {}
+                data = yaml.safe_load(config_file.read_text()) or {}
             except Exception:
                 continue
 
             existing = store.get_node(slug)
             if existing:
-                # Update from .conv metadata
                 updates = {}
                 if "audience" in data:
                     updates["audience"] = data["audience"]
@@ -367,7 +391,7 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                     store.update_node(slug, **updates)
                     count += 1
                     if verbose:
-                        print(f"  Updated from .kin: {slug}")
+                        print(f"  Updated from .kin/config: {slug}")
 
                 # Handle connects_to
                 for target in data.get("connects_to", []):
@@ -376,9 +400,8 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                         store.add_edge(slug, target_node["id"],
                                        edge_type="relates_to",
                                        weight=0.6,
-                                       provenance=".kin file")
+                                       provenance=".kin/config")
             else:
-                # Create from .conv if CLAUDE.md scan missed it
                 title = data.get("title", project_root.name.replace("-", " ").title())
                 audience = data.get("audience", _infer_audience(project_root))
                 store.add_node(
@@ -388,13 +411,13 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                     node_type="project",
                     domains=data.get("domains", _infer_domains(project_root)),
                     audience=audience,
-                    prov_source=str(conv_file),
+                    prov_source=str(config_file),
                     prov_activity="kin-file-scan",
                     extra={"path": str(project_root)},
                 )
                 count += 1
                 if verbose:
-                    print(f"  Created from .kin: {slug}")
+                    print(f"  Created from .kin/config: {slug}")
 
     return count
 
@@ -403,36 +426,41 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
 
 
 def resolve_kin_chain(kin_path: Path, max_depth: int = 5, auto_walk: bool = False) -> list[dict]:
-    """Resolve the .kin inheritance chain for a given .kin file.
+    """Resolve the .kin inheritance chain for a given .kin/config file.
 
+    Accepts either .kin/config (new) or .kin (old, auto-upgraded).
     If auto_walk=True and no explicit inherits, also walk up the directory tree
-    to discover parent .kin files automatically.
+    to discover parent .kin directories automatically.
 
-    Returns a list of parsed .kin dicts from most specific (local) to
+    Returns a list of parsed config dicts from most specific (local) to
     most general (root ancestor). Each inheritor's values override ancestors.
 
-    The .kin file format:
+    The .kin/config file format:
         name: my-project
         audience: team
         inherits:
-          - ../platform/.kin       # parent repo context
-          - ~/.kindex/.kin         # user's personal kindex (private)
+          - ../platform/.kin/config   # parent repo context
+          - ~/.kindex/.kin/config     # user's personal kindex (private)
         shared_with:
           - team: engineering
         privacy: team
     """
-    import yaml
+    from .config import resolve_kin_config
 
-    chain = []
-    visited = set()
+    kin_path = resolve_kin_config(kin_path)
+
+    chain: list[dict] = []
+    visited: set[str] = set()
     _resolve_kin_recursive(kin_path, chain, visited, max_depth)
 
-    # If auto_walk is enabled and the root .kin file has no explicit inherits,
-    # walk up the directory tree for additional .kin files
+    # If auto_walk is enabled and the root config has no explicit inherits,
+    # walk up the directory tree for additional .kin directories
     if auto_walk and chain:
         root_data = chain[0]
         if not root_data.get("inherits"):
-            parent_kins = find_parent_kin(kin_path.parent.parent, max_depth=max_depth)
+            # Start walk from parent of the .kin directory
+            walk_start = kin_path.parent.parent.parent if kin_path.name == "config" else kin_path.parent.parent
+            parent_kins = find_parent_kin(walk_start, max_depth=max_depth)
             for parent_kin in parent_kins:
                 resolved = parent_kin.resolve()
                 if str(resolved) not in visited:
@@ -449,13 +477,14 @@ def _resolve_kin_recursive(
 ) -> None:
     """Recursively resolve .kin inheritance chain."""
     import yaml
+    from .config import resolve_kin_config
 
-    resolved = kin_path.expanduser().resolve()
+    resolved = resolve_kin_config(kin_path)
     if str(resolved) in visited or remaining <= 0:
         return
     visited.add(str(resolved))
 
-    if not resolved.exists():
+    if not resolved.is_file():
         return
 
     try:
@@ -466,7 +495,7 @@ def _resolve_kin_recursive(
     data["_source"] = str(resolved)
     chain.append(data)
 
-    # Resolve inherited .kin files
+    # Resolve inherited configs (supports both old and new ref styles)
     for parent_ref in data.get("inherits", []):
         parent_path = (resolved.parent / parent_ref).resolve()
         _resolve_kin_recursive(parent_path, chain, visited, remaining - 1)
@@ -514,11 +543,11 @@ def merge_kin_chain(chain: list[dict]) -> dict:
 
 
 def load_project_context(kin_path: Path) -> dict:
-    """Load the full resolved context for a project from its .kin file.
+    """Load the full resolved context for a project from its .kin/config.
 
     This is the main entry point for Claude Code integration.
     When Claude opens a repo, it calls this to get the merged context
-    from the full inheritance chain.
+    from the full inheritance chain. Accepts .kin/config or legacy .kin paths.
     """
     chain = resolve_kin_chain(kin_path)
     return merge_kin_chain(chain)
@@ -712,11 +741,12 @@ def _detect_repo_for_index(output_dir: Path) -> str | None:
 
 
 def write_kin_index(store: "Store", output_dir: Path) -> Path:
-    """Write a .kin/index.json file summarizing the graph for this project.
+    """Write .kin/index.json summarizing the graph for this project.
 
-    This file is meant to be git-tracked, giving other tools a snapshot
-    of what Kindex knows about this project.  When run inside a git repo,
-    the index is scoped to code nodes belonging to that repo only.
+    The .kin/ directory is the standard location for all kindex project
+    artifacts.  This file is meant to be git-tracked, giving other tools
+    a snapshot of what Kindex knows about this project.  When run inside
+    a git repo, the index is scoped to code nodes belonging to that repo only.
     """
     repo_slug = _detect_repo_for_index(output_dir)
 

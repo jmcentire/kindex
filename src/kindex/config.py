@@ -17,7 +17,7 @@ _GLOBAL_PATHS = [
     Path.home() / ".config" / "conv" / "conv.yaml",   # legacy
 ]
 _LOCAL_PATHS = [
-    Path(".kin"),                                      # cwd (repo-local)
+    Path(".kin") / "config",                           # cwd (repo-local, .kin/ directory)
     Path("kin.yaml"),                                  # cwd (explicit)
     Path("conv.yaml"),                                 # legacy
 ]
@@ -206,7 +206,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
     """Load config with layered merging: code defaults → global → local.
 
     Like git config: global (~/.config/kindex/kin.yaml) is loaded first,
-    then local (.kin / kin.yaml / conv.yaml in cwd) merges over it.
+    then local (.kin/config / kin.yaml / conv.yaml in cwd) merges over it.
     An explicit config_path bypasses layering and loads only that file.
     """
     if config_path:
@@ -225,6 +225,9 @@ def load_config(config_path: str | Path | None = None) -> Config:
             merged = _deep_merge(merged, data)
             break  # use first global found
 
+    # Auto-upgrade old .kin file to .kin/config directory layout
+    _maybe_upgrade_kin_file(Path(".kin").expanduser().resolve())
+
     # Layer 2: local config (project-level) merges over global
     for p in _LOCAL_PATHS:
         p = p.expanduser().resolve()
@@ -234,3 +237,39 @@ def load_config(config_path: str | Path | None = None) -> Config:
             break  # use first local found
 
     return Config(**merged) if merged else Config()
+
+
+def _maybe_upgrade_kin_file(path: Path) -> Path | None:
+    """If path is a plain file named .kin, migrate it to .kin/config.
+
+    Returns the new config path, or None if no upgrade was needed.
+    """
+    if not path.is_file() or path.name != ".kin":
+        return None
+    try:
+        content = path.read_bytes()
+        path.unlink()
+        kin_dir = path.parent / ".kin"
+        kin_dir.mkdir(exist_ok=True)
+        config_path = kin_dir / "config"
+        config_path.write_bytes(content)
+        return config_path
+    except OSError:
+        return None
+
+
+def resolve_kin_config(path: Path) -> Path:
+    """Resolve a .kin reference to the actual config file.
+
+    Handles both old-style (.kin file) and new-style (.kin/config).
+    Auto-upgrades old files on discovery.
+    """
+    path = path.expanduser().resolve()
+    if path.is_file():
+        if path.name == ".kin":
+            upgraded = _maybe_upgrade_kin_file(path)
+            return upgraded if upgraded else path
+        return path
+    if path.is_dir() and path.name == ".kin":
+        return path / "config"
+    return path

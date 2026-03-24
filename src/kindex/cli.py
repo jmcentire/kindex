@@ -2360,7 +2360,7 @@ def cmd_cron(args):
     else:
         print("Cron maintenance complete:")
         print(f"  Projects scanned:  {results.get('projects', 0)}")
-        print(f"  .kin updates:      {results.get('kin_updates', 0)}")
+        print(f"  .kin/config updates: {results.get('kin_updates', 0)}")
         print(f"  Sessions ingested: {results.get('sessions', 0)}")
         print(f"  Inbox processed:   {results.get('inbox', 0)}")
         print(f"  Nodes decayed:     {results.get('decayed', 0)}")
@@ -3492,7 +3492,9 @@ def _config_write(key: str, value: str, config_path: str | None = None,
             path = Path.home() / ".config" / "kindex" / "kin.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
     else:
-        from .config import _LOCAL_PATHS, _GLOBAL_PATHS
+        from .config import _LOCAL_PATHS, _GLOBAL_PATHS, _maybe_upgrade_kin_file
+        # Auto-upgrade old .kin file before searching local paths
+        _maybe_upgrade_kin_file(Path(".kin").expanduser().resolve())
         path = None
         for p in _LOCAL_PATHS:
             p = p.expanduser().resolve()

@@ -2,9 +2,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.12.0](https://img.shields.io/badge/version-0.12.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.13.0](https://img.shields.io/badge/version-0.13.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-945%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-948%20passing-brightgreen.svg)](#)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
 
 **The memory layer Claude Code doesn't have.**
@@ -221,30 +221,36 @@ kin remind snooze --reminder-id <id> --duration 1h
 kin remind done --reminder-id <id>
 ```
 
-## .kin Voice & Inheritance
+## .kin/ Directory & Inheritance
 
-Companies publish `.kin` files that encode their communication style, engineering standards, and values. Teams inherit from orgs. Repos inherit from teams. The knowledge graph carries the voice forward.
+Projects use `.kin/` directories that encode their communication style, engineering standards, and values. Teams inherit from orgs. Repos inherit from teams. The knowledge graph carries the voice forward.
 
 ```
-~/.kindex/voices/acme.kin         # Org voice (downloadable, public)
+~/.kindex/voices/acme.kin             # Org voice (downloadable, public)
     ^
     |  inherits
-~/Code/platform/.kin              # Platform team context
+~/Code/platform/.kin/config           # Platform team context
     ^
     |  inherits
-~/Code/payments-service/.kin      # Service-specific context
+~/Code/payments-service/.kin/config   # Service-specific context
 ```
 
 ```yaml
-# payments-service/.kin
+# payments-service/.kin/config
 name: payments-service
 audience: team
 domains: [payments, python]
 inherits:
-  - ../platform/.kin
+  - ../platform/.kin/config
 ```
 
+The `.kin/` directory is the standard location for all kindex project artifacts:
+- `.kin/config` — project metadata (voice, domains, audience, inheritance)
+- `.kin/index.json` — graph snapshot for git tracking
+
 The payments service gets Acme's voice principles, the platform's engineering standards, AND its own domain context. Local values override ancestors. Lists merge with dedup. Parent directories auto-walk when no explicit `inherits` is set.
+
+Old-style `.kin` files (plain YAML) are auto-upgraded to `.kin/config` on first access.
 
 See [examples/kin-voices/](examples/kin-voices/) for ready-to-use voice templates.
 
@@ -384,7 +390,7 @@ Config is layered like git — global defaults, then global config, then local c
 | Layer | Path | Purpose |
 |-------|------|---------|
 | Global | `~/.config/kindex/kin.yaml` | User-wide defaults |
-| Local | `.kin` or `kin.yaml` in cwd | Project-specific overrides |
+| Local | `.kin/config` or `kin.yaml` in cwd | Project-specific overrides |
 
 Use `kin config set --global llm.enabled true` for global settings, or `kin config set llm.model claude-sonnet-4-6` for project-local.
 

@@ -1,4 +1,4 @@
-"""Tests for .kin file inheritance and resolution chain."""
+"""Tests for .kin/config inheritance and resolution chain."""
 
 from pathlib import Path
 
@@ -7,44 +7,53 @@ import pytest
 from kindex.ingest import load_project_context, merge_kin_chain, resolve_kin_chain
 
 
+def _write_kin_config(directory: Path, content: str) -> Path:
+    """Helper: create .kin/config inside a directory."""
+    kin_dir = directory / ".kin"
+    kin_dir.mkdir(exist_ok=True)
+    config_path = kin_dir / "config"
+    config_path.write_text(content)
+    return config_path
+
+
 @pytest.fixture
 def kin_tree(tmp_path):
-    """Create a hierarchy of .kin files for testing inheritance."""
-    # Root org .kin
+    """Create a hierarchy of .kin/config files for testing inheritance."""
+    # Root org
     org_dir = tmp_path / "org"
     org_dir.mkdir()
-    (org_dir / ".kin").write_text(
+    _write_kin_config(org_dir,
         "name: acme-corp\n"
         "audience: team\n"
         "domains: [engineering]\n"
         "privacy: team\n"
     )
 
-    # Team .kin (inherits from org)
+    # Team (inherits from org)
     team_dir = tmp_path / "team"
     team_dir.mkdir()
-    (team_dir / ".kin").write_text(
+    _write_kin_config(team_dir,
         "name: platform-team\n"
         "audience: team\n"
         "domains: [platform, infrastructure]\n"
-        f"inherits:\n  - {org_dir / '.kin'}\n"
+        f"inherits:\n  - {org_dir / '.kin' / 'config'}\n"
     )
 
-    # Project .kin (inherits from team)
+    # Project (inherits from team)
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    (project_dir / ".kin").write_text(
+    _write_kin_config(project_dir,
         "name: payments-service\n"
         "audience: team\n"
         "domains: [integrations, python]\n"
-        f"inherits:\n  - {team_dir / '.kin'}\n"
+        f"inherits:\n  - {team_dir / '.kin' / 'config'}\n"
         "shared_with:\n  - team: engineering\n"
     )
 
-    # Personal .kin (never inherits upward)
+    # Personal (no inheritance)
     personal_dir = tmp_path / "personal"
     personal_dir.mkdir()
-    (personal_dir / ".kin").write_text(
+    _write_kin_config(personal_dir,
         "name: personal-notes\n"
         "audience: private\n"
         "domains: [personal, health]\n"
@@ -60,28 +69,28 @@ def kin_tree(tmp_path):
 
 class TestResolveKinChain:
     def test_single_file(self, kin_tree):
-        chain = resolve_kin_chain(kin_tree["personal"] / ".kin")
+        chain = resolve_kin_chain(kin_tree["personal"] / ".kin" / "config")
         assert len(chain) == 1
         assert chain[0]["name"] == "personal-notes"
 
     def test_two_level_inheritance(self, kin_tree):
-        chain = resolve_kin_chain(kin_tree["team"] / ".kin")
+        chain = resolve_kin_chain(kin_tree["team"] / ".kin" / "config")
         assert len(chain) == 2
         assert chain[0]["name"] == "platform-team"  # local first
         assert chain[1]["name"] == "acme-corp"       # ancestor second
 
     def test_three_level_inheritance(self, kin_tree):
-        chain = resolve_kin_chain(kin_tree["project"] / ".kin")
+        chain = resolve_kin_chain(kin_tree["project"] / ".kin" / "config")
         assert len(chain) == 3
         assert chain[0]["name"] == "payments-service"
         assert chain[1]["name"] == "platform-team"
         assert chain[2]["name"] == "acme-corp"
 
     def test_nonexistent_parent(self, tmp_path):
-        (tmp_path / ".kin").write_text(
-            "name: orphan\ninherits:\n  - /nonexistent/.kin\n"
+        _write_kin_config(tmp_path,
+            "name: orphan\ninherits:\n  - /nonexistent/.kin/config\n"
         )
-        chain = resolve_kin_chain(tmp_path / ".kin")
+        chain = resolve_kin_chain(tmp_path / ".kin" / "config")
         assert len(chain) == 1  # just the local file
 
     def test_circular_reference(self, tmp_path):
@@ -89,9 +98,9 @@ class TestResolveKinChain:
         b_dir = tmp_path / "b"
         a_dir.mkdir()
         b_dir.mkdir()
-        (a_dir / ".kin").write_text(f"name: a\ninherits:\n  - {b_dir / '.kin'}\n")
-        (b_dir / ".kin").write_text(f"name: b\ninherits:\n  - {a_dir / '.kin'}\n")
-        chain = resolve_kin_chain(a_dir / ".kin")
+        _write_kin_config(a_dir, f"name: a\ninherits:\n  - {b_dir / '.kin' / 'config'}\n")
+        _write_kin_config(b_dir, f"name: b\ninherits:\n  - {a_dir / '.kin' / 'config'}\n")
+        chain = resolve_kin_chain(a_dir / ".kin" / "config")
         assert len(chain) == 2  # stops at visited
 
     def test_max_depth(self, tmp_path):
@@ -104,14 +113,40 @@ class TestResolveKinChain:
 
         for i, d in enumerate(dirs):
             if i < len(dirs) - 1:
-                (d / ".kin").write_text(
-                    f"name: level{i}\ninherits:\n  - {dirs[i+1] / '.kin'}\n"
+                _write_kin_config(d,
+                    f"name: level{i}\ninherits:\n  - {dirs[i+1] / '.kin' / 'config'}\n"
                 )
             else:
-                (d / ".kin").write_text(f"name: level{i}\n")
+                _write_kin_config(d, f"name: level{i}\n")
 
-        chain = resolve_kin_chain(dirs[0] / ".kin", max_depth=3)
+        chain = resolve_kin_chain(dirs[0] / ".kin" / "config", max_depth=3)
         assert len(chain) <= 3
+
+    def test_auto_upgrade_old_kin_file(self, tmp_path):
+        """Old-style .kin file is auto-upgraded to .kin/config."""
+        (tmp_path / ".kin").write_text("name: legacy\ndomains: [old]\n")
+        chain = resolve_kin_chain(tmp_path / ".kin")
+        assert len(chain) == 1
+        assert chain[0]["name"] == "legacy"
+        # Verify the file was migrated
+        assert (tmp_path / ".kin").is_dir()
+        assert (tmp_path / ".kin" / "config").is_file()
+
+    def test_old_style_inherits_ref(self, tmp_path):
+        """Old-style inherits ref (pointing to .kin dir) still resolves."""
+        parent = tmp_path / "parent"
+        child = tmp_path / "child"
+        parent.mkdir()
+        child.mkdir()
+        _write_kin_config(parent, "name: parent\ndomains: [base]\n")
+        # Child uses old-style ref pointing to .kin (a directory now)
+        _write_kin_config(child,
+            f"name: child\ndomains: [specific]\ninherits:\n  - {parent / '.kin'}\n"
+        )
+        chain = resolve_kin_chain(child / ".kin" / "config")
+        assert len(chain) == 2
+        assert chain[0]["name"] == "child"
+        assert chain[1]["name"] == "parent"
 
 
 class TestMergeKinChain:
@@ -147,7 +182,7 @@ class TestMergeKinChain:
         assert merged["extra_field"] == "inherited"  # inherited
 
     def test_chain_tracking(self, kin_tree):
-        chain = resolve_kin_chain(kin_tree["project"] / ".kin")
+        chain = resolve_kin_chain(kin_tree["project"] / ".kin" / "config")
         merged = merge_kin_chain(chain)
         assert "_chain" in merged
         assert len(merged["_chain"]) == 3
@@ -159,7 +194,7 @@ class TestMergeKinChain:
 
 class TestLoadProjectContext:
     def test_full_resolution(self, kin_tree):
-        ctx = load_project_context(kin_tree["project"] / ".kin")
+        ctx = load_project_context(kin_tree["project"] / ".kin" / "config")
         assert ctx["name"] == "payments-service"
         # Domains merged from all three levels
         assert "integrations" in ctx["domains"]
@@ -168,12 +203,12 @@ class TestLoadProjectContext:
         assert "engineering" in ctx["domains"]
 
     def test_private_stays_private(self, kin_tree):
-        ctx = load_project_context(kin_tree["personal"] / ".kin")
+        ctx = load_project_context(kin_tree["personal"] / ".kin" / "config")
         assert ctx["audience"] == "private"
         assert "personal" in ctx["domains"]
 
     def test_nonexistent_file(self, tmp_path):
-        ctx = load_project_context(tmp_path / "nonexistent" / ".kin")
+        ctx = load_project_context(tmp_path / "nonexistent" / ".kin" / "config")
         assert ctx == {}
 
 
@@ -183,10 +218,12 @@ class TestRelativeInherits:
         child = tmp_path / "parent" / "child"
         parent.mkdir()
         child.mkdir()
-        (parent / ".kin").write_text("name: parent\ndomains: [base]\n")
-        (child / ".kin").write_text("name: child\ndomains: [specific]\ninherits:\n  - ../.kin\n")
+        _write_kin_config(parent, "name: parent\ndomains: [base]\n")
+        _write_kin_config(child,
+            "name: child\ndomains: [specific]\ninherits:\n  - ../../.kin/config\n"
+        )
 
-        chain = resolve_kin_chain(child / ".kin")
+        chain = resolve_kin_chain(child / ".kin" / "config")
         assert len(chain) == 2
         merged = merge_kin_chain(chain)
         assert "base" in merged["domains"]
