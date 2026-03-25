@@ -2,6 +2,15 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.15.0] - 2026-03-24
+
+### Added
+- YAML frontmatter on all skill SKILL.md files (kindex-capture, kindex-learn, kindex-prime) so they register properly when loaded as a Claude Code plugin
+- `UserPromptSubmit` hook in plugin hooks.json (migrated from global settings)
+
+### Changed
+- Plugin version synced with package version (was 0.4.0, now matches 0.15.0)
+
 ## [0.14.1] - 2026-03-24
 
 ### Added
