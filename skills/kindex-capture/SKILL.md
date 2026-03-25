@@ -1,10 +1,11 @@
+---
+name: kindex-capture
+description: Capture a specific piece of knowledge, constraint, or decision to the Kindex knowledge graph. Use when the user says "remember this", "add this to kindex", or "this is important".
+---
+
 # Kindex Capture
 
 Capture a specific piece of knowledge, constraint, or decision right now.
-
-## Usage
-
-Run this skill when the user says something like "remember this", "add this to kindex", or "this is important".
 
 ## Instructions
 

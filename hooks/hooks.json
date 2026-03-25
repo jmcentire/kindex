@@ -24,6 +24,18 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kin prompt-check",
+            "timeout": 2000
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",

@@ -1,10 +1,11 @@
+---
+name: kindex-learn
+description: Extract knowledge from the current conversation and add it to the Kindex graph. Use at session end or after producing valuable discoveries, decisions, or insights.
+---
+
 # Kindex Learn
 
 Extract knowledge from the current conversation and add it to the graph.
-
-## Usage
-
-Run this skill when a session has produced valuable knowledge, decisions, or discoveries that should be preserved.
 
 ## Instructions
 

@@ -1,10 +1,11 @@
+---
+name: kindex-prime
+description: Load relevant context from the Kindex knowledge graph at session start. Orients Claude with project knowledge, active constraints, and watches.
+---
+
 # Kindex Prime
 
 Load relevant context from the knowledge graph at the start of a session.
-
-## Usage
-
-Run this skill when starting work on a project to load relevant knowledge.
 
 ## Instructions
 
