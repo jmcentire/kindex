@@ -31,8 +31,9 @@ llm = ["anthropic>=0.40"]
 vectors = ["sqlite-vec>=0.1", "sentence-transformers>=2.0"]
 mcp = ["mcp[cli]>=1.26.0"]
 reminders = ["dateparser>=1.1", "cronsim>=2.0"]
+transmogrifier = ["transmogrifier>=0.2.0"]
 dev = ["pytest>=7.0", "scipy>=1.10", "dateparser>=1.1"]
-all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0", "mcp[cli]>=1.26.0", "dateparser>=1.1", "cronsim>=2.0"]
+all = ["anthropic>=0.40", "sqlite-vec>=0.1", "sentence-transformers>=2.0", "mcp[cli]>=1.26.0", "dateparser>=1.1", "cronsim>=2.0", "transmogrifier>=0.2.0"]
 
 [project.urls]
 Homepage = "https://github.com/jmcentire/kindex"

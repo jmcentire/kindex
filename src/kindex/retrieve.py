@@ -70,6 +70,18 @@ def hybrid_search(
 
     Returns list of node dicts with added 'rrf_score' key.
     """
+    # Optional register normalization via Transmogrifier
+    try:
+        from transmogrifier.core import Transmogrifier
+        _transmog = Transmogrifier()
+        result = _transmog.translate(query)
+        if not result.skipped and result.output_text:
+            query = result.output_text
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     # Mode 1: FTS5 search
     fts_results = store.fts_search(query, limit=top_k * 3)
     fts_ranked = [(r["id"], abs(r.get("rank", 0)) + r.get("weight", 0))
