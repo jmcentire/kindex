@@ -15,10 +15,16 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .store import Store
+
+# Node types whose content is likely to go stale (references code state, file paths)
+_STALE_PRONE_TYPES = {"artifact", "document"}
+# Node types whose content is durable (rationale, rules, guidelines)
+_STALE_RESISTANT_TYPES = {"decision", "constraint", "directive", "skill"}
 
 # Context tier token budgets (approximate)
 TIER_BUDGETS = {
@@ -39,7 +45,49 @@ def _strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text).lstrip()
 
 
-def _rrf_merge(*ranked_lists: list[tuple[str, float]], k: int = 60) -> list[tuple[str, float]]:
+def _node_age_days(node: dict) -> int | None:
+    """Days since node was last updated. None if no timestamp."""
+    ts = node.get("updated_at") or node.get("created_at")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+        return max(0, (datetime.now() - dt).days)
+    except (ValueError, TypeError):
+        return None
+
+
+def _node_age_str(node: dict) -> str:
+    """Human-readable age string for a node."""
+    days = _node_age_days(node)
+    if days is None:
+        return ""
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return f"{days}d ago"
+
+
+def _staleness_caveat(node: dict) -> str:
+    """Staleness warning for nodes whose content may have drifted."""
+    days = _node_age_days(node)
+    if days is None or days <= 1:
+        return ""
+    ntype = node.get("type", "concept")
+    if ntype in _STALE_RESISTANT_TYPES:
+        return ""
+    if ntype in _STALE_PRONE_TYPES or days > 30:
+        return " [verify: may be outdated]"
+    return ""
+
+
+# Lower k = sharper discrimination between ranks. IR literature uses 60 for
+# web search; knowledge graphs benefit from tighter ranking (20-30 range).
+_RRF_K = 30
+
+
+def _rrf_merge(*ranked_lists: list[tuple[str, float]], k: int = _RRF_K) -> list[tuple[str, float]]:
     """Reciprocal Rank Fusion across multiple ranked result lists.
 
     Each input is [(node_id, score), ...] in descending score order.
@@ -54,35 +102,117 @@ def _rrf_merge(*ranked_lists: list[tuple[str, float]], k: int = 60) -> list[tupl
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
+def _normalize_scores(ranked: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """Min-max normalize scores to [0, 1]. Preserves ordering."""
+    if not ranked:
+        return []
+    scores = [s for _, s in ranked]
+    lo, hi = min(scores), max(scores)
+    span = hi - lo if hi != lo else 1.0
+    return [(nid, (s - lo) / span) for nid, s in ranked]
+
+
+# Default ensemble weights — tune empirically
+_ENSEMBLE_WEIGHTS = {
+    "fts": 0.40,
+    "vector": 0.30,
+    "graph": 0.15,
+    "node_weight": 0.10,
+    "recency": 0.05,
+}
+
+
+def _recency_score(store: Store, node_ids: set[str]) -> list[tuple[str, float]]:
+    """Score nodes by recency — recently updated nodes score higher."""
+    results = []
+    now = datetime.now()
+    for nid in node_ids:
+        node = store.get_node(nid)
+        if not node:
+            continue
+        ts = node.get("updated_at") or node.get("created_at")
+        if not ts:
+            results.append((nid, 0.0))
+            continue
+        try:
+            days = max(0, (now - datetime.fromisoformat(ts)).days)
+            # Exponential decay: half-life ~30 days
+            results.append((nid, 2.0 ** (-days / 30.0)))
+        except (ValueError, TypeError):
+            results.append((nid, 0.0))
+    return results
+
+
+def _node_weight_scores(store: Store, node_ids: set[str]) -> list[tuple[str, float]]:
+    """Score nodes by their stored weight (already [0, 1] range)."""
+    results = []
+    for nid in node_ids:
+        node = store.get_node(nid)
+        if node:
+            results.append((nid, node.get("weight", 0.5)))
+    return results
+
+
+def _weighted_ensemble(
+    sources: dict[str, list[tuple[str, float]]],
+    weights: dict[str, float] | None = None,
+) -> list[tuple[str, float]]:
+    """Weighted ensemble merge — each source normalized to [0,1], then combined.
+
+    When only one source contributes, passes through its normalized scores
+    directly (avoids RRF compression on single-source results).
+    Returns [(node_id, confidence)] sorted descending.
+    """
+    w = weights or _ENSEMBLE_WEIGHTS
+    active = {k: v for k, v in sources.items() if v}
+
+    if not active:
+        return []
+
+    # Single source: pass through normalized scores weighted to [0, weight]
+    if len(active) == 1:
+        key, ranked = next(iter(active.items()))
+        return _normalize_scores(ranked)
+
+    # Multi-source: normalize each, weighted sum
+    all_ids: set[str] = set()
+    normalized: dict[str, dict[str, float]] = {}
+    for key, ranked in active.items():
+        normed = _normalize_scores(ranked)
+        normalized[key] = {nid: s for nid, s in normed}
+        all_ids.update(nid for nid, _ in normed)
+
+    combined: dict[str, float] = defaultdict(float)
+    total_weight = sum(w.get(k, 0) for k in active)
+    for nid in all_ids:
+        for key in active:
+            score = normalized.get(key, {}).get(nid, 0.0)
+            combined[nid] += score * w.get(key, 0) / max(total_weight, 0.01)
+
+    return sorted(combined.items(), key=lambda x: x[1], reverse=True)
+
+
 def hybrid_search(
     store: Store,
     query: str,
     top_k: int = 10,
     expand_graph: bool = True,
     graph_hops: int = 1,
+    ranking: str = "ensemble",
 ) -> list[dict]:
-    """Hybrid search combining FTS5 + graph expansion.
+    """Hybrid search combining FTS5 + graph expansion + vector search.
 
     1. FTS5 full-text search (BM25)
     2. Graph traversal from FTS hits (if expand_graph=True)
-    3. Merge via Reciprocal Rank Fusion
-    4. Return enriched node dicts with edges
+    3. Vector search with optional transmogrifier register normalization
+    4. Merge via weighted ensemble (default) or RRF (fallback)
 
-    Returns list of node dicts with added 'rrf_score' key.
+    Args:
+        ranking: 'ensemble' (weighted, with confidence) or 'rrf' (legacy).
+
+    Returns list of node dicts with 'confidence' and 'rrf_score' keys.
     """
-    # Optional register normalization via Transmogrifier
-    try:
-        from transmogrifier.core import Transmogrifier
-        _transmog = Transmogrifier()
-        result = _transmog.translate(query)
-        if not result.skipped and result.output_text:
-            query = result.output_text
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # Mode 1: FTS5 search
+    # Mode 1: FTS5 search (raw query — register is intentional signal for keywords)
     fts_results = store.fts_search(query, limit=top_k * 3)
     fts_ranked = [(r["id"], abs(r.get("rank", 0)) + r.get("weight", 0))
                   for r in fts_results]
@@ -100,34 +230,59 @@ def hybrid_search(
                     graph_ranked.append((target, edge["weight"] * fts_score))
 
     # Mode 3: Vector search (if available)
+    # Transmogrifier normalizes register for embeddings only — FTS5 stays raw
     vec_ranked: list[tuple[str, float]] = []
     try:
         from .vectors import is_available, vector_search
         if is_available():
-            vec_results = vector_search(store, query, top_k=top_k)
+            vec_query = query
+            try:
+                from transmogrifier.core import Transmogrifier
+                _transmog = Transmogrifier()
+                result = _transmog.translate(query)
+                if not result.skipped and result.output_text:
+                    vec_query = result.output_text
+            except (ImportError, Exception):
+                pass
+            vec_results = vector_search(store, vec_query, top_k=top_k)
             vec_ranked = [(r["id"], 1.0 / (1.0 + r.get("vec_distance", 1.0)))
                           for r in vec_results]
     except Exception:
         pass
 
-    # Merge via RRF
-    ranked_lists = [fts_ranked]
-    if graph_ranked:
-        ranked_lists.append(graph_ranked)
-    if vec_ranked:
-        ranked_lists.append(vec_ranked)
+    # Merge results
+    if ranking == "ensemble":
+        # Collect all candidate node IDs for weight/recency scoring
+        all_ids: set[str] = set()
+        for ranked in (fts_ranked, graph_ranked, vec_ranked):
+            all_ids.update(nid for nid, _ in ranked)
 
-    if len(ranked_lists) > 1:
-        merged = _rrf_merge(*ranked_lists)
+        sources: dict[str, list[tuple[str, float]]] = {"fts": fts_ranked}
+        if graph_ranked:
+            sources["graph"] = graph_ranked
+        if vec_ranked:
+            sources["vector"] = vec_ranked
+        if all_ids:
+            sources["node_weight"] = _node_weight_scores(store, all_ids)
+            sources["recency"] = _recency_score(store, all_ids)
+
+        merged = _weighted_ensemble(sources)
     else:
-        merged = fts_ranked
+        # Legacy RRF fallback
+        ranked_lists = [fts_ranked]
+        if graph_ranked:
+            ranked_lists.append(graph_ranked)
+        if vec_ranked:
+            ranked_lists.append(vec_ranked)
+        merged = _rrf_merge(*ranked_lists) if len(ranked_lists) > 1 else fts_ranked
 
     # Fetch full nodes for top results
     results = []
-    for nid, rrf_score in merged[:top_k]:
+    for nid, score in merged[:top_k]:
         node = store.get_node(nid)
         if node:
-            node["rrf_score"] = round(rrf_score, 6)
+            node["confidence"] = round(score, 4)
+            node["rrf_score"] = round(score, 6)  # backward compat
             node["edges_out"] = store.edges_from(nid)[:5]
             results.append(node)
 
@@ -147,6 +302,20 @@ def auto_select_tier(available_tokens: int | None = None) -> str:
     return "index"
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count without external dependencies.
+
+    Uses word-based heuristic: ~1.3 tokens per whitespace-delimited word
+    for English prose, which is more accurate than fixed char ratios
+    across mixed content (code, structured data, natural language).
+    Falls back to char/4 for very short text.
+    """
+    words = text.split()
+    if len(words) < 5:
+        return max(1, len(text) // 4)
+    return int(len(words) * 1.3)
+
+
 def format_context_block(
     store: Store,
     results: list[dict],
@@ -158,6 +327,8 @@ def format_context_block(
 
     Supports five tiers: full, abridged, summarized, executive, index.
     Auto-selects tier based on max_tokens_approx if level is not specified.
+    Enforces token budget: if output exceeds the tier budget, progressively
+    drops results until it fits.
     """
     if not results:
         return "## Kindex: No relevant context found.\n"
@@ -165,8 +336,21 @@ def format_context_block(
     if level is None:
         level = auto_select_tier(max_tokens_approx)
 
+    budget = max_tokens_approx or TIER_BUDGETS.get(level, 1500)
     formatter = _TIER_FORMATTERS.get(level, _format_abridged)
-    return formatter(store, results, query)
+
+    # Try with all results, then progressively trim until within budget
+    for n in range(len(results), 0, -1):
+        output = formatter(store, results[:n], query)
+        if _estimate_tokens(output) <= budget:
+            return output
+
+    # Even one result exceeds budget — return truncated
+    output = formatter(store, results[:1], query)
+    max_chars = budget * 4
+    if len(output) > max_chars:
+        output = output[:max_chars] + "\n\n*[truncated to fit token budget]*"
+    return output
 
 
 def _gather_domains(results: list[dict]) -> set[str]:
@@ -235,7 +419,10 @@ def _format_full(store: Store, results: list[dict], query: str) -> str:
         weight = r.get("weight", 0)
         edges_out = r.get("edges_out", [])
 
-        lines.append(f"\n#### [{node_type}] {title} (w={weight:.2f})")
+        age = _node_age_str(r)
+        caveat = _staleness_caveat(r)
+        age_tag = f", {age}" if age else ""
+        lines.append(f"\n#### [{node_type}] {title} (w={weight:.2f}{age_tag}){caveat}")
         if content:
             lines.append(content)
 
@@ -305,7 +492,10 @@ def _format_abridged(store: Store, results: list[dict], query: str) -> str:
         edges_out = r.get("edges_out", [])
         connected = ", ".join(e.get("to_title", e["to_id"]) for e in edges_out[:3])
 
-        block = f"- **{title}** ({node_type}): {content_preview}"
+        age = _node_age_str(r)
+        caveat = _staleness_caveat(r)
+        age_suffix = f" [{age}]" if age else ""
+        block = f"- **{title}** ({node_type}{age_suffix}){caveat}: {content_preview}"
         if connected:
             block += f"\n  *Connected to: {connected}*"
         block += "\n"

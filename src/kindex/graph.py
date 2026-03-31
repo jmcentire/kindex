@@ -181,11 +181,18 @@ def communities(vault: Vault) -> list[set[str]]:
 
 # ── Store-based graph algorithms ─────────────────────────────────────
 
-def build_nx_from_store(store) -> nx.DiGraph:
-    """Build a NetworkX directed graph from the Store."""
+_NX_BUILD_LIMIT = 50000
+
+
+def build_nx_from_store(store, limit: int = _NX_BUILD_LIMIT) -> nx.DiGraph:
+    """Build a NetworkX directed graph from the Store.
+
+    ``limit`` caps how many nodes are loaded into memory for graph analysis.
+    Use ``store_stats`` for accurate counts — it reads totals from SQL.
+    """
     G = nx.DiGraph()
 
-    for node in store.all_nodes(limit=10000):
+    for node in store.all_nodes(limit=limit):
         G.add_node(node["id"], title=node["title"], type=node["type"],
                    weight=node.get("weight", 0.5),
                    domains=node.get("domains", []))
@@ -202,22 +209,35 @@ def build_nx_from_store(store) -> nx.DiGraph:
 
 
 def store_stats(store) -> dict:
-    """Compute graph statistics from Store."""
+    """Compute graph statistics from Store.
+
+    Node/edge counts come from SQL (accurate regardless of build limit).
+    Density, components, and degree stats come from the networkx graph
+    (may be approximate if the graph exceeds the build limit).
+    """
+    # Accurate counts from SQL
+    sql_nodes = store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    sql_edges = store.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+
     G = build_nx_from_store(store)
+    truncated = G.number_of_nodes() < sql_nodes
+
     if not G:
-        return {"nodes": 0, "edges": 0, "density": 0, "components": 0,
-                "avg_degree": 0, "max_degree_node": "", "max_degree": 0}
+        return {"nodes": sql_nodes, "edges": sql_edges, "density": 0,
+                "components": 0, "avg_degree": 0, "max_degree_node": "",
+                "max_degree": 0, "truncated": False}
 
     degrees = dict(G.degree())
     mx = max(degrees, key=degrees.get) if degrees else ""
     return {
-        "nodes": G.number_of_nodes(),
-        "edges": G.number_of_edges(),
+        "nodes": sql_nodes,
+        "edges": sql_edges,
         "density": round(nx.density(G), 4),
         "components": nx.number_weakly_connected_components(G),
         "avg_degree": round(sum(degrees.values()) / len(degrees), 2) if degrees else 0,
         "max_degree_node": mx,
         "max_degree": degrees.get(mx, 0),
+        "truncated": truncated,
     }
 
 

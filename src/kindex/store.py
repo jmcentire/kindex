@@ -395,6 +395,16 @@ class Store:
                                   provenance="auto-linked from prov_who",
                                   bidirectional=False)
 
+        # Auto-embed for vector search (best-effort, no failure propagation)
+        try:
+            from .vectors import is_available, upsert_embedding
+            if is_available():
+                embed_text = f"{title} {content}".strip()
+                if embed_text:
+                    upsert_embedding(self, nid, embed_text)
+        except Exception:
+            pass  # vectors not installed or embed failed — node still created
+
         return nid
 
     def get_node(self, node_id: str) -> dict | None:

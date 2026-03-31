@@ -351,6 +351,7 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
     from .config import _maybe_upgrade_kin_file
 
     count = 0
+    all_pending: list[tuple[str, str]] = []  # (source_slug, target_name)
     for project_dir in config.resolved_project_dirs:
         if not project_dir.exists():
             continue
@@ -393,7 +394,7 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                     if verbose:
                         print(f"  Updated from .kin/config: {slug}")
 
-                # Handle connects_to
+                # Handle connects_to — link to existing nodes, track pending for later
                 for target in data.get("connects_to", []):
                     target_node = store.get_node(target) or store.get_node_by_title(target)
                     if target_node:
@@ -401,6 +402,11 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                                        edge_type="relates_to",
                                        weight=0.6,
                                        provenance=".kin/config")
+                    else:
+                        all_pending.append((slug, target))
+                        if verbose:
+                            print(f"  Warning: connects_to target '{target}' not found "
+                                  f"(from {config_file}), will retry after ingestion")
             else:
                 title = data.get("title", project_root.name.replace("-", " ").title())
                 audience = data.get("audience", _infer_audience(project_root))
@@ -418,6 +424,37 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                 count += 1
                 if verbose:
                     print(f"  Created from .kin/config: {slug}")
+
+                # Handle connects_to for newly created nodes too
+                for target in data.get("connects_to", []):
+                    target_node = store.get_node(target) or store.get_node_by_title(target)
+                    if target_node:
+                        store.add_edge(slug, target_node["id"],
+                                       edge_type="relates_to",
+                                       weight=0.6,
+                                       provenance=".kin/config")
+                    else:
+                        all_pending.append((slug, target))
+                        if verbose:
+                            print(f"  Warning: connects_to target '{target}' not found "
+                                  f"(from {config_file}), will retry after ingestion")
+
+    # Resolution pass: retry pending connects_to now that all projects are ingested
+    if all_pending:
+        resolved = 0
+        for source_slug, target in all_pending:
+            target_node = store.get_node(target) or store.get_node_by_title(target)
+            if target_node:
+                store.add_edge(source_slug, target_node["id"],
+                               edge_type="relates_to",
+                               weight=0.6,
+                               provenance=".kin/config (deferred)")
+                resolved += 1
+            elif verbose:
+                print(f"  Unresolved: connects_to '{target}' from {source_slug} "
+                      f"— target not in graph")
+        if verbose and resolved:
+            print(f"  Resolved {resolved}/{len(all_pending)} deferred connections")
 
     return count
 

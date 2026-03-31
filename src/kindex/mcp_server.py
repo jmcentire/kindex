@@ -190,11 +190,16 @@ def search(query: str, top_k: int = 10, tags: str = "") -> str:
     if not results:
         return "No results found."
 
+    from .retrieve import _node_age_str, _staleness_caveat
+
     lines = [f"Found {len(results)} results for '{query}':\n"]
     for i, r in enumerate(results, 1):
-        score = r.get("rrf_score", 0)
+        score = r.get("rrf_score", 0) or r.get("confidence", 0)
+        age = _node_age_str(r)
+        caveat = _staleness_caveat(r)
+        age_tag = f", {age}" if age else ""
         lines.append(f"{i}. [{r.get('type', 'concept')}] {r.get('title', r['id'])} "
-                      f"(score={score:.3f}, id={r['id']})")
+                      f"(score={score:.3f}, id={r['id']}{age_tag}){caveat}")
         content = (r.get("content") or "")[:150]
         if content:
             lines.append(f"   {content}")
@@ -400,12 +405,12 @@ def status() -> str:
 
     lines = [
         "# Kindex Status\n",
-        f"Nodes: {stats.get('node_count', 0)}",
-        f"Edges: {stats.get('edge_count', 0)}",
-        f"Orphans: {stats.get('orphan_count', 0)}",
+        f"Nodes: {stats.get('nodes', 0)}",
+        f"Edges: {stats.get('edges', 0)}",
+        f"Orphans: {stats.get('orphans', 0)}",
     ]
 
-    type_counts = stats.get("type_counts", {})
+    type_counts = stats.get("types", {})
     if type_counts:
         lines.append("\n## Node Types")
         for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
@@ -574,6 +579,9 @@ def graph_stats() -> str:
         f"Components: {stats.get('components', 0)}",
         f"Avg Degree: {stats.get('avg_degree', 0):.1f}",
     ]
+    if stats.get("truncated"):
+        lines.append(f"\n*Note: graph analysis used a subset of nodes. "
+                     f"Density/centrality/community stats are approximate.*")
 
     if centrality:
         lines.append("\n## Top Nodes (Betweenness Centrality)")
