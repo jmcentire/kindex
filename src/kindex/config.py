@@ -48,6 +48,25 @@ class BudgetConfig(BaseModel):
     monthly: float = 5.00
 
 
+class RankingConfig(BaseModel):
+    rrf_k: int = 30               # RRF smoothing parameter (lower = sharper discrimination)
+    fts_weight: float = 0.40      # FTS5 BM25 signal weight
+    vector_weight: float = 0.30   # Vector similarity signal weight
+    graph_weight: float = 0.15    # Graph expansion signal weight
+    node_weight: float = 0.10     # Stored node weight signal
+    recency_weight: float = 0.05  # Recency decay signal weight
+
+    @property
+    def ensemble_weights(self) -> dict[str, float]:
+        return {
+            "fts": self.fts_weight,
+            "vector": self.vector_weight,
+            "graph": self.graph_weight,
+            "node_weight": self.node_weight,
+            "recency": self.recency_weight,
+        }
+
+
 class DefaultsConfig(BaseModel):
     hops: int = 2
     min_weight: float = 0.1
@@ -132,6 +151,7 @@ class Config(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    ranking: RankingConfig = Field(default_factory=RankingConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)
 
     @property

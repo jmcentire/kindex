@@ -69,25 +69,51 @@ def _node_age_str(node: dict) -> str:
     return f"{days}d ago"
 
 
+# Patterns that indicate content references mutable state (file paths, versions, APIs)
+_STALE_CONTENT_PATTERNS = re.compile(
+    r'(?:'
+    r'(?:^|[\s/])(?:src|lib|pkg|packages|node_modules)/\S+'  # file paths
+    r'|v\d+\.\d+(?:\.\d+)?'                                  # version numbers
+    r'|line[s]?\s+\d+'                                        # line references
+    r'|:\d+(?::\d+)?'                                         # file:line:col
+    r'|(?:api|endpoint|route)\s+\S+/\S+'                      # API routes
+    r'|(?:pip|npm|cargo)\s+install'                            # install commands
+    r')',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _has_mutable_references(content: str) -> bool:
+    """Check if content references things likely to change (paths, versions, APIs)."""
+    return bool(_STALE_CONTENT_PATTERNS.search(content))
+
+
 def _staleness_caveat(node: dict) -> str:
-    """Staleness warning for nodes whose content may have drifted."""
+    """Staleness warning based on age, type, AND content analysis."""
     days = _node_age_days(node)
     if days is None or days <= 1:
         return ""
     ntype = node.get("type", "concept")
     if ntype in _STALE_RESISTANT_TYPES:
         return ""
-    if ntype in _STALE_PRONE_TYPES or days > 30:
+    content = node.get("content") or ""
+    # Content-based: even "concept" nodes are stale-prone if they reference
+    # file paths, version numbers, line numbers, or API routes
+    if ntype in _STALE_PRONE_TYPES:
+        return " [verify: may be outdated]"
+    if days > 7 and _has_mutable_references(content):
+        return " [verify: references code/versions that may have changed]"
+    if days > 30:
         return " [verify: may be outdated]"
     return ""
 
 
-# Lower k = sharper discrimination between ranks. IR literature uses 60 for
-# web search; knowledge graphs benefit from tighter ranking (20-30 range).
-_RRF_K = 30
+# Default RRF k — overridden by config.ranking.rrf_k when store is available.
+# Lower k = sharper discrimination between ranks. 30 is tuned for knowledge graphs.
+_RRF_K_DEFAULT = 30
 
 
-def _rrf_merge(*ranked_lists: list[tuple[str, float]], k: int = _RRF_K) -> list[tuple[str, float]]:
+def _rrf_merge(*ranked_lists: list[tuple[str, float]], k: int = _RRF_K_DEFAULT) -> list[tuple[str, float]]:
     """Reciprocal Rank Fusion across multiple ranked result lists.
 
     Each input is [(node_id, score), ...] in descending score order.
@@ -112,8 +138,8 @@ def _normalize_scores(ranked: list[tuple[str, float]]) -> list[tuple[str, float]
     return [(nid, (s - lo) / span) for nid, s in ranked]
 
 
-# Default ensemble weights — tune empirically
-_ENSEMBLE_WEIGHTS = {
+# Fallback ensemble weights — overridden by config.ranking when store is available.
+_ENSEMBLE_WEIGHTS_DEFAULT = {
     "fts": 0.40,
     "vector": 0.30,
     "graph": 0.15,
@@ -163,7 +189,7 @@ def _weighted_ensemble(
     directly (avoids RRF compression on single-source results).
     Returns [(node_id, confidence)] sorted descending.
     """
-    w = weights or _ENSEMBLE_WEIGHTS
+    w = weights or _ENSEMBLE_WEIGHTS_DEFAULT
     active = {k: v for k, v in sources.items() if v}
 
     if not active:
@@ -250,6 +276,11 @@ def hybrid_search(
     except Exception:
         pass
 
+    # Read ranking config from store (falls back to defaults if unavailable)
+    rcfg = getattr(store.config, "ranking", None)
+    cfg_weights = rcfg.ensemble_weights if rcfg else _ENSEMBLE_WEIGHTS_DEFAULT
+    cfg_rrf_k = rcfg.rrf_k if rcfg else _RRF_K_DEFAULT
+
     # Merge results
     if ranking == "ensemble":
         # Collect all candidate node IDs for weight/recency scoring
@@ -266,7 +297,7 @@ def hybrid_search(
             sources["node_weight"] = _node_weight_scores(store, all_ids)
             sources["recency"] = _recency_score(store, all_ids)
 
-        merged = _weighted_ensemble(sources)
+        merged = _weighted_ensemble(sources, weights=cfg_weights)
     else:
         # Legacy RRF fallback
         ranked_lists = [fts_ranked]
@@ -274,7 +305,7 @@ def hybrid_search(
             ranked_lists.append(graph_ranked)
         if vec_ranked:
             ranked_lists.append(vec_ranked)
-        merged = _rrf_merge(*ranked_lists) if len(ranked_lists) > 1 else fts_ranked
+        merged = _rrf_merge(*ranked_lists, k=cfg_rrf_k) if len(ranked_lists) > 1 else fts_ranked
 
     # Fetch full nodes for top results
     results = []
