@@ -809,7 +809,7 @@ def ingest(source: str, limit: int = 50, repo: str = "", since: str = "") -> str
 
     store, cfg = _get_store()
     config = IngestConfig(since=since or None, limit=limit, verbose=False)
-    extra: dict = {"config": cfg}
+    extra: dict = {"_config": cfg}
     if repo:
         extra["repo"] = repo
 
