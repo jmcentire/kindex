@@ -2,6 +2,19 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.17.0] - 2026-04-11
+
+### Added
+- **Voyage AI embedding provider** (`vectors.py::_embed_voyage`) — Anthropic's officially recommended embeddings provider. Pure-HTTP via `urllib.request`, no native dependencies. Default model `voyage-3.5` (1024-dim), supports `voyage-3-large`, `voyage-3.5-lite`, `voyage-finance-2`, `voyage-law-2`, `voyage-code-3`. Configure via `embedding.provider: voyage` in `kin.yaml` and set `VOYAGE_API_KEY` in the environment. Generous free tier (200M tokens) makes it effectively free for typical use.
+
+### Changed
+- **`vectors` extra no longer pulls `sentence-transformers`.** The code already handled the import gracefully (try/except ImportError with fallback to FTS5), but the pyproject declaration was unconditionally installing it and transitively pulling `torch` and `scikit-learn`. On macOS, those two wheels ship incompatible `libomp.dylib` install names and crash Python with an OpenMP duplicate-registration abort when both load together. Users who want local embeddings now opt in explicitly: `pip install sentence-transformers`. API-based providers (voyage, openai, gemini) are the first-class path and require no native deps.
+- `all` extra similarly no longer pulls `sentence-transformers`.
+
+### Fixed
+- `__version__` in `src/kindex/__init__.py` was stuck at 0.16.1 despite 0.16.2 shipping; now synced to 0.17.0.
+- README version badge was stuck at 0.16.1; now 0.17.0.
+
 ## [0.15.0] - 2026-03-24
 
 ### Added

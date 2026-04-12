@@ -1,14 +1,16 @@
 """Optional vector embedding support via sqlite-vec.
 
 Enables semantic similarity search when installed:
-    pip install sqlite-vec sentence-transformers
+    pip install kindex[vectors]          # just sqlite-vec; API-based providers work out of the box
+    pip install sentence-transformers    # opt-in for local embeddings (pulls torch + sklearn)
 
 Supports multiple embedding providers:
-    - local: sentence-transformers (default, no API key needed)
+    - voyage: Voyage AI Embeddings API (requires VOYAGE_API_KEY) — recommended default
     - openai: OpenAI Embeddings API (requires OPENAI_API_KEY)
     - gemini: Google Gemini Embeddings API (requires GEMINI_API_KEY)
+    - local: sentence-transformers (requires separate pip install sentence-transformers)
 
-Falls back gracefully to FTS5 when unavailable.
+Falls back gracefully to FTS5 when the configured provider is unavailable.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ PROVIDER_DEFAULTS = {
     "local": {"model": "all-MiniLM-L6-v2", "dimensions": 384, "api_key_env": ""},
     "openai": {"model": "text-embedding-3-small", "dimensions": 1536, "api_key_env": "OPENAI_API_KEY"},
     "gemini": {"model": "gemini-embedding-001", "dimensions": 3072, "api_key_env": "GEMINI_API_KEY"},
+    "voyage": {"model": "voyage-3.5", "dimensions": 1024, "api_key_env": "VOYAGE_API_KEY"},
 }
 
 
@@ -152,10 +155,47 @@ def _embed_gemini(text: str, model: str, dimensions: int, api_key_env: str) -> l
         return None
 
 
+def _embed_voyage(text: str, model: str, dimensions: int, api_key_env: str) -> list[float] | None:
+    """Embed text using Voyage AI Embeddings API.
+
+    Voyage is Anthropic's recommended embeddings provider. Ships as a pure-HTTP
+    API with no native dependencies. Supports general-purpose and domain-specific
+    models (voyage-3.5 default, voyage-finance-2, voyage-law-2, voyage-code-3).
+    Free tier: 200M tokens for voyage-3.5 / voyage-3-large / voyage-3.5-lite.
+    """
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        print(f"Warning: {api_key_env} not set. Cannot embed text.", file=sys.stderr)
+        return None
+
+    body = {
+        "input": [text],
+        "model": model,
+        "input_type": "document",
+    }
+
+    try:
+        req = urllib.request.Request(
+            "https://api.voyageai.com/v1/embeddings",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            return result["data"][0]["embedding"]
+    except Exception as e:
+        print(f"Voyage embedding error: {e}", file=sys.stderr)
+        return None
+
+
 _EMBED_DISPATCH = {
     "local": lambda text, model, dims, key_env: _embed_local(text, model),
     "openai": _embed_openai,
     "gemini": _embed_gemini,
+    "voyage": _embed_voyage,
 }
 
 
