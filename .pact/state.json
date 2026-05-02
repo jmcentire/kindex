@@ -1,0 +1,228 @@
+{
+  "id": "301b970f4d09",
+  "project_dir": "/Users/jmcentire/Code/kindex",
+  "status": "paused",
+  "phase": "interview",
+  "component_tasks": [
+    {
+      "component_id": "examples_adapter-template_kindex_adapter_csv",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_actions",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_analytics",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_archive",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_budget",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_cli",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_config",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_daemon",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_extract",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_graph",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_hooks",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_ingest",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_llm",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_mcp_server",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_models",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_notify",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_reminders",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_retrieve",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_scheduling",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_sessions",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_setup",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_store",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_tasks",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_vault",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_vectors",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_base",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_claude_web",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_files",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_git_hooks",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_github",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_linear",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_pipeline",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_projects",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_registry",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    },
+    {
+      "component_id": "src_kindex_adapters_sessions",
+      "status": "pending",
+      "attempts": 0,
+      "last_error": ""
+    }
+  ],
+  "interview_result": null,
+  "total_cost_usd": 0.0,
+  "total_tokens": 0,
+  "last_check_in": "",
+  "created_at": "2026-03-05T22:08:42.405393",
+  "completed_at": "",
+  "pause_reason": "Dry run — adoption not finalized",
+  "phase_cycles": 0,
+  "health_snapshot": {},
+  "processing_register": ""
+}
