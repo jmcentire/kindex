@@ -520,50 +520,199 @@ def _ts_extract_imports_python(tree: Any, source: bytes) -> list[tuple[str, str]
     return results
 
 
+def _ts_extract_imports_rust(tree: Any, source: bytes) -> list[tuple[str, str]]:
+    """Extract Rust imports from tree-sitter AST.
+
+    Parses ``use`` declarations and returns ``(local_name, module_path)``
+    pairs, using ``::`` separators for module paths to mirror Rust's own
+    syntax. Handles:
+
+      - ``use foo;``                     → ("foo", "foo")
+      - ``use foo::bar;``                → ("bar", "foo::bar")
+      - ``use foo::{bar, baz};``         → ("bar", "foo::bar"), ("baz", "foo::baz")
+      - ``use foo::bar as b;``           → ("b", "foo::bar")
+      - ``use foo::*;``                  → ("*", "foo")  (glob)
+      - ``use crate::foo;``              → ("foo", "crate::foo")
+
+    Module-level only — does not descend into ``mod {}`` blocks.
+    """
+    results: list[tuple[str, str]] = []
+    root = tree.root_node
+
+    def _text(n: Any) -> str:
+        return source[n.start_byte:n.end_byte].decode(errors="replace")
+
+    def _expand_use_tree(node: Any, prefix: str) -> None:
+        """Expand a ``use`` tree node into (local_name, full_path) pairs.
+
+        ``prefix`` is the dotted-but-Rust-style scope already accumulated
+        (e.g. "foo::bar" when processing the contents of a use_list).
+        """
+        kind = node.type
+        if kind == "identifier":
+            name = _text(node)
+            full = f"{prefix}::{name}" if prefix else name
+            results.append((name, full))
+        elif kind == "scoped_identifier":
+            full = _text(node)
+            full = f"{prefix}::{full}" if prefix else full
+            local = full.rsplit("::", 1)[-1]
+            results.append((local, full))
+        elif kind == "scoped_use_list":
+            # foo::{bar, baz}  — first child is the scope, then the use_list
+            scope_node = node.child_by_field_name("path")
+            list_node = node.child_by_field_name("list")
+            scope = _text(scope_node) if scope_node else ""
+            new_prefix = f"{prefix}::{scope}" if prefix and scope else (scope or prefix)
+            if list_node:
+                for child in list_node.children:
+                    if child.type not in (",", "{", "}"):
+                        _expand_use_tree(child, new_prefix)
+        elif kind == "use_list":
+            for child in node.children:
+                if child.type not in (",", "{", "}"):
+                    _expand_use_tree(child, prefix)
+        elif kind == "use_as_clause":
+            path_node = node.child_by_field_name("path")
+            alias_node = node.child_by_field_name("alias")
+            if path_node:
+                full = _text(path_node)
+                full = f"{prefix}::{full}" if prefix else full
+                local = _text(alias_node) if alias_node else full.rsplit("::", 1)[-1]
+                results.append((local, full))
+        elif kind == "use_wildcard":
+            # foo::* — the glob import. Record under the scope path.
+            for child in node.children:
+                if child.type in ("identifier", "scoped_identifier"):
+                    base = _text(child)
+                    full = f"{prefix}::{base}" if prefix else base
+                    results.append(("*", full))
+                    return
+            if prefix:
+                results.append(("*", prefix))
+
+    def _walk(node: Any) -> None:
+        if node.type == "use_declaration":
+            # First non-trivial child after the `use` keyword is the tree.
+            for child in node.children:
+                if child.type in (
+                    "identifier", "scoped_identifier", "scoped_use_list",
+                    "use_list", "use_as_clause", "use_wildcard",
+                ):
+                    _expand_use_tree(child, "")
+                    break
+        else:
+            for child in node.children:
+                _walk(child)
+
+    _walk(root)
+    return results
+
+
+def _ts_extract_trait_impls_rust(tree: Any, source: bytes) -> list[tuple[str, str]]:
+    """Extract Rust trait implementations from tree-sitter AST.
+
+    Returns ``(implementing_type, trait_name)`` pairs for every
+    ``impl Trait for Type`` block. Inherent impls (``impl Type {}``)
+    are skipped — they have no trait, so they produce no edge.
+
+    Universal-ctags does not surface trait names in its ``inherits``
+    field for Rust impl blocks (verified empirically), so this is the
+    only path for Rust trait-impl edges in the graph.
+    """
+    results: list[tuple[str, str]] = []
+    root = tree.root_node
+
+    def _text(n: Any) -> str:
+        return source[n.start_byte:n.end_byte].decode(errors="replace")
+
+    def _walk(node: Any) -> None:
+        if node.type == "impl_item":
+            trait_node = node.child_by_field_name("trait")
+            type_node = node.child_by_field_name("type")
+            if trait_node and type_node:
+                trait_name = _text(trait_node)
+                impl_type = _text(type_node)
+                # Strip generic parameters: `Display<T>` → `Display`,
+                # `Vec<u8>` → `Vec`. Keeps the symbol-name match simple.
+                trait_name = trait_name.split("<", 1)[0].split("::")[-1]
+                impl_type = impl_type.split("<", 1)[0].split("::")[-1]
+                if trait_name and impl_type:
+                    results.append((impl_type, trait_name))
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return results
+
+
 def _ts_extract_calls(tree: Any, source: bytes) -> list[tuple[str, str]]:
     """Extract function calls from tree-sitter AST.
 
-    Returns (containing_function, called_function) pairs.
-    Only extracts direct calls within function/method bodies (depth 1).
+    Returns ``(containing_function, called_function)`` pairs. Handles
+    Python (``call`` / ``function_definition`` / ``class_definition``)
+    and Rust (``call_expression`` / ``function_item`` / ``impl_item``).
     """
     results = []
     root = tree.root_node
 
+    # Node-type aliases differ across grammars. Treat both flavors uniformly.
+    CALL_TYPES = {"call", "call_expression"}
+    FN_TYPES = {"function_definition", "method_definition", "function_item"}
+    BODY_TYPES = {"block"}  # function_item carries its body in `block` too
+
     def _find_calls_in_function(func_node: Any, func_name: str) -> None:
         """Walk a function body and find call expressions."""
         for child in func_node.children:
-            if child.type == "block":
+            if child.type in BODY_TYPES:
                 _walk_for_calls(child, func_name)
 
     def _walk_for_calls(node: Any, func_name: str) -> None:
-        if node.type == "call":
-            # Get the function being called
+        if node.type in CALL_TYPES:
             callee = node.child_by_field_name("function")
             if callee:
-                callee_name = source[callee.start_byte:callee.end_byte].decode()
-                # Strip self. prefix for method calls
+                callee_name = source[callee.start_byte:callee.end_byte].decode(
+                    errors="replace",
+                )
+                # Strip self./Self:: prefixes — they're scope, not name.
                 if callee_name.startswith("self."):
                     callee_name = callee_name[5:]
-                # Only keep simple names (foo, bar.baz), skip complex expressions
+                elif callee_name.startswith("Self::"):
+                    callee_name = callee_name[6:]
+                # Only keep simple names; skip complex generic expressions.
                 if callee_name and len(callee_name) < 80:
                     results.append((func_name, callee_name))
         for child in node.children:
             _walk_for_calls(child, func_name)
 
     def _walk_top(node: Any, scope: str = "") -> None:
-        if node.type in ("function_definition", "method_definition"):
+        if node.type in FN_TYPES:
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = source[name_node.start_byte:name_node.end_byte].decode()
+                name = source[name_node.start_byte:name_node.end_byte].decode(
+                    errors="replace",
+                )
                 qualified = f"{scope}.{name}" if scope else name
                 _find_calls_in_function(node, qualified)
         elif node.type == "class_definition":
             name_node = node.child_by_field_name("name")
             cls_name = ""
             if name_node:
-                cls_name = source[name_node.start_byte:name_node.end_byte].decode()
+                cls_name = source[name_node.start_byte:name_node.end_byte].decode(
+                    errors="replace",
+                )
             for child in node.children:
                 _walk_top(child, cls_name)
+        elif node.type == "impl_item":
+            # Rust: methods inside `impl Type { ... }` belong to Type's scope.
+            type_node = node.child_by_field_name("type")
+            impl_scope = ""
+            if type_node:
+                impl_scope = source[
+                    type_node.start_byte:type_node.end_byte
+                ].decode(errors="replace")
+            for child in node.children:
+                _walk_top(child, impl_scope)
         else:
             for child in node.children:
                 _walk_top(child, scope)
@@ -992,15 +1141,87 @@ def ingest_code(
             if not mod_id:
                 continue
 
-            # Import edges from tree-sitter (more accurate than ctags)
+            # Import edges from tree-sitter (more accurate than ctags).
+            # Resolution is per-language because the path syntax differs:
+            # Python uses dotted ("foo.bar"), Rust uses scoped ("foo::bar"
+            # plus crate-relative "crate::*", "super::*", "self::*").
             if language == "Python":
                 ts_imports = _ts_extract_imports_python(tree, source)
                 for local_name, mod_path in ts_imports:
-                    # Try to resolve to a module node
                     target_id = None
                     mod_parts = mod_path.replace(".", "/")
                     for rp, mid in module_node_ids.items():
                         if rp.replace(".py", "").endswith(mod_parts) or Path(rp).stem == local_name:
+                            target_id = mid
+                            break
+                    if target_id and target_id != mod_id:
+                        try:
+                            store.add_edge(
+                                mod_id, target_id,
+                                edge_type="depends_on",
+                                weight=0.5,
+                                provenance=f"code-ingest: imports {mod_path} (tree-sitter)",
+                                bidirectional=False,
+                            )
+                        except Exception:
+                            pass
+            elif language == "Rust":
+                # Trait impl edges (impl Trait for Type → implements).
+                # ctags doesn't surface this in `inherits` for Rust, so
+                # tree-sitter is the only source.
+                for impl_type, trait_name in _ts_extract_trait_impls_rust(
+                    tree, source,
+                ):
+                    # Match the symbol nodes by suffix on qualified name —
+                    # ctags reports symbols as "<rel_path>:<scope>.<name>"
+                    # so we match on the trailing ".<name>" or ":<name>".
+                    impl_id = None
+                    trait_id = None
+                    for qname, sid in symbol_node_ids.items():
+                        leaf = qname.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+                        if leaf == impl_type and impl_id is None:
+                            impl_id = sid
+                        if leaf == trait_name and trait_id is None:
+                            trait_id = sid
+                    if impl_id and trait_id and impl_id != trait_id:
+                        try:
+                            store.add_edge(
+                                impl_id, trait_id,
+                                edge_type="implements",
+                                weight=0.7,
+                                provenance=(
+                                    f"code-ingest: impl {trait_name} for "
+                                    f"{impl_type} (tree-sitter)"
+                                ),
+                                bidirectional=False,
+                            )
+                        except Exception:
+                            pass
+
+                ts_imports = _ts_extract_imports_rust(tree, source)
+                for local_name, mod_path in ts_imports:
+                    # Strip crate-relative prefixes so the suffix match works:
+                    # crate::foo::bar  → foo::bar  (crate root corresponds to src/)
+                    # self::foo        → foo      (relative to current file's dir)
+                    # super::foo       → foo      (parent module — best-effort)
+                    norm_path = mod_path
+                    for prefix in ("crate::", "self::", "super::"):
+                        if norm_path.startswith(prefix):
+                            norm_path = norm_path[len(prefix):]
+                            break
+                    mod_parts = norm_path.replace("::", "/")
+                    target_id = None
+                    for rp, mid in module_node_ids.items():
+                        rp_stem = rp.replace(".rs", "")
+                        # Match either the full path tail or a leaf name when
+                        # the import resolves to a single symbol (use foo::Bar).
+                        if rp_stem.endswith(mod_parts) or Path(rp).stem == local_name:
+                            target_id = mid
+                            break
+                        # Module hierarchies: `use foo::bar;` may import
+                        # symbols from foo.rs; match the parent path too.
+                        parent = mod_parts.rsplit("/", 1)[0] if "/" in mod_parts else mod_parts
+                        if parent and rp_stem.endswith(parent):
                             target_id = mid
                             break
                     if target_id and target_id != mod_id:
