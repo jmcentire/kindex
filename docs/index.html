@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kindex — The memory layer Claude Code doesn't have</title>
-<meta name="description" content="The memory layer Claude Code doesn't have. A persistent knowledge graph so your AI assistant never starts a session blind. Free Claude Code plugin with 21 MCP tools, 44 CLI commands, and cache-optimized LLM retrieval.">
+<title>Kindex — The memory layer AI coding agents don't have</title>
+<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, and other MCP-capable agents never start blind. Free MCP plugin with CLI, ingestion, and cache-optimized LLM retrieval.">
 <style>
   :root {
     --bg: #0d1117;
@@ -247,11 +247,11 @@
   <div class="container">
     <h1><span>kin</span>dex</h1>
     <p class="tagline">
-      The memory layer Claude Code doesn't have.
+      The memory layer AI coding agents don't have.
     </p>
     <p class="subline">
       Kindex does one thing. It knows what you know.
-      A persistent knowledge graph so your AI assistant never starts a session blind.
+      A persistent knowledge graph so Claude Code, Codex, and other MCP-capable agents never start blind.
     </p>
     <div class="install-boxes">
       <div class="install-box primary mono">
@@ -260,12 +260,15 @@
       <div class="install-box mono">
         <span class="prompt">$</span> <code>claude mcp add -s user -t stdio kindex -- kin-mcp</code>
       </div>
+      <div class="install-box mono">
+        <span class="prompt">$</span> <code>kin setup-codex-mcp</code>
+      </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.12.0</span>
-      <span class="badge orange">Claude Code Plugin</span>
-      <span class="badge blue">30 MCP Tools</span>
-      <span class="badge purple">49 CLI Commands</span>
+      <span class="badge green">v0.18.0</span>
+      <span class="badge orange">MCP Plugin</span>
+      <span class="badge blue">38 MCP Tools</span>
+      <span class="badge purple">53 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -397,15 +400,22 @@
 <!-- Install as Plugin -->
 <section>
   <div class="container">
-    <h2>Install as Claude Code Plugin</h2>
-    <p>Two commands. Zero configuration. Claude gets 22 native tools for your knowledge graph.</p>
+    <h2>Install as Agent MCP Plugin</h2>
+    <p>Claude Code, Codex, and other MCP-capable agents get native tools for your knowledge graph.</p>
     <div class="terminal mono">
 <span class="comment"># Install and register (one time)</span>
 <span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
 <span class="prompt">$</span> <span class="cmd">claude mcp add</span> <span class="flag">--scope</span> user <span class="flag">--transport</span> stdio kindex <span class="flag">--</span> kin-mcp
 <span class="prompt">$</span> <span class="cmd">kin init</span>
 
-<span class="comment"># That's it. Claude Code now has:</span>
+<span class="comment"># Codex setup</span>
+<span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
+<span class="prompt">$</span> <span class="cmd">kin init</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-codex-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-agents-md</span> <span class="flag">--install</span> <span class="flag">--global</span>
+<span class="prompt">$</span> <span class="cmd">kin ingest</span> codex-sessions
+
+<span class="comment"># That's it. Your agent now has:</span>
 <span class="output">  search      &mdash; hybrid FTS5 + graph search</span>
 <span class="output">  add         &mdash; capture knowledge with auto-linking</span>
 <span class="output">  context     &mdash; formatted context block at any tier</span>
@@ -701,7 +711,7 @@ inherits:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.12.0 &middot; Claude Code Plugin &middot; 30 MCP Tools &middot; 49 CLI Commands &middot; 945 Tests</p>
+    <p style="margin-top: 8px;">v0.18.0 &middot; MCP Plugin &middot; 38 MCP Tools &middot; 53 CLI Commands &middot; 986 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

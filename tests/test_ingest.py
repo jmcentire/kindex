@@ -197,6 +197,91 @@ class TestScanSessions:
         assert count2 == 0  # already ingested
         s.close()
 
+    def test_scans_codex_jsonl_sessions(self, tmp_path):
+        data_dir = tmp_path / "data"
+        codex_dir = tmp_path / "codex"
+        sessions_dir = codex_dir / "sessions" / "2026" / "05" / "03"
+        sessions_dir.mkdir(parents=True)
+
+        session_file = sessions_dir / "rollout-2026-05-03T11-20-01-abcdef123456.jsonl"
+        lines = [
+            json.dumps({
+                "type": "session_meta",
+                "payload": {
+                    "id": "abcdef123456",
+                    "cwd": "/Users/test/Code/MyProject",
+                    "cli_version": "0.128.0",
+                    "model_provider": "openai",
+                },
+            }),
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Tell me about kindex memory"}],
+                },
+            }),
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "Kindex memory stores Codex sessions as knowledge graph context. Ambient Structure Discovery uses session traces.",
+                    }],
+                },
+            }),
+        ]
+        session_file.write_text("\n".join(lines))
+
+        cfg = Config(data_dir=str(data_dir), codex_dir=str(codex_dir))
+        s = Store(cfg)
+
+        from kindex.ingest import scan_codex_sessions
+        count = scan_codex_sessions(cfg, s, limit=5)
+
+        assert count >= 1
+        sessions = s.all_nodes(node_type="session")
+        assert len(sessions) >= 1
+        assert sessions[0]["id"].startswith("codex-session-")
+        assert sessions[0]["extra"]["agent"] == "codex"
+        s.close()
+
+    def test_codex_sessions_idempotent(self, tmp_path):
+        data_dir = tmp_path / "data"
+        codex_dir = tmp_path / "codex"
+        sessions_dir = codex_dir / "sessions" / "2026" / "05" / "03"
+        sessions_dir.mkdir(parents=True)
+
+        session_file = sessions_dir / "rollout-abcdef123456.jsonl"
+        session_file.write_text("\n".join([
+            json.dumps({"type": "session_meta", "payload": {"id": "abcdef123456", "cwd": "/tmp/proj"}}),
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "Kindex memory stores Codex sessions as knowledge graph context. Ambient Structure Discovery uses session traces.",
+                    }],
+                },
+            }),
+        ]))
+
+        cfg = Config(data_dir=str(data_dir), codex_dir=str(codex_dir))
+        s = Store(cfg)
+
+        from kindex.ingest import scan_codex_sessions
+        count1 = scan_codex_sessions(cfg, s, limit=5)
+        count2 = scan_codex_sessions(cfg, s, limit=5)
+
+        assert count1 >= 1
+        assert count2 == 0
+        s.close()
+
 
 class TestAudienceInference:
     def test_personal_is_private(self):

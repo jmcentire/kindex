@@ -2,20 +2,22 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.17.0](https://img.shields.io/badge/version-0.17.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.18.0](https://img.shields.io/badge/version-0.18.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-980%20passing-brightgreen.svg)](#)
-[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-orange.svg)](#install-as-claude-code-plugin)
+[![Tests](https://img.shields.io/badge/tests-986%20passing-brightgreen.svg)](#)
+[![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
-**The memory layer Claude Code doesn't have.**
+**The memory layer AI coding agents don't have.**
 
 Kindex does one thing. It knows what you know.
 
-It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code never starts a session blind. Available as a **free Claude Code plugin** (MCP server) or standalone CLI.
+It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code, Codex, and other MCP-capable agents never start a session blind. Available as a **free MCP plugin** or standalone CLI.
 
 > **Memory plugins capture what happened. Kindex captures what it means and how it connects.** Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time — understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.
 
-## Install as Claude Code Plugin
+## Install as Agent MCP Plugin
+
+### Claude Code
 
 Two commands. Zero configuration.
 
@@ -30,6 +32,24 @@ Claude Code now has 30 native tools: `search`, `add`, `context`, `show`, `ask`, 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
+```
+
+### Codex
+
+```bash
+pip install kindex[mcp]
+kin init
+kin setup-codex-mcp
+kin setup-agents-md --install --global
+```
+
+This registers `kin-mcp` in `~/.codex/config.toml` and installs Codex-facing
+AGENTS.md directives that tell Codex to use kindex proactively.
+
+To backfill saved Codex sessions:
+
+```bash
+kin ingest codex-sessions
 ```
 
 ## Install as CLI
@@ -110,25 +130,27 @@ Avg degree: 122.94
 
 192 nodes. 11,802 edges. 5 context tiers. Hybrid FTS5 + graph traversal in 142ms.
 
-## Getting Claude to Actually Use It
+## Getting Agents to Actually Use It
 
-Installing the MCP plugin gives Claude the tools. But Claude won't use them proactively unless you tell it to. Kindex ships with a recommended CLAUDE.md block that turns passive tools into active habits:
+Installing the MCP plugin gives the agent the tools. But agents won't use them proactively unless you tell them to. Kindex ships with recommended instruction blocks that turn passive tools into active habits. For the full agent playbook, see [docs/mcp-agent-guide.md](docs/mcp-agent-guide.md).
 
 ```bash
-# Print the recommended directives
+# Claude Code: print or install the recommended directives
 kin setup-claude-md
-
-# Or auto-append to your global CLAUDE.md
 kin setup-claude-md --install
+
+# Codex: print or install AGENTS.md directives
+kin setup-agents-md
+kin setup-agents-md --install --global
 ```
 
-This adds session lifecycle rules (start/during/segment/end), explicit capture triggers (discoveries, decisions, key files, notable outputs), and search-before-add discipline. The difference between "Claude has a knowledge graph" and "Claude actively maintains a knowledge graph" is this block.
+This adds session lifecycle rules (start/orient/during/segment/end), explicit capture triggers (discoveries, decisions, tasks, key files, notable outputs), and search-before-add discipline. The difference between "the agent has a knowledge graph" and "the agent actively maintains a knowledge graph" is this block.
 
 The SessionStart hook (`kin setup-hooks`) reinforces these directives at the start of every session with a "Session directives" block that reminds Claude to use kindex MCP tools throughout the session.
 
 ### What gets captured
 
-With the directives active, Claude will:
+With the directives active, the agent will:
 - **Search** the graph before starting work and before adding nodes
 - **Add** discoveries, decisions, key files, notable outputs, and new terms as they emerge
 - **Link** related concepts when connections are found
@@ -388,7 +410,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 ### Ingestion & External Sources
 | Command | Description |
 |---------|-------------|
-| `kin ingest <source>` | Ingest from: projects, sessions, files, commits, github, linear, code, all |
+| `kin ingest <source>` | Ingest from: projects, sessions, codex-sessions, files, commits, github, linear, code, all |
 | `kin cron` | One-shot maintenance cycle (for crontab/launchd) |
 | `kin dream` | Knowledge consolidation: dedup, suggestions, edge strengthening (--deep, --detach) |
 | `kin watch` | Watch for new sessions and ingest them (--interval) |
@@ -401,8 +423,10 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin init` | Initialize data directory |
 | `kin config [show\|get\|set]` | View or edit configuration |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
+| `kin setup-codex-mcp` | Install kindex MCP server into Codex |
 | `kin setup-cron` | Install periodic maintenance (launchd/crontab) |
 | `kin setup-claude-md` | Output/install recommended CLAUDE.md kindex directives |
+| `kin setup-agents-md` | Output/install recommended AGENTS.md kindex directives |
 | `kin stop-guard` | Stop hook guard for actionable reminders |
 | `kin doctor` | Health check with graph enforcement (--fix) |
 | `kin migrate` | Import markdown topics into SQLite |

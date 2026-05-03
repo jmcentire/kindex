@@ -128,6 +128,12 @@ def _register_builtins() -> None:
         pass
 
     try:
+        from .codex_sessions import adapter as codex_sessions
+        register(codex_sessions)
+    except Exception:
+        pass
+
+    try:
         from .claude_web import adapter as claude_web
         register(claude_web)
     except Exception:

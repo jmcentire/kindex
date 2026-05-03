@@ -97,6 +97,78 @@ class TestSetupHooks:
         assert "hooks" in data
 
 
+class TestSetupCodex:
+    def test_setup_codex_mcp_installs(self, tmp_path):
+        """Should install Kindex MCP server into Codex config.toml."""
+        from kindex.setup import install_codex_mcp
+
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        config = codex_dir / "config.toml"
+        config.write_text('[projects."/tmp/example"]\ntrust_level = "trusted"\n')
+
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+        actions = install_codex_mcp(cfg)
+
+        assert any("Codex MCP" in a for a in actions)
+        text = config.read_text()
+        assert '[mcp_servers.kindex]' in text
+        assert 'command = "kin-mcp"' in text
+        assert 'trust_level = "trusted"' in text
+
+    def test_setup_codex_mcp_idempotent(self, tmp_path):
+        """Installing twice should not duplicate the Codex MCP block."""
+        from kindex.setup import install_codex_mcp
+
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+
+        install_codex_mcp(cfg)
+        actions2 = install_codex_mcp(cfg)
+
+        assert any("already installed" in a for a in actions2)
+        text = (codex_dir / "config.toml").read_text()
+        assert text.count("[mcp_servers.kindex]") == 1
+
+    def test_setup_codex_mcp_dry_run_does_not_write(self, tmp_path):
+        """Dry run should not create Codex config.toml."""
+        from kindex.setup import install_codex_mcp
+
+        codex_dir = tmp_path / ".codex"
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+
+        actions = install_codex_mcp(cfg, dry_run=True)
+
+        assert any("Would add" in a for a in actions)
+        assert not (codex_dir / "config.toml").exists()
+
+    def test_uninstall_codex_mcp_removes_only_kindex_block(self, tmp_path):
+        """Uninstall should preserve unrelated Codex config."""
+        from kindex.setup import uninstall_codex_mcp
+
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        config = codex_dir / "config.toml"
+        config.write_text(
+            '[projects."/tmp/example"]\n'
+            'trust_level = "trusted"\n\n'
+            '[mcp_servers.kindex]\n'
+            'command = "kin-mcp"\n\n'
+            '[mcp_servers.other]\n'
+            'command = "other-mcp"\n'
+        )
+
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+        actions = uninstall_codex_mcp(cfg)
+
+        assert any("Removed" in a for a in actions)
+        text = config.read_text()
+        assert "[mcp_servers.kindex]" not in text
+        assert "[mcp_servers.other]" in text
+        assert 'trust_level = "trusted"' in text
+
+
 class TestSetupCron:
     def test_setup_cron_dry_run(self, tmp_path):
         d = str(tmp_path)

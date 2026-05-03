@@ -2,6 +2,17 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.18.0] - 2026-05-03
+
+### Added
+- Codex support: `kin setup-codex-mcp` registers `kin-mcp` in `~/.codex/config.toml`.
+- Codex-facing `AGENTS.md` directives via `kin setup-agents-md`, including proactive search, capture, tasks, and session lifecycle guidance.
+- `codex-sessions` adapter for ingesting saved Codex JSONL sessions from `~/.codex/sessions`.
+- Agent-facing MCP usage guide at `docs/mcp-agent-guide.md`.
+
+### Changed
+- README, static docs, privacy copy, and MCP server description now present Kindex as an MCP memory layer for Claude Code, Codex, and other MCP-capable agents.
+
 ## [0.17.0] - 2026-04-11
 
 ### Added

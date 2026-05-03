@@ -61,10 +61,10 @@
 
   <h2>Third-Party Services</h2>
   <p>Kindex does not communicate with any third-party services. It does not make network requests. It does not phone home, check for updates, or transmit telemetry.</p>
-  <p>When used as an MCP server within Claude Code or Claude Desktop, the host application (Anthropic's Claude) may process the tool responses according to its own privacy policy. Kindex itself does not control or participate in that processing.</p>
+  <p>When used as an MCP server within a host application such as Claude Code, Claude Desktop, or Codex, the host provider may process tool responses according to its own privacy policy. Kindex itself does not control or participate in that processing.</p>
 
-  <h2>Claude Code Plugin Context</h2>
-  <p>When Kindex is used as a Claude Code plugin, the MCP tools return text content to the Claude session. This content is processed by Anthropic according to the <a href="https://www.anthropic.com/privacy">Anthropic Privacy Policy</a>. Kindex has no visibility into or control over what happens after tool responses are returned to the host.</p>
+  <h2>MCP Host Context</h2>
+  <p>When Kindex is used as an MCP plugin, tool responses are returned to the host agent session. That content is processed by the host provider, such as Anthropic for Claude Code or OpenAI for Codex, according to that provider's privacy policy. Kindex has no visibility into or control over what happens after tool responses are returned to the host.</p>
 
   <h2>Analytics and Tracking</h2>
   <p>This website (kindex.tools) is a static site hosted on GitHub Pages. It does not use cookies, analytics, tracking pixels, or any third-party scripts. GitHub Pages may collect standard server logs per <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>

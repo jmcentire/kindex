@@ -260,6 +260,160 @@ def scan_sessions(
     return count
 
 
+def scan_codex_sessions(
+    config: Config,
+    store: Store,
+    limit: int = 10,
+    verbose: bool = False,
+) -> int:
+    """Scan Codex session JSONL files from ~/.codex/sessions/.
+
+    Codex stores sessions under YYYY/MM/DD directories. Each line is an event;
+    user and assistant conversation messages appear as response_item payloads.
+    """
+    sessions_dir = config.codex_path / "sessions"
+    if not sessions_dir.exists():
+        return 0
+
+    count = 0
+    from .extract import keyword_extract
+
+    jsonl_files = sorted(
+        sessions_dir.rglob("*.jsonl"),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+
+    for jsonl_path in jsonl_files:
+        meta, text = _extract_codex_session(jsonl_path, max_chars=8000)
+        if not text or len(text) < 50:
+            continue
+
+        raw_session_id = meta.get("id") or jsonl_path.stem
+        session_id = str(raw_session_id).replace("rollout-", "")[:12]
+        session_slug = f"codex-session-{session_id}"
+
+        if store.get_node(session_slug):
+            continue
+
+        extraction = keyword_extract(text)
+        concepts = extraction.get("concepts", [])
+        if not concepts:
+            continue
+
+        cwd = meta.get("cwd") or ""
+        project_context = Path(cwd).name if cwd else jsonl_path.parent.name
+        summary = text[:500]
+
+        extra = {
+            "agent": "codex",
+            "project": project_context,
+            "cwd": cwd,
+            "model_provider": meta.get("model_provider", ""),
+            "cli_version": meta.get("cli_version", ""),
+            "timestamp": meta.get("timestamp", ""),
+        }
+
+        store.add_node(
+            node_id=session_slug,
+            title=f"Codex Session: {project_context[:40]}",
+            content=summary,
+            node_type="session",
+            domains=["codex"],
+            prov_source=str(jsonl_path),
+            prov_activity="codex-session-scan",
+            extra=extra,
+        )
+        count += 1
+
+        if verbose:
+            print(f"  Codex session: {session_slug} ({project_context})")
+
+        for concept in concepts[:5]:
+            existing = store.get_node_by_title(concept["title"])
+            if existing:
+                store.add_edge(
+                    session_slug,
+                    existing["id"],
+                    edge_type="context_of",
+                    weight=0.3,
+                    provenance="mentioned in Codex session",
+                )
+
+        if project_context:
+            _link_session_to_project(store, session_slug, project_context)
+
+    return count
+
+
+def _extract_codex_session(jsonl_path: Path, max_chars: int = 8000) -> tuple[dict, str]:
+    """Extract metadata and readable conversation text from a Codex JSONL session."""
+    meta: dict = {}
+    texts: list[str] = []
+    total_len = 0
+
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            for line in f:
+                if total_len >= max_chars:
+                    break
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                if entry.get("type") == "session_meta":
+                    payload = entry.get("payload") or {}
+                    if isinstance(payload, dict):
+                        meta.update(payload)
+                    continue
+
+                if entry.get("type") != "response_item":
+                    continue
+
+                payload = entry.get("payload") or {}
+                if not isinstance(payload, dict) or payload.get("type") != "message":
+                    continue
+
+                role = payload.get("role")
+                if role not in {"user", "assistant"}:
+                    continue
+
+                for text in _codex_message_texts(payload.get("content")):
+                    stripped = text.strip()
+                    if not stripped or stripped.startswith("<environment_context>"):
+                        continue
+                    prefix = "User" if role == "user" else "Assistant"
+                    chunk = f"{prefix}: {stripped[:1000]}"
+                    texts.append(chunk)
+                    total_len += len(chunk)
+                    if total_len >= max_chars:
+                        break
+    except OSError:
+        return meta, ""
+
+    return meta, "\n".join(texts)
+
+
+def _codex_message_texts(content) -> list[str]:
+    """Return text blocks from Codex message content."""
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        for key in ("text", "input_text", "output_text"):
+            val = block.get(key)
+            if isinstance(val, str):
+                texts.append(val)
+                break
+    return texts
+
+
 def _extract_session_text(jsonl_path: Path, max_chars: int = 8000) -> str:
     """Extract human-readable text from a Claude Code JSONL session file."""
     texts = []

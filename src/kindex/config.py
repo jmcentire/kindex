@@ -147,6 +147,7 @@ class Config(BaseModel):
     user: str = ""  # current user identity (auto-detected if empty)
     project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
     claude_dir: str = "~/.claude"
+    codex_dir: str = "~/.codex"
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
@@ -188,6 +189,10 @@ class Config(BaseModel):
     @property
     def claude_path(self) -> Path:
         return Path(self.claude_dir).expanduser().resolve()
+
+    @property
+    def codex_path(self) -> Path:
+        return Path(self.codex_dir).expanduser().resolve()
 
     @property
     def resolved_project_dirs(self) -> list[Path]:

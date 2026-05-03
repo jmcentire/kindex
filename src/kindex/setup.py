@@ -1,4 +1,4 @@
-"""System setup — install Claude Code hooks, launchd plists, crontab entries."""
+"""System setup — install agent integrations, launchd plists, crontab entries."""
 
 import json
 import os
@@ -126,6 +126,75 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(data, indent=2) + "\n")
         actions.append(f"Wrote {settings_path}")
+
+    return actions
+
+
+def install_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex as a Codex MCP server in ~/.codex/config.toml.
+
+    This mirrors the config produced by:
+        codex mcp add kindex -- kin-mcp
+
+    Preserves existing Codex settings. Returns list of actions taken.
+    """
+    config_path = config.codex_path / "config.toml"
+    actions = []
+
+    existing = config_path.read_text() if config_path.exists() else ""
+
+    if "[mcp_servers.kindex]" in existing:
+        actions.append("Codex MCP server already installed")
+        return actions
+
+    block = '[mcp_servers.kindex]\ncommand = "kin-mcp"\n'
+
+    if dry_run:
+        actions.append(f"Would add Codex MCP server to {config_path}")
+        actions.append("Would configure: codex mcp add kindex -- kin-mcp")
+        return actions
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = existing.rstrip()
+    content = f"{prefix}\n\n{block}" if prefix else block
+    config_path.write_text(content)
+    actions.append(f"Added Codex MCP server: kindex -> kin-mcp")
+    actions.append(f"Wrote {config_path}")
+    return actions
+
+
+def uninstall_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex's Codex MCP server block from ~/.codex/config.toml."""
+    config_path = config.codex_path / "config.toml"
+    actions = []
+
+    if not config_path.exists():
+        return ["No Codex config.toml found"]
+
+    text = config_path.read_text()
+    lines = text.splitlines()
+    out: list[str] = []
+    removed = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == "[mcp_servers.kindex]":
+            removed = True
+            i += 1
+            while i < len(lines) and not lines[i].lstrip().startswith("["):
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+
+    if not removed:
+        return ["No Kindex Codex MCP server found"]
+
+    if dry_run:
+        actions.append(f"Would remove Codex MCP server from {config_path}")
+    else:
+        config_path.write_text("\n".join(out).rstrip() + "\n")
+        actions.append(f"Removed Codex MCP server from {config_path}")
 
     return actions
 

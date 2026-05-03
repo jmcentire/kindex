@@ -3304,6 +3304,22 @@ def cmd_setup_hooks(args):
         print(f"  {a}")
 
 
+def cmd_setup_codex_mcp(args):
+    """Install/uninstall Kindex as a Codex MCP server."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_codex_mcp
+        actions = uninstall_codex_mcp(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_codex_mcp
+        actions = install_codex_mcp(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
 def cmd_setup_cron(args):
     """Install/uninstall periodic cron job for kin maintenance."""
     import platform
@@ -3374,6 +3390,34 @@ def cmd_setup_claude_md(args):
         print(block)
 
 
+def cmd_setup_agents_md(args):
+    """Output recommended AGENTS.md block for Codex/kindex integration.
+
+    kin setup-agents-md           — print to stdout
+    kin setup-agents-md --install — append to ./AGENTS.md if not present
+    kin setup-agents-md --install --global — append to ~/.codex/AGENTS.md
+    """
+    block = _kindex_agents_md_block()
+
+    if getattr(args, "install", False):
+        cfg = _config(args)
+        agents_md = cfg.codex_path / "AGENTS.md" if getattr(args, "global_install", False) else Path.cwd() / "AGENTS.md"
+        if agents_md.exists():
+            existing = agents_md.read_text()
+            if "Kindex (REQUIRED" in existing or "kindex MCP tools" in existing:
+                print(f"Kindex directives already present in {agents_md}")
+                return
+            with open(agents_md, "a") as f:
+                f.write("\n" + block)
+            print(f"Appended kindex directives to {agents_md}")
+        else:
+            agents_md.parent.mkdir(parents=True, exist_ok=True)
+            agents_md.write_text(block)
+            print(f"Created {agents_md} with kindex directives")
+    else:
+        print(block)
+
+
 def _kindex_claude_md_block() -> str:
     """Generate the recommended CLAUDE.md block for kindex integration."""
     return """\
@@ -3420,6 +3464,50 @@ multiple concepts at once
 ### Reminders with actions
 - Use `remind_create` with `action` and/or `instructions` for deferred tasks
 - The daemon will execute shell commands or launch headless Claude when they come due
+"""
+
+
+def _kindex_agents_md_block() -> str:
+    """Generate the recommended AGENTS.md block for Codex/kindex integration."""
+    return """\
+## Kindex (REQUIRED -- follow these in every session)
+
+Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
+`show`, `link`, `list_nodes`, `status`, `ask`, `suggest`, `learn`, `graph_stats`, \
+`changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_add`, \
+`task_done`, `task_list`, `remind_create`, `remind_exec`) are available through \
+the `kindex` MCP server. Use them proactively.
+
+### Session lifecycle
+1. **Start**: call `tag_start` with a name and focus for the current task, OR \
+`tag_resume` if continuing previous work.
+2. **Orient**: call `search` or `context` before significant work to see what is \
+already known.
+3. **During**: capture important discoveries, decisions, tasks, and connections as \
+they happen.
+4. **Segment**: when switching topics, call `tag_update` with `action=segment` and \
+a concise summary.
+5. **End**: call `tag_update` with `action=end` and a summary before the session closes.
+
+### What to capture
+- **Discoveries**: new patterns, surprising findings, "aha" moments -- `add` as concept
+- **Decisions**: architectural choices, trade-offs made, why X over Y -- `add` as decision
+- **Key files**: what a file does or why it exists -- `add` as concept with the file path
+- **Notable outputs**: test results, build errors, performance numbers, API responses worth remembering
+- **Tasks**: actionable work items -- use `task_add` and link to related concepts when possible
+- **Questions**: open problems and things to investigate later -- `add` as question
+- **Connections**: when two concepts relate -- `link` them with a reason
+
+### What not to capture
+- Trivial file reads, routine git operations, boilerplate
+- Anything already in the graph -- always `search` before adding
+
+### Bulk capture
+- After reading a long file, article, or output: use `learn` to extract and index multiple concepts
+- After a complex multi-step task: use `learn` with a summary of what happened and why
+
+### Working rule
+Do not wait for the user to mention kindex. Treat it as your durable memory layer.
 """
 
 
@@ -3854,6 +3942,13 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_setup_hooks)
 
+    # setup-codex-mcp
+    s = sub.add_parser("setup-codex-mcp", help="Install Kindex MCP server into Codex")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed MCP server")
+    _common(s)
+    s.set_defaults(func=cmd_setup_codex_mcp)
+
     # setup-cron
     s = sub.add_parser("setup-cron", help="Install periodic cron job for kin maintenance")
     s.add_argument("--dry-run", action="store_true", help="Show what would be done")
@@ -3870,6 +3965,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Append to ~/.claude/CLAUDE.md (if not already present)")
     _common(s)
     s.set_defaults(func=cmd_setup_claude_md)
+
+    # setup-agents-md
+    s = sub.add_parser("setup-agents-md",
+                       help="Output recommended AGENTS.md kindex directives")
+    s.add_argument("--install", action="store_true",
+                   help="Append to ./AGENTS.md (if not already present)")
+    s.add_argument("--global", dest="global_install", action="store_true",
+                   help="With --install, append to ~/.codex/AGENTS.md instead")
+    _common(s)
+    s.set_defaults(func=cmd_setup_agents_md)
 
     # config
     s = sub.add_parser("config", help="View or edit configuration")
