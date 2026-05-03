@@ -3478,6 +3478,9 @@ Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
 `task_done`, `task_list`, `remind_create`, `remind_exec`) are available through \
 the `kindex` MCP server. Use them proactively.
 
+### Startup environment
+- At the start of each session, source `~/.profile` into the shell environment before running project commands when feasible.
+
 ### Session lifecycle
 1. **Start**: call `tag_start` with a name and focus for the current task, OR \
 `tag_resume` if continuing previous work.
