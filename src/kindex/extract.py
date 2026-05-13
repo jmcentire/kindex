@@ -33,7 +33,7 @@ def _get_client(config: Config):
     except ImportError:
         import sys
         print("Warning: 'anthropic' package not installed. "
-              "Install with: pip install kindex[llm]", file=sys.stderr)
+              "Install with: uv tool install 'kindex[llm]'  (or: pip install kindex[llm])", file=sys.stderr)
         return None
 
 

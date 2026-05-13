@@ -1,7 +1,7 @@
 """Optional vector embedding support via sqlite-vec.
 
 Enables semantic similarity search when installed:
-    pip install kindex[vectors]          # just sqlite-vec; API-based providers work out of the box
+    uv tool install 'kindex[vectors]'    # just sqlite-vec; API-based providers work out of the box
     pip install sentence-transformers    # opt-in for local embeddings (pulls torch + sklearn)
 
 Supports multiple embedding providers:

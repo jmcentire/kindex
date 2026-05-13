@@ -114,7 +114,7 @@ transcript. Capture what should help a future agent or future user.
 ### Claude Code
 
 ```bash
-pip install kindex[mcp]
+uv tool install 'kindex[mcp]'
 claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 kin setup-claude-md --install
@@ -126,26 +126,29 @@ capture pre-compaction context, and run stop guards.
 
 ### Codex
 
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.kindex]
+command = "kin-mcp"
+```
+
+Or automate setup:
+
 ```bash
-pip install kindex[mcp]
+uv tool install 'kindex[mcp]'
 kin init
 kin setup-codex-mcp
 kin setup-agents-md --install --global
-```
-
-Codex uses the same `kin-mcp` server. The `setup-agents-md` command installs
-standing instructions that tell Codex to use kindex proactively.
-
-To ingest saved Codex sessions:
-
-```bash
-kin ingest codex-sessions
+kin ingest codex-sessions  # optional: backfill saved sessions
 ```
 
 ## Human Setup Checklist
 
-1. Install the MCP server for your agent.
-2. Install the agent instruction file (`CLAUDE.md` or `AGENTS.md`).
-3. Initialize kindex with `kin init`.
-4. Run `kin setup-cron` for periodic maintenance.
-5. Backfill saved sessions with `kin ingest codex-sessions` or `kin ingest sessions`.
+1. Install `uv` if not present: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+2. Install kindex: `uv tool install 'kindex[mcp]'`
+3. Install the MCP server for your agent (see Client Setup above).
+4. Install the agent instruction file (`CLAUDE.md` or `AGENTS.md`).
+5. Run `kin init` to initialize the knowledge graph.
+6. Run `kin setup-cron` for periodic maintenance.
+7. Backfill saved sessions: `kin ingest codex-sessions` or `kin ingest sessions`.

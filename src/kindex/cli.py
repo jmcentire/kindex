@@ -1876,7 +1876,7 @@ def cmd_whoami(args):
 def cmd_embed(args):
     """Index all nodes for vector similarity search.
 
-    Requires: pip install kindex[vectors]
+    Requires: uv tool install 'kindex[vectors]'  (or: pip install kindex[vectors])
     """
     store = _store(args)
 

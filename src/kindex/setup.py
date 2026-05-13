@@ -151,14 +151,14 @@ def install_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
 
     if dry_run:
         actions.append(f"Would add Codex MCP server to {config_path}")
-        actions.append("Would configure: codex mcp add kindex -- kin-mcp")
+        actions.append("Would configure: kin-mcp")
         return actions
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     prefix = existing.rstrip()
     content = f"{prefix}\n\n{block}" if prefix else block
     config_path.write_text(content)
-    actions.append(f"Added Codex MCP server: kindex -> kin-mcp")
+    actions.append("Added Codex MCP server: kindex -> kin-mcp")
     actions.append(f"Wrote {config_path}")
     return actions
 

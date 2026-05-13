@@ -17,12 +17,16 @@ It's a persistent knowledge graph for AI-assisted workflows. It indexes your con
 
 ## Install as Agent MCP Plugin
 
-### Claude Code
-
-Two commands. Zero configuration.
+Requires [`uv`](https://github.com/astral-sh/uv). If you don't have it:
 
 ```bash
-pip install kindex[mcp]
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Claude Code
+
+```bash
+uv tool install 'kindex[mcp]'
 claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
@@ -36,42 +40,42 @@ Or add `.mcp.json` to any repo for project-scope access:
 
 ### Codex
 
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.kindex]
+command = "kin-mcp"
+```
+
+Or automate setup with the `kin` CLI:
+
 ```bash
-pip install kindex[mcp]
+uv tool install 'kindex[mcp]'
 kin init
 kin setup-codex-mcp
 kin setup-agents-md --install --global
-```
-
-This registers `kin-mcp` in `~/.codex/config.toml` and installs Codex-facing
-AGENTS.md directives that tell Codex to use kindex proactively.
-
-To backfill saved Codex sessions:
-
-```bash
-kin ingest codex-sessions
+kin ingest codex-sessions  # optional: backfill saved Codex sessions
 ```
 
 ## Install as CLI
 
 ```bash
-pip install kindex
+uv tool install kindex
 kin init
 ```
 
-With LLM-powered extraction:
+With extras:
 ```bash
-pip install kindex[llm]
+uv tool install 'kindex[llm]'        # LLM-powered extraction
+uv tool install 'kindex[reminders]'  # natural language time parsing
+uv tool install 'kindex[mcp]'        # MCP server (kin-mcp)
+uv tool install 'kindex[all]'        # everything
 ```
 
-With reminders (natural language time parsing):
+Or with pip:
 ```bash
-pip install kindex[reminders]
-```
-
-With everything (LLM + vectors + MCP + reminders):
-```bash
-pip install kindex[all]
+pip install kindex
+kin init
 ```
 
 ## Why Kindex
