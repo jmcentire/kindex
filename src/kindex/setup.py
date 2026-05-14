@@ -199,6 +199,64 @@ def uninstall_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     return actions
 
 
+def install_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Write Kindex MCP config to ~/.gemini/settings.json."""
+    settings_path = config.gemini_path / "settings.json"
+    actions = []
+
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text())
+    else:
+        data = {}
+
+    mcp_servers = data.setdefault("mcpServers", {})
+    if "kindex" in mcp_servers:
+        actions.append("Gemini MCP server already installed")
+        return actions
+
+    mcp_servers["kindex"] = {"command": "kin-mcp", "args": []}
+
+    if dry_run:
+        actions.append(f"Would add Gemini MCP server to {settings_path}")
+        actions.append('Would configure: mcpServers.kindex = {"command":"kin-mcp","args":[]}')
+        return actions
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append("Added Gemini MCP server: kindex -> kin-mcp")
+    actions.append(f"Wrote {settings_path}")
+    return actions
+
+
+def uninstall_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex MCP config from ~/.gemini/settings.json."""
+    settings_path = config.gemini_path / "settings.json"
+    actions = []
+
+    if not settings_path.exists():
+        return ["No Gemini settings.json found"]
+
+    data = json.loads(settings_path.read_text())
+    mcp_servers = data.get("mcpServers", {})
+
+    if "kindex" not in mcp_servers:
+        return ["No Kindex Gemini MCP server found"]
+
+    if dry_run:
+        actions.append(f"Would remove Gemini MCP server from {settings_path}")
+        return actions
+
+    del mcp_servers["kindex"]
+    if mcp_servers:
+        data["mcpServers"] = mcp_servers
+    else:
+        data.pop("mcpServers", None)
+
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append(f"Removed Gemini MCP server from {settings_path}")
+    return actions
+
+
 def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
     """Install macOS launchd plist for kin cron.
 

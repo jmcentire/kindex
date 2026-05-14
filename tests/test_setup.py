@@ -169,6 +169,85 @@ class TestSetupCodex:
         assert 'trust_level = "trusted"' in text
 
 
+class TestSetupGemini:
+    def test_setup_gemini_mcp_installs(self, tmp_path):
+        """Should install Kindex MCP server into Gemini settings.json."""
+        from kindex.setup import install_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings = gemini_dir / "settings.json"
+        settings.write_text(json.dumps({"theme": "dark"}))
+
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+        actions = install_gemini_mcp(cfg)
+
+        assert any("Gemini MCP" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert data["theme"] == "dark"
+        assert data["mcpServers"]["kindex"]["command"] == "kin-mcp"
+        assert data["mcpServers"]["kindex"]["args"] == []
+
+    def test_setup_gemini_mcp_idempotent(self, tmp_path):
+        """Installing twice should not duplicate the Gemini MCP entry."""
+        from kindex.setup import install_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+
+        install_gemini_mcp(cfg)
+        actions2 = install_gemini_mcp(cfg)
+
+        assert any("already installed" in a for a in actions2)
+        data = json.loads((gemini_dir / "settings.json").read_text())
+        assert list(data["mcpServers"].keys()).count("kindex") == 1
+
+    def test_setup_gemini_mcp_dry_run_does_not_write(self, tmp_path):
+        """Dry run should not create Gemini settings.json."""
+        from kindex.setup import install_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+
+        actions = install_gemini_mcp(cfg, dry_run=True)
+
+        assert any("Would add" in a for a in actions)
+        assert not (gemini_dir / "settings.json").exists()
+
+    def test_uninstall_gemini_mcp_removes_only_kindex_entry(self, tmp_path):
+        """Uninstall should preserve unrelated Gemini settings."""
+        from kindex.setup import uninstall_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings = gemini_dir / "settings.json"
+        settings.write_text(json.dumps({
+            "theme": "dark",
+            "mcpServers": {
+                "kindex": {"command": "kin-mcp", "args": []},
+                "other": {"command": "other-mcp", "args": ["--x"]},
+            },
+        }))
+
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+        actions = uninstall_gemini_mcp(cfg)
+
+        assert any("Removed" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert "kindex" not in data["mcpServers"]
+        assert "other" in data["mcpServers"]
+        assert data["theme"] == "dark"
+
+    def test_setup_gemini_mcp_dry_run_cli(self, tmp_path):
+        """CLI dry run should succeed without writing settings."""
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        r = run("setup-gemini-mcp", "--dry-run", data_dir=d)
+        assert r.returncode == 0
+        assert "Would add Gemini MCP server" in r.stdout
+
+
 class TestSetupCron:
     def test_setup_cron_dry_run(self, tmp_path):
         d = str(tmp_path)

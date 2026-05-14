@@ -148,6 +148,7 @@ class Config(BaseModel):
     project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
     claude_dir: str = "~/.claude"
     codex_dir: str = "~/.codex"
+    gemini_dir: str = "~/.gemini"
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
@@ -193,6 +194,10 @@ class Config(BaseModel):
     @property
     def codex_path(self) -> Path:
         return Path(self.codex_dir).expanduser().resolve()
+
+    @property
+    def gemini_path(self) -> Path:
+        return Path(self.gemini_dir).expanduser().resolve()
 
     @property
     def resolved_project_dirs(self) -> list[Path]:
