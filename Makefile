@@ -1,4 +1,8 @@
-.PHONY: install dev test test-verbose test-coverage lint check clean docs help all
+.PHONY: install dev test test-verbose test-coverage lint check clean docs help all build-dist verify-dist-install validate-mcp-registry distribute
+
+PYTHON ?= python3
+VERSION := $(shell $(PYTHON) -c "from kindex import __version__; print(__version__)")
+DIST_WHEEL := dist/kindex-$(VERSION)-py3-none-any.whl
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -7,31 +11,52 @@ help: ## Show this help
 all: install test ## Install and run tests
 
 install: ## Install kindex (kin CLI)
-	pip install -e .
+	$(PYTHON) -m pip install -e .
 
 dev: ## Install with dev + LLM dependencies
-	pip install -e ".[dev,llm]"
+	$(PYTHON) -m pip install -e ".[dev,llm]"
 
 test: ## Run test suite
-	python -m pytest tests/ -x -q
+	$(PYTHON) -m pytest tests/ -x -q
 
 test-verbose: ## Run tests with full output
-	python -m pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -v
 
 test-coverage: ## Run tests with coverage report
-	python -m pytest tests/ --cov=kindex --cov-report=term-missing -q
+	$(PYTHON) -m pytest tests/ --cov=kindex --cov-report=term-missing -q
 
 lint: ## Run basic checks
-	python -m py_compile src/kindex/cli.py
-	python -m py_compile src/kindex/store.py
-	python -m py_compile src/kindex/config.py
-	python -m py_compile src/kindex/extract.py
-	python -m py_compile src/kindex/ingest.py
-	python -m py_compile src/kindex/analytics.py
-	python -m py_compile src/kindex/reminders.py
-	python -m py_compile src/kindex/notify.py
+	$(PYTHON) -m py_compile src/kindex/cli.py
+	$(PYTHON) -m py_compile src/kindex/store.py
+	$(PYTHON) -m py_compile src/kindex/config.py
+	$(PYTHON) -m py_compile src/kindex/extract.py
+	$(PYTHON) -m py_compile src/kindex/ingest.py
+	$(PYTHON) -m py_compile src/kindex/analytics.py
+	$(PYTHON) -m py_compile src/kindex/reminders.py
+	$(PYTHON) -m py_compile src/kindex/notify.py
 
 check: lint test ## Lint + test combined
+
+build-dist: ## Build source/wheel distributions
+	@$(PYTHON) -c "import build" 2>/dev/null || (echo "Missing build module. Run: $(PYTHON) -m pip install build  (or: make dev)" && exit 1)
+	$(PYTHON) -m build
+
+verify-dist-install: build-dist ## Verify built wheel installs with MCP extra
+	@test -f "$(DIST_WHEEL)" || (echo "Missing $(DIST_WHEEL)" && exit 1)
+	@TMP_DIR=$$(mktemp -d); \
+	echo "Installing $(DIST_WHEEL)[mcp] into $$TMP_DIR"; \
+	$(PYTHON) -m pip install --quiet --no-cache-dir --target "$$TMP_DIR" "$(DIST_WHEEL)[mcp]"; \
+	PYTHONPATH="$$TMP_DIR" $(PYTHON) -S -c "import kindex, kindex.mcp_server; print('verified', kindex.__version__)"
+
+validate-mcp-registry: ## Validate server.json with mcp-publisher if installed
+	@if command -v mcp-publisher >/dev/null 2>&1; then \
+		mcp-publisher validate server.json; \
+	else \
+		echo "Skipping MCP Registry validation: mcp-publisher is not installed"; \
+		echo "Install from https://github.com/modelcontextprotocol/registry/releases"; \
+	fi
+
+distribute: check verify-dist-install validate-mcp-registry ## Release preflight: tests, build, install, registry metadata validation
 
 clean: ## Remove build artifacts
 	rm -rf build/ dist/ *.egg-info src/*.egg-info .pytest_cache .coverage htmlcov/
@@ -41,4 +66,4 @@ docs: ## Open landing page in browser
 	open docs/index.html 2>/dev/null || xdg-open docs/index.html 2>/dev/null || echo "Open docs/index.html in your browser"
 
 version: ## Show current version
-	@python -c "from kindex import __version__; print(__version__)"
+	@$(PYTHON) -c "from kindex import __version__; print(__version__)"
