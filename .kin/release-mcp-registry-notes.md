@@ -103,13 +103,13 @@ install the `mcp` extra. Fix before relying on registry install buttons:
 The official registry is `https://github.com/modelcontextprotocol/registry`.
 It provides the `mcp-publisher` binary used to publish `server.json`.
 
-Registry API check on 2026-05-15:
+Initial registry API check on 2026-05-15:
 
 ```bash
 curl 'https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.jmcentire/kindex'
 ```
 
-Result: the official registry only had Kindex versions `0.4.0` and `0.4.1`.
+Initial result: the official registry only had Kindex versions `0.4.0` and `0.4.1`.
 The `0.4.1` entry was marked latest. This explains why MCPMarket still showed
 old Kindex metadata even after the repo `server.json`, PyPI, docs, and live
 server card were updated.
@@ -133,16 +133,23 @@ install with the MCP extra, and validates `server.json` when `mcp-publisher` is
 installed. It requires the Python `build` module; install it directly or run
 `make dev`. It is intentionally a preflight, not an implicit publisher.
 
-Fix before publishing to the official registry:
+Publish/update process:
 
 1. Run `make distribute`.
 2. Authenticate with `mcp-publisher login github`.
 3. Publish with `mcp-publisher publish server.json`.
 4. Re-check the official registry API and then `https://mcpmarket.com/server/kindex`.
 
+Update: after GitHub device authorization, the official registry accepted
+`server.json`. The registry now shows Kindex `0.19.0` as latest with
+`publishedAt` / `updatedAt` `2026-05-15T23:49:32.364128Z`. The local auth token
+is stored at `~/.config/mcp-publisher/token.json`; that file is credentials,
+not the publisher binary. The publisher binary has also been installed to
+`~/bin/mcp-publisher`, which is on the shell `PATH`.
+
 ## MCPMarket state
 
-MCPMarket listing checked after v0.19.0 release:
+MCPMarket listing checked before the official registry update:
 
 - URL: `https://mcpmarket.com/server/kindex`
 - Still appeared stale/cached.
@@ -157,6 +164,5 @@ Kindex graph follow-up created:
 - Watch: verify MCPMarket after releases and escalate/manual-refresh if it does
   not show current `server.json` / server-card data.
 
-Likely path: publish the new `server.json` to the official MCP Registry first,
-then wait for MCPMarket to ingest it or request a manual refresh from MCPMarket
-if it remains stale.
+Next path: wait for MCPMarket to ingest the official registry `0.19.0` update,
+or request a manual refresh from MCPMarket if it remains stale.
