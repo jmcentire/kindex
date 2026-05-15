@@ -199,6 +199,175 @@ def uninstall_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     return actions
 
 
+def install_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex MCP server config into ~/.gemini/settings.json."""
+    settings_path = config.gemini_path / "settings.json"
+    actions = []
+
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text())
+    else:
+        data = {}
+
+    mcp_servers = data.setdefault("mcpServers", {})
+    if "kindex" in mcp_servers:
+        return ["Gemini MCP server already installed"]
+
+    mcp_servers["kindex"] = {"command": "kin-mcp", "args": []}
+
+    if dry_run:
+        actions.append(f"Would add Gemini MCP server to {settings_path}")
+        actions.append('Would configure: mcpServers.kindex = {"command":"kin-mcp","args":[]}')
+        return actions
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append("Added Gemini MCP server: kindex -> kin-mcp")
+    actions.append(f"Wrote {settings_path}")
+    return actions
+
+
+def uninstall_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex MCP config from ~/.gemini/settings.json."""
+    settings_path = config.gemini_path / "settings.json"
+
+    if not settings_path.exists():
+        return ["No Gemini settings.json found"]
+
+    data = json.loads(settings_path.read_text())
+    mcp_servers = data.get("mcpServers", {})
+
+    if "kindex" not in mcp_servers:
+        return ["No Kindex Gemini MCP server found"]
+
+    if dry_run:
+        return [f"Would remove Gemini MCP server from {settings_path}"]
+
+    del mcp_servers["kindex"]
+    if mcp_servers:
+        data["mcpServers"] = mcp_servers
+    else:
+        data.pop("mcpServers", None)
+
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    return [f"Removed Gemini MCP server from {settings_path}"]
+
+
+def install_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex MCP server config into ~/.config/opencode/opencode.json."""
+    settings_path = config.opencode_path / "opencode.json"
+    actions = []
+
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text())
+    else:
+        data = {"$schema": "https://opencode.ai/config.json"}
+
+    mcp = data.setdefault("mcp", {})
+    if "kindex" in mcp:
+        return ["OpenCode MCP server already installed"]
+
+    mcp["kindex"] = {
+        "type": "local",
+        "command": ["kin-mcp"],
+        "enabled": True,
+    }
+
+    if dry_run:
+        actions.append(f"Would add OpenCode MCP server to {settings_path}")
+        actions.append('Would configure: mcp.kindex = {"type":"local","command":["kin-mcp"],"enabled":true}')
+        return actions
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append("Added OpenCode MCP server: kindex -> kin-mcp")
+    actions.append(f"Wrote {settings_path}")
+    return actions
+
+
+def uninstall_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex MCP config from ~/.config/opencode/opencode.json."""
+    settings_path = config.opencode_path / "opencode.json"
+
+    if not settings_path.exists():
+        return ["No OpenCode opencode.json found"]
+
+    data = json.loads(settings_path.read_text())
+    mcp = data.get("mcp", {})
+
+    if "kindex" not in mcp:
+        return ["No Kindex OpenCode MCP server found"]
+
+    if dry_run:
+        return [f"Would remove OpenCode MCP server from {settings_path}"]
+
+    del mcp["kindex"]
+    if mcp:
+        data["mcp"] = mcp
+    else:
+        data.pop("mcp", None)
+
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    return [f"Removed OpenCode MCP server from {settings_path}"]
+
+
+def install_cursor_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex MCP server config into ~/.cursor/mcp.json."""
+    settings_path = config.cursor_path / "mcp.json"
+    actions = []
+
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text())
+    else:
+        data = {}
+
+    mcp_servers = data.setdefault("mcpServers", {})
+    if "kindex" in mcp_servers:
+        return ["Cursor MCP server already installed"]
+
+    mcp_servers["kindex"] = {
+        "type": "stdio",
+        "command": "kin-mcp",
+    }
+
+    if dry_run:
+        actions.append(f"Would add Cursor MCP server to {settings_path}")
+        actions.append('Would configure: mcpServers.kindex = {"type":"stdio","command":"kin-mcp"}')
+        return actions
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append("Added Cursor MCP server: kindex -> kin-mcp")
+    actions.append(f"Wrote {settings_path}")
+    return actions
+
+
+def uninstall_cursor_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex MCP config from ~/.cursor/mcp.json."""
+    settings_path = config.cursor_path / "mcp.json"
+
+    if not settings_path.exists():
+        return ["No Cursor mcp.json found"]
+
+    data = json.loads(settings_path.read_text())
+    mcp_servers = data.get("mcpServers", {})
+
+    if "kindex" not in mcp_servers:
+        return ["No Kindex Cursor MCP server found"]
+
+    if dry_run:
+        return [f"Would remove Cursor MCP server from {settings_path}"]
+
+    del mcp_servers["kindex"]
+    if mcp_servers:
+        data["mcpServers"] = mcp_servers
+    else:
+        data.pop("mcpServers", None)
+
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    return [f"Removed Cursor MCP server from {settings_path}"]
+
+
 def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
     """Install macOS launchd plist for kin cron.
 

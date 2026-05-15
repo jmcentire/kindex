@@ -11,67 +11,118 @@
 
 Kindex does one thing. It knows what you know.
 
-It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code, Codex, and other MCP-capable agents never start a session blind. Available as a **free MCP plugin** or standalone CLI.
+It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents never start a session blind. Available as a **free MCP plugin** or standalone CLI.
 
 > **Memory plugins capture what happened. Kindex captures what it means and how it connects.** Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time — understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.
 
-## Install as Agent MCP Plugin
+## Install
 
-### Claude Code
-
-Two commands. Zero configuration.
+Pick whichever installer you already use. They all install the same `kin` and `kin-mcp` binaries.
 
 ```bash
-pip install kindex[mcp]
-claude mcp add --scope user --transport stdio kindex -- kin-mcp
+# pip
+pip install 'kindex[mcp]'
+
+# uv (single binary, no virtualenv)
+uv tool install 'kindex[mcp]'
+
+# uvx (no install — runs from cache, useful for one-off MCP invocation)
+uvx --from 'kindex[mcp]' kin-mcp --help
+
+# from source
+git clone https://github.com/jmcentire/kindex && cd kindex && make install
+```
+
+Then initialize the graph:
+
+```bash
 kin init
 ```
 
-Claude Code now has 30 native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, `remind_list`, `remind_snooze`, `remind_done`, `remind_check`, `remind_exec`, `mode_activate`, `mode_list`, `mode_show`, `mode_create`, `mode_export`, `mode_import`, `mode_seed`.
+Extras — combine in one install (`'kindex[mcp,llm,reminders]'`) or use `'kindex[all]'`:
+
+| Extra | Adds |
+|-------|------|
+| `mcp` | `kin-mcp` MCP server (for Claude Code, Codex, Gemini, OpenCode, Cursor, etc.) |
+| `llm` | Anthropic-powered extraction (`kin learn`, `kin ask`) |
+| `vectors` | sqlite-vec for semantic similarity search |
+| `reminders` | Natural-language time parsing for `kin remind` |
+| `all` | Everything above |
+
+> Homebrew and apt packages aren't published yet. Use `pip`, `uv tool`, `uvx`, or source until they are.
+
+## Install as Agent MCP Plugin
+
+Each agent reads MCP servers from a different config file. The `kin setup-*-mcp` commands write the right shape into the right path; the manual snippet is shown alongside in case you'd rather edit the file yourself.
+
+### Claude Code
+
+```bash
+claude mcp add --scope user --transport stdio kindex -- kin-mcp
+kin init
+```
 
 Or add `.mcp.json` to any repo for project-scope access:
 ```json
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
 ```
 
+Claude Code now has 30+ native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_*`, `mode_*`, and more.
+
 ### Codex
 
 ```bash
-pip install kindex[mcp]
-kin init
 kin setup-codex-mcp
 kin setup-agents-md --install --global
+kin ingest codex-sessions   # optional: backfill saved Codex sessions
 ```
 
-This registers `kin-mcp` in `~/.codex/config.toml` and installs Codex-facing
-AGENTS.md directives that tell Codex to use kindex proactively.
-
-To backfill saved Codex sessions:
-
-```bash
-kin ingest codex-sessions
+Or hand-edit `~/.codex/config.toml`:
+```toml
+[mcp_servers.kindex]
+command = "kin-mcp"
 ```
 
-## Install as CLI
+### Gemini CLI
 
 ```bash
-pip install kindex
-kin init
+kin setup-gemini-mcp
+kin setup-gemini-md --install
 ```
 
-With LLM-powered extraction:
-```bash
-pip install kindex[llm]
+Or hand-edit `~/.gemini/settings.json`:
+```json
+{ "mcpServers": { "kindex": { "command": "kin-mcp", "args": [] } } }
 ```
 
-With reminders (natural language time parsing):
+### OpenCode
+
 ```bash
-pip install kindex[reminders]
+kin setup-opencode-mcp
 ```
 
-With everything (LLM + vectors + MCP + reminders):
+Or hand-edit `~/.config/opencode/opencode.json`:
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "kindex": { "type": "local", "command": ["kin-mcp"], "enabled": true }
+  }
+}
+```
+
+OpenCode reads `AGENTS.md` natively, so `kin setup-agents-md --install` works for OpenCode too.
+
+### Cursor
+
 ```bash
-pip install kindex[all]
+kin setup-cursor-mcp
+kin setup-cursor-rules --install   # writes ~/.cursor/rules/kindex.mdc
+```
+
+Or hand-edit `~/.cursor/mcp.json`:
+```json
+{ "mcpServers": { "kindex": { "type": "stdio", "command": "kin-mcp" } } }
 ```
 
 ## Why Kindex
@@ -135,13 +186,17 @@ Avg degree: 122.94
 Installing the MCP plugin gives the agent the tools. But agents won't use them proactively unless you tell them to. Kindex ships with recommended instruction blocks that turn passive tools into active habits. For the full agent playbook, see [docs/mcp-agent-guide.md](docs/mcp-agent-guide.md).
 
 ```bash
-# Claude Code: print or install the recommended directives
-kin setup-claude-md
+# Claude Code
 kin setup-claude-md --install
 
-# Codex: print or install AGENTS.md directives
-kin setup-agents-md
+# Codex (and OpenCode — both honor AGENTS.md)
 kin setup-agents-md --install --global
+
+# Gemini CLI
+kin setup-gemini-md --install
+
+# Cursor — writes ~/.cursor/rules/kindex.mdc with alwaysApply: true
+kin setup-cursor-rules --install
 ```
 
 This adds session lifecycle rules (start/orient/during/segment/end), explicit capture triggers (discoveries, decisions, tasks, key files, notable outputs), and search-before-add discipline. The difference between "the agent has a knowledge graph" and "the agent actively maintains a knowledge graph" is this block.
@@ -424,9 +479,14 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin config [show\|get\|set]` | View or edit configuration |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
 | `kin setup-codex-mcp` | Install kindex MCP server into Codex |
+| `kin setup-gemini-mcp` | Install kindex MCP server into Gemini CLI |
+| `kin setup-opencode-mcp` | Install kindex MCP server into OpenCode |
+| `kin setup-cursor-mcp` | Install kindex MCP server into Cursor |
 | `kin setup-cron` | Install periodic maintenance (launchd/crontab) |
 | `kin setup-claude-md` | Output/install recommended CLAUDE.md kindex directives |
-| `kin setup-agents-md` | Output/install recommended AGENTS.md kindex directives |
+| `kin setup-agents-md` | Output/install recommended AGENTS.md kindex directives (Codex, OpenCode) |
+| `kin setup-gemini-md` | Output/install recommended GEMINI.md kindex directives |
+| `kin setup-cursor-rules` | Output/install recommended Cursor rule (.mdc) for kindex |
 | `kin stop-guard` | Stop hook guard for actionable reminders |
 | `kin doctor` | Health check with graph enforcement (--fix) |
 | `kin migrate` | Import markdown topics into SQLite |

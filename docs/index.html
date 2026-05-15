@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kindex — The memory layer AI coding agents don't have</title>
-<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, and other MCP-capable agents never start blind. Free MCP plugin with CLI, ingestion, and cache-optimized LLM retrieval.">
+<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents never start blind. Free MCP plugin with CLI, ingestion, and cache-optimized LLM retrieval.">
 <style>
   :root {
     --bg: #0d1117;
@@ -251,17 +251,17 @@
     </p>
     <p class="subline">
       Kindex does one thing. It knows what you know.
-      A persistent knowledge graph so Claude Code, Codex, and other MCP-capable agents never start blind.
+      A persistent knowledge graph so Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents never start blind.
     </p>
     <div class="install-boxes">
       <div class="install-box primary mono">
-        <span class="prompt">$</span> <code>pip install kindex[mcp]</code>
+        <span class="prompt">$</span> <code>pip install 'kindex[mcp]'</code>
       </div>
       <div class="install-box mono">
-        <span class="prompt">$</span> <code>claude mcp add -s user -t stdio kindex -- kin-mcp</code>
+        <span class="prompt">$</span> <code>uv tool install 'kindex[mcp]'</code>
       </div>
       <div class="install-box mono">
-        <span class="prompt">$</span> <code>kin setup-codex-mcp</code>
+        <span class="prompt">$</span> <code>git clone https://github.com/jmcentire/kindex && cd kindex && make install</code>
       </div>
     </div>
     <div class="badges">
@@ -401,19 +401,26 @@
 <section>
   <div class="container">
     <h2>Install as Agent MCP Plugin</h2>
-    <p>Claude Code, Codex, and other MCP-capable agents get native tools for your knowledge graph.</p>
+    <p>Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents get native tools for your knowledge graph. Pick whichever installer you already use &mdash; <code>pip</code>, <code>uv tool</code>, <code>uvx</code>, or <code>git clone &amp;&amp; make install</code>.</p>
     <div class="terminal mono">
-<span class="comment"># Install and register (one time)</span>
-<span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
+<span class="comment"># Claude Code</span>
 <span class="prompt">$</span> <span class="cmd">claude mcp add</span> <span class="flag">--scope</span> user <span class="flag">--transport</span> stdio kindex <span class="flag">--</span> kin-mcp
 <span class="prompt">$</span> <span class="cmd">kin init</span>
 
-<span class="comment"># Codex setup</span>
-<span class="prompt">$</span> <span class="cmd">pip install</span> kindex[mcp]
-<span class="prompt">$</span> <span class="cmd">kin init</span>
+<span class="comment"># Codex</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-codex-mcp</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-agents-md</span> <span class="flag">--install</span> <span class="flag">--global</span>
-<span class="prompt">$</span> <span class="cmd">kin ingest</span> codex-sessions
+
+<span class="comment"># Gemini CLI</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-gemini-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-gemini-md</span> <span class="flag">--install</span>
+
+<span class="comment"># OpenCode (also reads AGENTS.md)</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-opencode-mcp</span>
+
+<span class="comment"># Cursor</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-cursor-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-cursor-rules</span> <span class="flag">--install</span>
 
 <span class="comment"># That's it. Your agent now has:</span>
 <span class="output">  search      &mdash; hybrid FTS5 + graph search</span>
@@ -684,8 +691,15 @@ inherits:
         <tr><td><code>kin init</code></td><td>Initialize data directory</td></tr>
         <tr><td><code>kin config [show|get|set]</code></td><td>View or edit configuration</td></tr>
         <tr><td><code>kin setup-hooks</code></td><td>Install lifecycle hooks into Claude Code</td></tr>
+        <tr><td><code>kin setup-codex-mcp</code></td><td>Install kindex MCP server into Codex</td></tr>
+        <tr><td><code>kin setup-gemini-mcp</code></td><td>Install kindex MCP server into Gemini CLI</td></tr>
+        <tr><td><code>kin setup-opencode-mcp</code></td><td>Install kindex MCP server into OpenCode</td></tr>
+        <tr><td><code>kin setup-cursor-mcp</code></td><td>Install kindex MCP server into Cursor</td></tr>
         <tr><td><code>kin setup-cron</code></td><td>Install periodic maintenance (launchd/crontab)</td></tr>
         <tr><td><code>kin setup-claude-md</code></td><td>Output/install recommended CLAUDE.md directives</td></tr>
+        <tr><td><code>kin setup-agents-md</code></td><td>Output/install AGENTS.md directives (Codex, OpenCode)</td></tr>
+        <tr><td><code>kin setup-gemini-md</code></td><td>Output/install GEMINI.md directives</td></tr>
+        <tr><td><code>kin setup-cursor-rules</code></td><td>Output/install Cursor rule (.mdc) for kindex</td></tr>
         <tr><td><code>kin stop-guard</code></td><td>Stop hook guard for actionable reminders</td></tr>
         <tr><td><code>kin doctor</code></td><td>Health check with graph enforcement</td></tr>
         <tr><td><code>kin migrate</code></td><td>Import markdown topics into SQLite</td></tr>

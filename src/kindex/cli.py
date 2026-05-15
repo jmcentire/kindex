@@ -3418,6 +3418,102 @@ def cmd_setup_agents_md(args):
         print(block)
 
 
+def cmd_setup_gemini_mcp(args):
+    """Install/uninstall Kindex as a Gemini CLI MCP server."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_gemini_mcp
+        actions = uninstall_gemini_mcp(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_gemini_mcp
+        actions = install_gemini_mcp(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_gemini_md(args):
+    """Output recommended GEMINI.md block for Gemini CLI/kindex integration.
+
+    kin setup-gemini-md           — print to stdout
+    kin setup-gemini-md --install — append to ~/.gemini/GEMINI.md if not present
+    """
+    block = _kindex_agents_md_block()
+
+    if getattr(args, "install", False):
+        cfg = _config(args)
+        gemini_md = cfg.gemini_path / "GEMINI.md"
+        if gemini_md.exists():
+            existing = gemini_md.read_text()
+            if "Kindex (REQUIRED" in existing or "kindex MCP tools" in existing:
+                print(f"Kindex directives already present in {gemini_md}")
+                return
+            with open(gemini_md, "a") as f:
+                f.write("\n" + block)
+            print(f"Appended kindex directives to {gemini_md}")
+        else:
+            gemini_md.parent.mkdir(parents=True, exist_ok=True)
+            gemini_md.write_text(block)
+            print(f"Created {gemini_md} with kindex directives")
+    else:
+        print(block)
+
+
+def cmd_setup_opencode_mcp(args):
+    """Install/uninstall Kindex as an OpenCode MCP server."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_opencode_mcp
+        actions = uninstall_opencode_mcp(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_opencode_mcp
+        actions = install_opencode_mcp(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_cursor_mcp(args):
+    """Install/uninstall Kindex as a Cursor MCP server."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_cursor_mcp
+        actions = uninstall_cursor_mcp(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_cursor_mcp
+        actions = install_cursor_mcp(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_cursor_rules(args):
+    """Output recommended Cursor rule for kindex integration.
+
+    kin setup-cursor-rules           — print to stdout
+    kin setup-cursor-rules --install — write ~/.cursor/rules/kindex.mdc if not present
+    """
+    block = _kindex_cursor_rule_block()
+
+    if getattr(args, "install", False):
+        cfg = _config(args)
+        rule_path = cfg.cursor_path / "rules" / "kindex.mdc"
+        if rule_path.exists():
+            print(f"Kindex Cursor rule already present at {rule_path}")
+            return
+        rule_path.parent.mkdir(parents=True, exist_ok=True)
+        rule_path.write_text(block)
+        print(f"Created {rule_path} with kindex directives")
+    else:
+        print(block)
+
+
 def _kindex_claude_md_block() -> str:
     """Generate the recommended CLAUDE.md block for kindex integration."""
     return """\
@@ -3512,6 +3608,18 @@ a concise summary.
 ### Working rule
 Do not wait for the user to mention kindex. Treat it as your durable memory layer.
 """
+
+
+def _kindex_cursor_rule_block() -> str:
+    """Generate a Cursor rule (.mdc) for kindex integration. Always-applied scope."""
+    body = _kindex_agents_md_block()
+    return (
+        "---\n"
+        "description: Use kindex MCP tools as durable memory across sessions\n"
+        "alwaysApply: true\n"
+        "---\n\n"
+        + body
+    )
 
 
 # ── config ────────────────────────────────────────────────────────────
@@ -3978,6 +4086,43 @@ def build_parser() -> argparse.ArgumentParser:
                    help="With --install, append to ~/.codex/AGENTS.md instead")
     _common(s)
     s.set_defaults(func=cmd_setup_agents_md)
+
+    # setup-gemini-mcp
+    s = sub.add_parser("setup-gemini-mcp", help="Install Kindex MCP server into Gemini CLI")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed MCP server")
+    _common(s)
+    s.set_defaults(func=cmd_setup_gemini_mcp)
+
+    # setup-gemini-md
+    s = sub.add_parser("setup-gemini-md",
+                       help="Output recommended GEMINI.md kindex directives")
+    s.add_argument("--install", action="store_true",
+                   help="Append to ~/.gemini/GEMINI.md (if not already present)")
+    _common(s)
+    s.set_defaults(func=cmd_setup_gemini_md)
+
+    # setup-opencode-mcp
+    s = sub.add_parser("setup-opencode-mcp", help="Install Kindex MCP server into OpenCode")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed MCP server")
+    _common(s)
+    s.set_defaults(func=cmd_setup_opencode_mcp)
+
+    # setup-cursor-mcp
+    s = sub.add_parser("setup-cursor-mcp", help="Install Kindex MCP server into Cursor")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed MCP server")
+    _common(s)
+    s.set_defaults(func=cmd_setup_cursor_mcp)
+
+    # setup-cursor-rules
+    s = sub.add_parser("setup-cursor-rules",
+                       help="Output recommended Cursor rule (.mdc) for kindex")
+    s.add_argument("--install", action="store_true",
+                   help="Write ~/.cursor/rules/kindex.mdc (if not already present)")
+    _common(s)
+    s.set_defaults(func=cmd_setup_cursor_rules)
 
     # config
     s = sub.add_parser("config", help="View or edit configuration")

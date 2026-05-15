@@ -169,6 +169,214 @@ class TestSetupCodex:
         assert 'trust_level = "trusted"' in text
 
 
+class TestSetupGemini:
+    def test_install_gemini_mcp_writes_settings(self, tmp_path):
+        from kindex.setup import install_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings = gemini_dir / "settings.json"
+        settings.write_text(json.dumps({"theme": "dark"}))
+
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+        actions = install_gemini_mcp(cfg)
+
+        assert any("Gemini MCP" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert data["theme"] == "dark"
+        assert data["mcpServers"]["kindex"] == {"command": "kin-mcp", "args": []}
+
+    def test_install_gemini_mcp_idempotent(self, tmp_path):
+        from kindex.setup import install_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+
+        install_gemini_mcp(cfg)
+        actions2 = install_gemini_mcp(cfg)
+
+        assert any("already installed" in a for a in actions2)
+
+    def test_install_gemini_mcp_dry_run_does_not_write(self, tmp_path):
+        from kindex.setup import install_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+        actions = install_gemini_mcp(cfg, dry_run=True)
+        assert any("Would add" in a for a in actions)
+        assert not (gemini_dir / "settings.json").exists()
+
+    def test_uninstall_gemini_mcp_preserves_other_servers(self, tmp_path):
+        from kindex.setup import uninstall_gemini_mcp
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings = gemini_dir / "settings.json"
+        settings.write_text(json.dumps({
+            "theme": "dark",
+            "mcpServers": {
+                "kindex": {"command": "kin-mcp", "args": []},
+                "other": {"command": "other-mcp", "args": ["--x"]},
+            },
+        }))
+
+        cfg = Config(data_dir=str(tmp_path), gemini_dir=str(gemini_dir))
+        actions = uninstall_gemini_mcp(cfg)
+
+        assert any("Removed" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert "kindex" not in data["mcpServers"]
+        assert "other" in data["mcpServers"]
+        assert data["theme"] == "dark"
+
+    def test_setup_gemini_mcp_cli_dry_run(self, tmp_path):
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        r = run("setup-gemini-mcp", "--dry-run", data_dir=d)
+        assert r.returncode == 0
+
+
+class TestSetupOpenCode:
+    def test_install_opencode_mcp_writes_settings(self, tmp_path):
+        from kindex.setup import install_opencode_mcp
+
+        opencode_dir = tmp_path / ".config" / "opencode"
+        opencode_dir.mkdir(parents=True)
+        settings = opencode_dir / "opencode.json"
+        settings.write_text(json.dumps({"theme": "tokyonight"}))
+
+        cfg = Config(data_dir=str(tmp_path), opencode_dir=str(opencode_dir))
+        actions = install_opencode_mcp(cfg)
+
+        assert any("OpenCode MCP" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert data["theme"] == "tokyonight"
+        assert data["mcp"]["kindex"] == {
+            "type": "local",
+            "command": ["kin-mcp"],
+            "enabled": True,
+        }
+
+    def test_install_opencode_mcp_idempotent(self, tmp_path):
+        from kindex.setup import install_opencode_mcp
+
+        opencode_dir = tmp_path / ".config" / "opencode"
+        cfg = Config(data_dir=str(tmp_path), opencode_dir=str(opencode_dir))
+
+        install_opencode_mcp(cfg)
+        actions2 = install_opencode_mcp(cfg)
+
+        assert any("already installed" in a for a in actions2)
+
+    def test_install_opencode_mcp_dry_run_does_not_write(self, tmp_path):
+        from kindex.setup import install_opencode_mcp
+
+        opencode_dir = tmp_path / ".config" / "opencode"
+        cfg = Config(data_dir=str(tmp_path), opencode_dir=str(opencode_dir))
+        actions = install_opencode_mcp(cfg, dry_run=True)
+        assert any("Would add" in a for a in actions)
+        assert not (opencode_dir / "opencode.json").exists()
+
+    def test_uninstall_opencode_mcp_preserves_other_servers(self, tmp_path):
+        from kindex.setup import uninstall_opencode_mcp
+
+        opencode_dir = tmp_path / ".config" / "opencode"
+        opencode_dir.mkdir(parents=True)
+        settings = opencode_dir / "opencode.json"
+        settings.write_text(json.dumps({
+            "theme": "tokyonight",
+            "mcp": {
+                "kindex": {"type": "local", "command": ["kin-mcp"], "enabled": True},
+                "other": {"type": "local", "command": ["other"], "enabled": True},
+            },
+        }))
+
+        cfg = Config(data_dir=str(tmp_path), opencode_dir=str(opencode_dir))
+        actions = uninstall_opencode_mcp(cfg)
+
+        assert any("Removed" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert "kindex" not in data["mcp"]
+        assert "other" in data["mcp"]
+
+    def test_setup_opencode_mcp_cli_dry_run(self, tmp_path):
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        r = run("setup-opencode-mcp", "--dry-run", data_dir=d)
+        assert r.returncode == 0
+
+
+class TestSetupCursor:
+    def test_install_cursor_mcp_writes_settings(self, tmp_path):
+        from kindex.setup import install_cursor_mcp
+
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+
+        cfg = Config(data_dir=str(tmp_path), cursor_dir=str(cursor_dir))
+        actions = install_cursor_mcp(cfg)
+
+        assert any("Cursor MCP" in a for a in actions)
+        data = json.loads((cursor_dir / "mcp.json").read_text())
+        assert data["mcpServers"]["kindex"] == {"type": "stdio", "command": "kin-mcp"}
+
+    def test_install_cursor_mcp_idempotent(self, tmp_path):
+        from kindex.setup import install_cursor_mcp
+
+        cursor_dir = tmp_path / ".cursor"
+        cfg = Config(data_dir=str(tmp_path), cursor_dir=str(cursor_dir))
+
+        install_cursor_mcp(cfg)
+        actions2 = install_cursor_mcp(cfg)
+
+        assert any("already installed" in a for a in actions2)
+
+    def test_install_cursor_mcp_dry_run_does_not_write(self, tmp_path):
+        from kindex.setup import install_cursor_mcp
+
+        cursor_dir = tmp_path / ".cursor"
+        cfg = Config(data_dir=str(tmp_path), cursor_dir=str(cursor_dir))
+        actions = install_cursor_mcp(cfg, dry_run=True)
+        assert any("Would add" in a for a in actions)
+        assert not (cursor_dir / "mcp.json").exists()
+
+    def test_uninstall_cursor_mcp_preserves_other_servers(self, tmp_path):
+        from kindex.setup import uninstall_cursor_mcp
+
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        settings = cursor_dir / "mcp.json"
+        settings.write_text(json.dumps({
+            "mcpServers": {
+                "kindex": {"type": "stdio", "command": "kin-mcp"},
+                "other": {"type": "stdio", "command": "other"},
+            },
+        }))
+
+        cfg = Config(data_dir=str(tmp_path), cursor_dir=str(cursor_dir))
+        actions = uninstall_cursor_mcp(cfg)
+
+        assert any("Removed" in a for a in actions)
+        data = json.loads(settings.read_text())
+        assert "kindex" not in data["mcpServers"]
+        assert "other" in data["mcpServers"]
+
+    def test_setup_cursor_mcp_cli_dry_run(self, tmp_path):
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        r = run("setup-cursor-mcp", "--dry-run", data_dir=d)
+        assert r.returncode == 0
+
+    def test_setup_cursor_rules_prints_block(self, tmp_path):
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        r = run("setup-cursor-rules", data_dir=d)
+        assert r.returncode == 0
+        assert "alwaysApply: true" in r.stdout
+        assert "Kindex" in r.stdout
+
+
 class TestSetupCron:
     def test_setup_cron_dry_run(self, tmp_path):
         d = str(tmp_path)
