@@ -3,7 +3,7 @@
 Reminders can optionally carry a shell command and/or natural-language
 instructions.  When due, the daemon (or manual ``kin remind exec``) runs:
 
-* **shell** — ``subprocess.run(command, shell=True)``
+* **shell** — ``subprocess.run(command, shell=False)``
 * **claude** — ``claude -p <prompt>`` with assembled context
 * **auto** (default) — shell if only command, claude if instructions present
 
