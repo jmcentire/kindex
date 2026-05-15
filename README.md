@@ -2,9 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.18.0](https://img.shields.io/badge/version-0.18.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.19.0](https://img.shields.io/badge/version-0.19.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
-[![Tests](https://img.shields.io/badge/tests-986%20passing-brightgreen.svg)](#)
+[![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
+[![Tests](https://img.shields.io/badge/tests-1022%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -68,6 +69,11 @@ Or add `.mcp.json` to any repo for project-scope access:
 ```
 
 Claude Code now has 30+ native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_*`, `mode_*`, and more.
+
+For coding agents, install both the MCP server and the instruction file. The
+instruction file tells the model how to use kindex: start a session tag, read
+tracked `.kin/config`, check project policy, search before adding, capture
+durable decisions, and end the tag with a summary.
 
 ### Codex
 
@@ -342,11 +348,28 @@ audience: team
 domains: [payments, python]
 inherits:
   - ../platform/.kin/config
+work_policy:
+  require_active_tag: true
+  linear:
+    enabled: true        # opt-in; personal repos leave this false/absent
+    require_issue: true
+    team: ENG
+  git:
+    block_commit_without_tag: true
+    block_commit_without_linear: true
 ```
 
 The `.kin/` directory is the standard location for all kindex project artifacts:
 - `.kin/config` — project metadata (voice, domains, audience, inheritance)
 - `.kin/index.json` — graph snapshot for git tracking
+- `.kin/.gitignore` — ignores local-only runtime state under `.kin/local`, `.kin/cache`, `.kin/tmp`, and `.kin/private`
+
+These files are meant to ship with the code. Do not ignore the whole `.kin/`
+directory in project `.gitignore`; ignore only local/private subdirectories.
+Kindex resolves project config from `--project-path`, then `KIN_PROJECT`, then
+the git worktree root, then the current directory. User config still lives in
+`~/.config/kindex/kin.yaml` and deep-merges below project config, so user
+preferences remain local while the repo's work contract travels with the repo.
 
 The payments service gets Acme's voice principles, the platform's engineering standards, AND its own domain context. Local values override ancestors. Lists merge with dedup. Parent directories auto-walk when no explicit `inherits` is set.
 
@@ -477,6 +500,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 |---------|-------------|
 | `kin init` | Initialize data directory |
 | `kin config [show\|get\|set]` | View or edit configuration |
+| `kin policy [show\|check]` | Show or enforce project work policy from `.kin/config` |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
 | `kin setup-codex-mcp` | Install kindex MCP server into Codex |
 | `kin setup-gemini-mcp` | Install kindex MCP server into Gemini CLI |
@@ -505,9 +529,9 @@ Config is layered like git — global defaults, then global config, then local c
 | Layer | Path | Purpose |
 |-------|------|---------|
 | Global | `~/.config/kindex/kin.yaml` | User-wide defaults |
-| Local | `.kin/config` or `kin.yaml` in cwd | Project-specific overrides |
+| Local | `.kin/config` or `kin.yaml` at project root | Project-specific overrides shipped with code |
 
-Use `kin config set --global llm.enabled true` for global settings, or `kin config set llm.model claude-sonnet-4-6` for project-local.
+Use `kin config set --global llm.enabled true` for global settings, or `kin config set llm.model claude-sonnet-4-6` for project-local. Use `--project-path /path/to/repo` or `KIN_PROJECT=/path/to/repo` when running from outside the repo.
 
 ```yaml
 data_dir: ~/.kindex

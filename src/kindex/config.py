@@ -142,6 +142,25 @@ class ReminderConfig(BaseModel):
     schedule_tiers: list[ScheduleTier] = Field(default_factory=lambda: list(_DEFAULT_TIERS))
 
 
+class LinearPolicyConfig(BaseModel):
+    enabled: bool = False
+    require_issue: bool = False
+    team: str = ""
+
+
+class GitPolicyConfig(BaseModel):
+    block_commit_without_tag: bool = False
+    block_commit_without_linear: bool = False
+    block_push_without_tag: bool = False
+    block_push_without_linear: bool = False
+
+
+class WorkPolicyConfig(BaseModel):
+    require_active_tag: bool = False
+    linear: LinearPolicyConfig = Field(default_factory=LinearPolicyConfig)
+    git: GitPolicyConfig = Field(default_factory=GitPolicyConfig)
+
+
 class Config(BaseModel):
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
@@ -157,6 +176,7 @@ class Config(BaseModel):
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)
+    work_policy: WorkPolicyConfig = Field(default_factory=WorkPolicyConfig)
 
     @property
     def current_user(self) -> str:
@@ -242,11 +262,16 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def load_config(config_path: str | Path | None = None) -> Config:
+def load_config(
+    config_path: str | Path | None = None,
+    project_path: str | Path | None = None,
+) -> Config:
     """Load config with layered merging: code defaults → global → local.
 
     Like git config: global (~/.config/kindex/kin.yaml) is loaded first,
-    then local (.kin/config / kin.yaml / conv.yaml in cwd) merges over it.
+    then local (.kin/config / kin.yaml / conv.yaml in the current project)
+    merges over it. Project resolution is explicit path, KIN_PROJECT, git
+    worktree root, then cwd.
     An explicit config_path bypasses layering and loads only that file.
     """
     if config_path:
@@ -265,18 +290,139 @@ def load_config(config_path: str | Path | None = None) -> Config:
             merged = _deep_merge(merged, data)
             break  # use first global found
 
-    # Auto-upgrade old .kin file to .kin/config directory layout
-    _maybe_upgrade_kin_file(Path(".kin").expanduser().resolve())
+    project_root = resolve_project_root(project_path)
+    project_layers = _project_config_paths(project_root)
 
     # Layer 2: local config (project-level) merges over global
-    for p in _LOCAL_PATHS:
-        p = p.expanduser().resolve()
+    for p in project_layers:
         if p.is_file():
-            data = yaml.safe_load(p.read_text()) or {}
+            data = _load_kin_config_with_inheritance(p)
             merged = _deep_merge(merged, data)
             break  # use first local found
 
     return Config(**merged) if merged else Config()
+
+
+def resolve_project_root(project_path: str | Path | None = None) -> Path:
+    """Resolve the project root for config/policy lookup.
+
+    Resolution order:
+    1. explicit project_path
+    2. KIN_PROJECT
+    3. git worktree root for cwd
+    4. cwd
+    """
+    raw = project_path or os.environ.get("KIN_PROJECT")
+    start = Path(raw).expanduser() if raw else Path.cwd()
+    start = start.resolve()
+    if start.is_file():
+        start = start.parent
+
+    git_root = _git_root(start)
+    return git_root or start
+
+
+def _git_root(start: Path) -> Path | None:
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip()).resolve()
+    return None
+
+
+def _project_config_paths(project_root: Path) -> list[Path]:
+    # Prefer git/project root, then parent .kin/config walk for non-git trees,
+    # then legacy cwd-local files for backward compatibility.
+    candidates: list[Path] = [
+        project_root / ".kin" / "config",
+        project_root / "kin.yaml",
+        project_root / "conv.yaml",
+    ]
+
+    current = project_root
+    for _ in range(10):
+        kin_entry = current / ".kin"
+        if kin_entry.is_file():
+            upgraded = _maybe_upgrade_kin_file(kin_entry)
+            if upgraded:
+                candidates.append(upgraded)
+        elif kin_entry.is_dir():
+            candidates.append(kin_entry / "config")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in candidates:
+        resolved = path.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return out
+
+
+def _load_kin_config_with_inheritance(path: Path) -> dict:
+    """Load a .kin config, resolving inherits and merging ancestors."""
+    if path.name != "config" or path.parent.name != ".kin":
+        return yaml.safe_load(path.read_text()) or {}
+
+    chain = _resolve_kin_chain(path)
+    return _merge_kin_chain(chain)
+
+
+def _resolve_kin_chain(path: Path, remaining: int = 5, seen: set[str] | None = None) -> list[dict]:
+    seen = seen or set()
+    resolved = resolve_kin_config(path)
+    key = str(resolved)
+    if remaining <= 0 or key in seen or not resolved.is_file():
+        return []
+    seen.add(key)
+
+    data = yaml.safe_load(resolved.read_text()) or {}
+    data["_source"] = key
+    chain = [data]
+
+    for parent_ref in data.get("inherits", []):
+        parent = (resolved.parent / parent_ref).expanduser().resolve()
+        chain.extend(_resolve_kin_chain(parent, remaining - 1, seen))
+    return chain
+
+
+def _merge_kin_chain(chain: list[dict]) -> dict:
+    merged: dict = {}
+    for layer in reversed(chain):
+        clean = {k: v for k, v in layer.items() if not k.startswith("_") and k != "inherits"}
+        merged = _deep_merge_with_lists(merged, clean)
+    return merged
+
+
+def _deep_merge_with_lists(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, val in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge_with_lists(merged[key], val)
+        elif key in merged and isinstance(merged[key], list) and isinstance(val, list):
+            seen: set[str] = set()
+            items = []
+            for item in merged[key] + val:
+                marker = str(item)
+                if marker not in seen:
+                    seen.add(marker)
+                    items.append(item)
+            merged[key] = items
+        else:
+            merged[key] = val
+    return merged
 
 
 def _maybe_upgrade_kin_file(path: Path) -> Path | None:

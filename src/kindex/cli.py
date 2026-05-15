@@ -30,7 +30,10 @@ def _dumps(obj, **kw):
 
 def _config(args):
     from .config import load_config
-    cfg = load_config(getattr(args, "config", None))
+    cfg = load_config(
+        getattr(args, "config", None),
+        project_path=getattr(args, "project_path", None),
+    )
     if getattr(args, "data_dir", None):
         cfg.data_dir = args.data_dir
     return cfg
@@ -3527,10 +3530,20 @@ Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
 ### Session lifecycle (do this every session)
 1. **Start**: call `tag_start` with a name and focus for the current task, OR \
 `tag_resume` if continuing previous work
-2. **During**: follow the capture rules below -- this is the whole point of kindex
-3. **Segment**: when switching topics, call `tag_update` with `action=segment`, \
+2. **Policy**: if the repo has `.kin/config`, treat it as tracked project context. \
+Run `kin policy check --event agent-start` when shell access is available.
+3. **During**: follow the capture rules below -- this is the whole point of kindex
+4. **Segment**: when switching topics, call `tag_update` with `action=segment`, \
 summarizing what was done
-4. **End**: call `tag_update` with `action=end` and a summary before the session closes
+5. **End**: call `tag_update` with `action=end` and a summary before the session closes
+
+### Project `.kin/` contract
+- `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not \
+private cache.
+- Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, \
+`.kin/tmp`, `.kin/private`.
+- Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` \
+sets `work_policy.linear.enabled: true`.
 
 ### What to capture (use MCP `add` tool or `learn` for bulk text)
 - **Discoveries**: new patterns, surprising findings, "aha" moments -- `add` as concept
@@ -3582,11 +3595,19 @@ the `kindex` MCP server. Use them proactively.
 `tag_resume` if continuing previous work.
 2. **Orient**: call `search` or `context` before significant work to see what is \
 already known.
-3. **During**: capture important discoveries, decisions, tasks, and connections as \
+3. **Policy**: if the repo has `.kin/config`, treat it as tracked project context. \
+Run `kin policy check --event agent-start` when shell access is available.
+4. **During**: capture important discoveries, decisions, tasks, and connections as \
 they happen.
-4. **Segment**: when switching topics, call `tag_update` with `action=segment` and \
+5. **Segment**: when switching topics, call `tag_update` with `action=segment` and \
 a concise summary.
-5. **End**: call `tag_update` with `action=end` and a summary before the session closes.
+6. **End**: call `tag_update` with `action=end` and a summary before the session closes.
+
+### Project `.kin/` contract
+- `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not private cache.
+- Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, `.kin/tmp`, `.kin/private`.
+- Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` sets `work_policy.linear.enabled: true`.
+- If no work policy is present, continue normally and still use kindex for search/capture.
 
 ### What to capture
 - **Discoveries**: new patterns, surprising findings, "aha" moments -- `add` as concept
@@ -3662,7 +3683,8 @@ def cmd_config(args):
             sys.exit(1)
         is_global = getattr(args, "global_", False)
         _config_write(args.key, args.value, getattr(args, "config", None),
-                      global_=is_global)
+                      global_=is_global,
+                      project_path=getattr(args, "project_path", None))
         scope = "global" if is_global else "local"
         print(f"Set {args.key} = {args.value} ({scope})")
         return
@@ -3670,6 +3692,67 @@ def cmd_config(args):
     # Default: show
     cfg = _config(args)
     print(yaml.dump(cfg.model_dump(), default_flow_style=False, sort_keys=False).strip())
+
+
+# ── policy ────────────────────────────────────────────────────────────
+
+def cmd_policy(args):
+    """Evaluate project work policy from tracked .kin config."""
+    action = getattr(args, "policy_action", "show")
+    cfg = _config(args)
+    policy = cfg.work_policy
+
+    if action == "show":
+        print(yaml.dump(policy.model_dump(), default_flow_style=False, sort_keys=False).strip())
+        return
+
+    if action == "check":
+        event = getattr(args, "event", None) or "manual"
+        strict = getattr(args, "strict", False)
+        failures: list[str] = []
+        warnings: list[str] = []
+
+        require_tag = policy.require_active_tag
+        if event == "pre-commit" and policy.git.block_commit_without_tag:
+            require_tag = True
+        if event == "pre-push" and policy.git.block_push_without_tag:
+            require_tag = True
+
+        if require_tag:
+            from .sessions import get_active_tag
+            from .config import resolve_project_root
+            store = _store(args)
+            project_root = str(resolve_project_root(getattr(args, "project_path", None)))
+            active = get_active_tag(store, project_path=project_root)
+            store.close()
+            if not active:
+                failures.append(f"no active kindex session tag for project {project_root}")
+
+        linear_required = policy.linear.enabled and policy.linear.require_issue
+        if event == "pre-commit" and policy.git.block_commit_without_linear:
+            linear_required = True
+        if event == "pre-push" and policy.git.block_push_without_linear:
+            linear_required = True
+
+        if linear_required:
+            identifier = os.environ.get("KIN_LINEAR_ID") or os.environ.get("LINEAR_ISSUE")
+            if not identifier:
+                failures.append("Linear issue required by project policy; set KIN_LINEAR_ID or LINEAR_ISSUE")
+            if policy.linear.enabled and not os.environ.get("LINEAR_API_KEY"):
+                warnings.append("LINEAR_API_KEY is not set; issue state cannot be verified")
+
+        if not failures and not warnings:
+            print(f"Policy check passed ({event}).")
+            return
+
+        for warning in warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
+        for failure in failures:
+            print(f"Policy violation: {failure}", file=sys.stderr)
+
+        if failures and (strict or event in {"pre-commit", "pre-push"}):
+            sys.exit(1)
+        return
 
 
 def _dotget(d: dict, key: str):
@@ -3717,13 +3800,15 @@ def _coerce_value(value: str):
 
 
 def _config_write(key: str, value: str, config_path: str | None = None,
-                   global_: bool = False) -> None:
+                   global_: bool = False,
+                   project_path: str | None = None) -> None:
     """Write a config value to the appropriate config file.
 
     Resolution (like git config):
     - --config <path>:  explicit file
     - --global:         user-level (~/.config/kindex/kin.yaml)
-    - default:          local file if one exists in cwd, else global
+    - default:          project .kin/config, discovered from --project-path,
+                        KIN_PROJECT, git root, then cwd
     """
     import yaml
 
@@ -3741,23 +3826,17 @@ def _config_write(key: str, value: str, config_path: str | None = None,
             path = Path.home() / ".config" / "kindex" / "kin.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
     else:
-        from .config import _LOCAL_PATHS, _GLOBAL_PATHS, _maybe_upgrade_kin_file
+        from .config import _maybe_upgrade_kin_file, _project_config_paths, resolve_project_root
         # Auto-upgrade old .kin file before searching local paths
-        _maybe_upgrade_kin_file(Path(".kin").expanduser().resolve())
+        root = resolve_project_root(project_path)
+        _maybe_upgrade_kin_file((root / ".kin").expanduser().resolve())
         path = None
-        for p in _LOCAL_PATHS:
-            p = p.expanduser().resolve()
+        for p in _project_config_paths(root):
             if p.exists():
                 path = p
                 break
         if path is None:
-            for p in _GLOBAL_PATHS:
-                p = p.expanduser().resolve()
-                if p.exists():
-                    path = p
-                    break
-        if path is None:
-            path = Path.home() / ".config" / "kindex" / "kin.yaml"
+            path = root / ".kin" / "config"
             path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load existing or start fresh
@@ -3773,8 +3852,9 @@ def _config_write(key: str, value: str, config_path: str | None = None,
 # ── parser ─────────────────────────────────────────────────────────────
 
 def _common(p):
-    p.add_argument("--config", help="Path to conv.yaml")
+    p.add_argument("--config", help="Explicit config file (bypasses layering)")
     p.add_argument("--data-dir", help="Override data directory")
+    p.add_argument("--project-path", help="Project root/path for .kin config lookup")
     p.add_argument("--json", action="store_true", help="JSON output")
 
 
@@ -4135,6 +4215,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Write to global config (~/.config/kindex/kin.yaml)")
     _common(s)
     s.set_defaults(func=cmd_config)
+
+    # policy
+    s = sub.add_parser("policy", help="Show/check project work policy from .kin config")
+    s.add_argument("policy_action", nargs="?", choices=["show", "check"], default="show",
+                   help="Action: show or check")
+    s.add_argument("--event", choices=["manual", "agent-start", "pre-commit", "pre-push", "pre-deploy"],
+                   default="manual", help="Event being checked")
+    s.add_argument("--strict", action="store_true", help="Exit non-zero on policy violations")
+    _common(s)
+    s.set_defaults(func=cmd_policy)
 
     # skills
     s = sub.add_parser("skills", help="Show skill profile for a person")

@@ -16,7 +16,6 @@ kin.yaml
 # Working dirs
 .tmp/
 .conv/
-.kin/
 
 # OS
 .DS_Store

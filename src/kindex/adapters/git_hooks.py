@@ -17,8 +17,9 @@ def install_hooks(repo_path: str | Path, config: "Config") -> list[str]:
     """Install Kindex git hooks in a repository.
 
     Installs:
+    - pre-commit: enforces opt-in project work policy from .kin/config
     - post-commit: records the commit as a knowledge node
-    - pre-push: surfaces relevant constraints and checkpoints
+    - pre-push: enforces opt-in project policy and surfaces constraints
 
     Returns list of actions taken.
     """
@@ -29,6 +30,28 @@ def install_hooks(repo_path: str | Path, config: "Config") -> list[str]:
 
     actions = []
     kin_path = _find_kin()
+
+    # pre-commit hook
+    pre_commit = hooks_dir / "pre-commit"
+    pre_commit_content = f'''#!/bin/sh
+# Kindex: enforce opt-in project policy before commit
+{kin_path} policy check --event pre-commit --project-path "$(git rev-parse --show-toplevel)" 2>&1
+'''
+
+    if pre_commit.exists():
+        existing = pre_commit.read_text()
+        if "kin policy check" in existing:
+            actions.append("pre-commit hook already has Kindex policy integration")
+        else:
+            with open(pre_commit, "a") as f:
+                f.write("\n# --- Kindex integration ---\n")
+                f.write(pre_commit_content.split("\n", 1)[1])
+            pre_commit.chmod(0o755)
+            actions.append("Appended Kindex to existing pre-commit hook")
+    else:
+        pre_commit.write_text(pre_commit_content)
+        pre_commit.chmod(0o755)
+        actions.append("Created pre-commit hook")
 
     # post-commit hook
     post_commit = hooks_dir / "post-commit"
@@ -59,13 +82,14 @@ AUTHOR=$(git log -1 --pretty=%an)
     # pre-push hook
     pre_push = hooks_dir / "pre-push"
     pre_push_content = f'''#!/bin/sh
-# Kindex: surface constraints and checkpoints before push
+# Kindex: enforce opt-in project policy and surface constraints before push
+{kin_path} policy check --event pre-push --project-path "$(git rev-parse --show-toplevel)" 2>&1
 {kin_path} status --trigger pre-push 2>/dev/null || true
 '''
 
     if pre_push.exists():
         existing = pre_push.read_text()
-        if "kindex" in existing.lower() or "kin status" in existing:
+        if "kin policy check" in existing:
             actions.append("pre-push hook already has Kindex integration")
         else:
             with open(pre_push, "a") as f:
@@ -88,7 +112,7 @@ def uninstall_hooks(repo_path: str | Path) -> list[str]:
     hooks_dir = repo_path / ".git" / "hooks"
     actions = []
 
-    for hook_name in ["post-commit", "pre-push"]:
+    for hook_name in ["pre-commit", "post-commit", "pre-push"]:
         hook_path = hooks_dir / hook_name
         if hook_path.exists():
             content = hook_path.read_text()

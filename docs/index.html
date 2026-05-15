@@ -265,10 +265,10 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.18.0</span>
+      <span class="badge green">v0.19.0</span>
       <span class="badge orange">MCP Plugin</span>
       <span class="badge blue">38 MCP Tools</span>
-      <span class="badge purple">53 CLI Commands</span>
+      <span class="badge purple">59 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -543,8 +543,8 @@
 <!-- .kin Inheritance -->
 <section>
   <div class="container">
-    <h2>.kin Voice &amp; Inheritance</h2>
-    <p>Companies publish <code>.kin</code> files that encode their voice, standards, and context. Teams inherit from orgs. Repos inherit from teams. The knowledge graph carries the voice forward automatically.</p>
+    <h2>.kin Project Contract</h2>
+    <p>Repos ship <code>.kin/</code> with the code: project context, inheritance, graph snapshots, and optional work policy. Private runtime state stays in <code>~/.kindex</code> or ignored <code>.kin/local</code> directories.</p>
     <div class="features" style="grid-template-columns: 1fr 1fr 1fr;">
       <div class="card">
         <h3>Org Voice</h3>
@@ -564,7 +564,7 @@ standards:
       <div class="card">
         <h3>Platform Team</h3>
         <div class="integration-block mono" style="margin-top: 8px; font-size: 0.78rem;">
-# platform/.kin
+# platform/.kin/config
 name: platform
 audience: org
 domains: [engineering]
@@ -578,18 +578,24 @@ inherits:
       <div class="card">
         <h3>Service Repo</h3>
         <div class="integration-block mono" style="margin-top: 8px; font-size: 0.78rem;">
-# payments-service/.kin
+# payments-service/.kin/config
 name: payments-service
 audience: team
 domains: [payments, python]
 inherits:
-  - ../platform/.kin
+  - ../platform/.kin/config
+work_policy:
+  require_active_tag: true
+  linear:
+    enabled: true
+    require_issue: true
+    team: ENG
 
 
 </div>
       </div>
     </div>
-    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets: <code>domains: [payments, python, engineering]</code>, Acme's voice principles, the platform's review standards, and <code>audience: team</code> (local wins). Parent directories are auto-walked when no explicit <code>inherits</code> is set. <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Example voice files included.</a></p>
+    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets inherited voice and standards plus its own policy. Linear enforcement is opt-in: personal projects leave <code>work_policy.linear.enabled</code> false or absent. Kindex resolves config from <code>--project-path</code>, <code>KIN_PROJECT</code>, git root, then cwd. <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Example voice files included.</a></p>
   </div>
 </section>
 
@@ -604,11 +610,11 @@ inherits:
       </div>
       <div class="card">
         <h3>Linear</h3>
-        <p>Ingest issues via GraphQL API.</p>
+        <p>Ingest issues via GraphQL API; enforcement only runs when project policy opts in.</p>
       </div>
       <div class="card">
         <h3>Git Hooks</h3>
-        <p>Post-commit records. Pre-push surfaces constraints.</p>
+        <p>Pre-commit/pre-push can enforce opt-in project policy; post-commit records context.</p>
       </div>
       <div class="card">
         <h3>File Watcher</h3>
@@ -690,6 +696,7 @@ inherits:
       <table>
         <tr><td><code>kin init</code></td><td>Initialize data directory</td></tr>
         <tr><td><code>kin config [show|get|set]</code></td><td>View or edit configuration</td></tr>
+        <tr><td><code>kin policy [show|check]</code></td><td>Show/check project work policy from tracked <code>.kin/config</code></td></tr>
         <tr><td><code>kin setup-hooks</code></td><td>Install lifecycle hooks into Claude Code</td></tr>
         <tr><td><code>kin setup-codex-mcp</code></td><td>Install kindex MCP server into Codex</td></tr>
         <tr><td><code>kin setup-gemini-mcp</code></td><td>Install kindex MCP server into Gemini CLI</td></tr>
@@ -725,7 +732,7 @@ inherits:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.18.0 &middot; MCP Plugin &middot; 38 MCP Tools &middot; 53 CLI Commands &middot; 986 Tests</p>
+    <p style="margin-top: 8px;">v0.19.0 &middot; MCP Plugin &middot; 38 MCP Tools &middot; 59 CLI Commands &middot; 1022 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

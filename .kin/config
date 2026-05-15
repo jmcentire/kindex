@@ -1,0 +1,56 @@
+name: kindex
+audience: public
+description: >
+  Persistent knowledge graph that remembers across AI sessions.
+  Hybrid FTS5+graph search, MCP plugin for Claude Code, CLI (kin),
+  29 MCP tools. SQLite-backed with vector search. The memory layer
+  for all projects.
+
+domains:
+  - knowledge-graph
+  - ai-tooling
+  - mcp
+  - context-management
+  - search
+  - python
+
+voice:
+  tone: precise, tool-oriented, developer-first
+  principles:
+    - Search before add — no duplicates
+    - Graph value is in connections, not isolated nodes
+    - Watches and reminders surface proactively
+    - Modes scope context to current work
+    - Decay keeps the graph fresh — unused nodes fade
+  anti-patterns:
+    - Adding nodes without linking them
+    - Storing ephemeral task state as permanent knowledge
+    - Ignoring decay — stale nodes pollute context
+
+standards:
+  code_review:
+    - 930+ tests, all must pass
+    - Pydantic models for all data structures
+    - SQLite migrations are forward-only
+    - MCP tools match CLI capabilities
+  documentation:
+    - Docs site at jmcentire.github.io/kindex/
+
+connects_to:
+  - pact
+  - signet
+  - stigmergy
+  - chronicler
+  - apprentice
+  - sentinel
+
+work_policy:
+  require_active_tag: true
+  linear:
+    enabled: false
+    require_issue: false
+  git:
+    block_commit_without_tag: false
+    block_commit_without_linear: false
+    block_push_without_tag: false
+    block_push_without_linear: false

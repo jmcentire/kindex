@@ -2,6 +2,19 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.19.0] - 2026-05-15
+
+### Added
+- Project-scoped config resolution via explicit `--project-path`, `KIN_PROJECT`, git worktree root, then cwd.
+- `work_policy` config model and `kin policy [show|check]` for opt-in project policy enforcement.
+- Git hook install now adds a pre-commit policy check and pre-push policy check before surfacing constraints.
+- `.kin/.gitignore` pattern for tracking project context while ignoring local/private runtime state.
+
+### Changed
+- `.kin/config` is now treated as a git-shipped project contract rather than local-only cache.
+- MCP agent guidance now tells agents to read tracked `.kin/config`, check policy when shell access exists, and enforce Linear only when the repo opts in.
+- MCP server metadata updated to current package version and tracked `.kin` behavior.
+
 ## [0.18.0] - 2026-05-03
 
 ### Added
