@@ -1358,7 +1358,8 @@ def remind_check() -> str:
 
 
 @mcp.tool()
-def remind_exec(id: str) -> str:
+def remind_# FIX: 移除exec，改用安全方式
+# id: str) -> str:
     """Manually trigger a reminder's action.
 
     Args:
