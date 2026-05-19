@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.19.0](https://img.shields.io/badge/version-0.19.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.20.0](https://img.shields.io/badge/version-0.20.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1022%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1035%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -68,7 +68,7 @@ Or add `.mcp.json` to any repo for project-scope access:
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
 ```
 
-Claude Code now has 30+ native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_*`, `mode_*`, and more.
+Claude Code now has 30+ native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `remind_*`, `mode_*`, and more.
 
 For coding agents, install both the MCP server and the instruction file. The
 instruction file tells the model how to use kindex: start a session tag, read
@@ -545,10 +545,10 @@ llm:
   tier2_max_tokens: 4000           # Token budget for query-relevant context
 
 embedding:
-  provider: local                  # local, openai, or gemini
+  provider: voyage                 # voyage, openai, gemini, or local
   # model: ""                      # empty = provider default
-  # api_key_env: ""                # empty = provider default (OPENAI_API_KEY / GEMINI_API_KEY)
-  # dimensions: 0                  # 0 = provider default (384 / 1536 / 3072)
+  # api_key_env: ""                # empty = provider default (VOYAGE_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)
+  # dimensions: 0                  # 0 = provider default (1024 / 1536 / 3072 / 384)
 
 budget:
   daily: 0.50

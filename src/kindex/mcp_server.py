@@ -54,7 +54,10 @@ mcp = FastMCP(
         "(relates_to, depends_on, implements, contradicts, blocks, context_of)\n"
         "- `learn`: after reading long files/outputs — bulk-extracts multiple concepts at once\n"
         "- `task_add`: for work items — ALWAYS link to relevant concepts via link_to parameter\n"
+        "- `task_claim`/`task_release`: coordinate shared work with expiring task claims\n"
         "- `task_done`/`task_list`: manage tasks — they surface contextually via graph proximity\n"
+        "- `coord_start`/`coord_post`/`coord_read`/`coord_end`: short-lived agent coordination "
+        "state; capture durable discoveries separately with `add` or `learn`\n"
         "- `watch_add`: for ONGOING monitoring — flaky tests, unstable APIs, items to revisit. "
         "Set owner and expires. Watches surface in every session's context automatically.\n"
         "- `watch_resolve`: when a watched issue is fixed or no longer relevant\n"
@@ -1136,6 +1139,157 @@ def task_done(id: str) -> str:
     if result:
         return f"Completed: {result['title']} ({id})"
     return f"Task not found: {id}"
+
+
+@mcp.tool()
+def task_claim(id: str, agent: str, ttl_minutes: int = 120,
+               note: str = "", force: bool = False) -> str:
+    """Claim a task for an agent with an expiry.
+
+    Args:
+        id: Task node ID.
+        agent: Agent/sub-agent name claiming the task.
+        ttl_minutes: Claim TTL. Expired claims can be taken over.
+        note: Optional claim note.
+        force: Override an existing unexpired claim.
+    """
+    store, _ = _get_store()
+    from .tasks import claim_task
+    try:
+        result = claim_task(
+            store, id, agent,
+            ttl_minutes=ttl_minutes,
+            note=note,
+            force=force,
+        )
+    except ValueError as e:
+        return f"Could not claim task: {e}"
+    if not result:
+        return f"Task not found: {id}"
+    claim = (result.get("extra") or {}).get("claim") or {}
+    return (
+        f"Claimed task: {result['title']} ({id}) by {claim.get('agent')} "
+        f"until {claim.get('expires_at')}"
+    )
+
+
+@mcp.tool()
+def task_release(id: str, agent: str = "", force: bool = False) -> str:
+    """Release a task claim.
+
+    Args:
+        id: Task node ID.
+        agent: Agent name. Required to match the claim unless force is true.
+        force: Release even if the agent does not match.
+    """
+    store, _ = _get_store()
+    from .tasks import release_task_claim
+    try:
+        result = release_task_claim(store, id, agent=agent, force=force)
+    except ValueError as e:
+        return f"Could not release task claim: {e}"
+    if not result:
+        return f"Task not found: {id}"
+    return f"Released task claim: {result['title']} ({id})"
+
+
+# ── Coordination ─────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def coord_start(name: str, task_id: str = "", agent: str = "",
+                ttl_minutes: int = 240) -> str:
+    """Start a short-lived coordination conversation.
+
+    Args:
+        name: Conversation name.
+        task_id: Optional related task ID.
+        agent: Agent creating the conversation.
+        ttl_minutes: Conversation TTL. Expired conversations are cleaned up.
+    """
+    store, _ = _get_store()
+    from .coordination import create_conversation
+    try:
+        conv_id = create_conversation(
+            store,
+            name,
+            task_id=task_id or None,
+            ttl_minutes=ttl_minutes,
+            created_by=agent,
+        )
+    except ValueError as e:
+        return f"Could not start coordination conversation: {e}"
+    return f"Started coordination conversation: {conv_id} ({name})"
+
+
+@mcp.tool()
+def coord_post(conversation: str, agent: str, message: str) -> str:
+    """Post a message to a coordination conversation.
+
+    Args:
+        conversation: Conversation ID or name.
+        agent: Posting agent name.
+        message: Message body.
+    """
+    store, _ = _get_store()
+    from .coordination import post_message
+    try:
+        msg = post_message(store, conversation, agent, message)
+    except ValueError as e:
+        return f"Could not post coordination message: {e}"
+    return f"Posted coordination message #{msg['id']} to {conversation}"
+
+
+@mcp.tool()
+def coord_read(conversation: str, since_id: int = 0, limit: int = 50) -> str:
+    """Read messages from a coordination conversation.
+
+    Args:
+        conversation: Conversation ID or name.
+        since_id: Only return messages with a higher id.
+        limit: Maximum messages to return.
+    """
+    store, _ = _get_store()
+    from .coordination import format_messages, read_messages
+    try:
+        payload = read_messages(store, conversation, since_id=since_id, limit=limit)
+    except ValueError as e:
+        return f"Could not read coordination conversation: {e}"
+    return format_messages(payload)
+
+
+@mcp.tool()
+def coord_list(status: str = "active", task_id: str = "") -> str:
+    """List coordination conversations.
+
+    Args:
+        status: active, ended, or all.
+        task_id: Optional related task ID filter.
+    """
+    store, _ = _get_store()
+    from .coordination import format_conversations, list_conversations
+    conversations = list_conversations(
+        store,
+        status=status,
+        task_id=task_id or None,
+    )
+    return format_conversations(conversations)
+
+
+@mcp.tool()
+def coord_end(conversation: str, summary: str = "") -> str:
+    """End a coordination conversation and clear transient messages.
+
+    Args:
+        conversation: Conversation ID or name.
+        summary: Optional retained summary.
+    """
+    store, _ = _get_store()
+    from .coordination import end_conversation
+    result = end_conversation(store, conversation, summary=summary)
+    if not result:
+        return f"Conversation not found: {conversation}"
+    return f"Ended coordination conversation: {conversation}"
 
 
 # ── Watches ──────────────────────────────────────────────────────────

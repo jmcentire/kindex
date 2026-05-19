@@ -26,7 +26,7 @@ _SEARCH_PATHS = _LOCAL_PATHS + _GLOBAL_PATHS
 
 
 class EmbeddingConfig(BaseModel):
-    provider: str = "local"      # "local", "openai", "gemini"
+    provider: str = "voyage"     # "voyage", "openai", "gemini", "local"
     model: str = ""              # empty = provider default
     api_key_env: str = ""        # empty = provider default env var
     dimensions: int = 0          # 0 = provider default

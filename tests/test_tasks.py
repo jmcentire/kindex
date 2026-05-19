@@ -146,6 +146,60 @@ class TestTaskCRUD:
         result = update_task(store, task_id, task_status="in_progress")
         assert result["extra"]["task_status"] == "in_progress"
 
+    def test_claim_task(self, store):
+        from kindex.tasks import claim_task, create_task
+
+        task_id = create_task(store, "Coordinate work")
+        result = claim_task(store, task_id, "agent-a", ttl_minutes=5, note="tests")
+        extra = result["extra"]
+        assert extra["task_status"] == "in_progress"
+        assert extra["claim"]["agent"] == "agent-a"
+        assert extra["claim"]["note"] == "tests"
+        assert extra["claim"]["expires_at"]
+
+    def test_claim_task_conflict(self, store):
+        from kindex.tasks import claim_task, create_task
+
+        task_id = create_task(store, "Only one owner")
+        claim_task(store, task_id, "agent-a", ttl_minutes=5)
+        with pytest.raises(ValueError, match="already claimed"):
+            claim_task(store, task_id, "agent-b", ttl_minutes=5)
+
+    def test_claim_task_force_takeover(self, store):
+        from kindex.tasks import claim_task, create_task
+
+        task_id = create_task(store, "Takeover")
+        claim_task(store, task_id, "agent-a", ttl_minutes=5)
+        result = claim_task(store, task_id, "agent-b", ttl_minutes=5, force=True)
+        assert result["extra"]["claim"]["agent"] == "agent-b"
+
+    def test_release_task_claim(self, store):
+        from kindex.tasks import claim_task, create_task, release_task_claim
+
+        task_id = create_task(store, "Release")
+        claim_task(store, task_id, "agent-a", ttl_minutes=5)
+        result = release_task_claim(store, task_id, agent="agent-a")
+        assert "claim" not in result["extra"]
+        assert result["extra"]["task_status"] == "open"
+
+    def test_release_task_claim_wrong_agent(self, store):
+        from kindex.tasks import claim_task, create_task, release_task_claim
+
+        task_id = create_task(store, "Protected release")
+        claim_task(store, task_id, "agent-a", ttl_minutes=5)
+        with pytest.raises(ValueError, match="claimed by agent-a"):
+            release_task_claim(store, task_id, agent="agent-b")
+
+    def test_cleanup_expired_claims(self, store):
+        from kindex.tasks import claim_task, cleanup_expired_claims, create_task
+
+        task_id = create_task(store, "Expired claim")
+        claim_task(store, task_id, "agent-a", ttl_minutes=-1)
+        assert cleanup_expired_claims(store) == 1
+        node = store.get_node(task_id)
+        assert "claim" not in node["extra"]
+        assert node["extra"]["task_status"] == "open"
+
     def test_complete_nonexistent(self, store):
         from kindex.tasks import complete_task
 

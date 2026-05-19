@@ -105,6 +105,15 @@ possible so they surface contextually.
 Use `task_list` when planning or resuming work. Use `task_done` immediately when
 a task is completed.
 
+Use `task_claim` before taking shared work from a task list, and `task_release`
+when handing it back. Claims expire, so abandoned agent work does not become a
+permanent lock.
+
+Use `coord_start`, `coord_post`, `coord_read`, and `coord_end` for short-lived
+agent coordination. Coordination messages are operational state; promote only
+durable discoveries, decisions, or tasks into the graph with normal capture
+tools.
+
 ### Add Watches
 
 Use `watch_add` for issues that need future attention: flaky tests, unstable

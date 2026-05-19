@@ -26,19 +26,20 @@ class TestVectorAvailability:
 
 
 class TestProviderConfigResolution:
-    def test_none_config_defaults_to_local(self):
+    def test_none_config_defaults_to_voyage(self):
         provider, model, dims, key_env = _resolve_embedding_config(None)
-        assert provider == "local"
-        assert model == "all-MiniLM-L6-v2"
-        assert dims == 384
-        assert key_env == ""
+        assert provider == "voyage"
+        assert model == "voyage-3.5"
+        assert dims == 1024
+        assert key_env == "VOYAGE_API_KEY"
 
-    def test_default_config_is_local(self):
+    def test_default_config_is_voyage(self):
         config = Config()
         provider, model, dims, key_env = _resolve_embedding_config(config)
-        assert provider == "local"
-        assert model == "all-MiniLM-L6-v2"
-        assert dims == 384
+        assert provider == "voyage"
+        assert model == "voyage-3.5"
+        assert dims == 1024
+        assert key_env == "VOYAGE_API_KEY"
 
     def test_openai_provider_defaults(self):
         config = Config(embedding=EmbeddingConfig(provider="openai"))
@@ -55,6 +56,14 @@ class TestProviderConfigResolution:
         assert model == "gemini-embedding-001"
         assert dims == 3072
         assert key_env == "GEMINI_API_KEY"
+
+    def test_voyage_provider_defaults(self):
+        config = Config(embedding=EmbeddingConfig(provider="voyage"))
+        provider, model, dims, key_env = _resolve_embedding_config(config)
+        assert provider == "voyage"
+        assert model == "voyage-3.5"
+        assert dims == 1024
+        assert key_env == "VOYAGE_API_KEY"
 
     def test_custom_model_override(self):
         config = Config(embedding=EmbeddingConfig(
@@ -106,9 +115,10 @@ class TestEmbedTextDispatch:
     def test_local_dispatch(self):
         """embed_text with local provider calls _embed_local path."""
         config = Config(embedding=EmbeddingConfig(provider="local"))
-        # Will return None if sentence-transformers not installed, which is fine
-        result = embed_text("test", config=config)
-        assert result is None or isinstance(result, list)
+        with patch("kindex.vectors._embed_local", return_value=[0.1, 0.2]) as mock_embed:
+            result = embed_text("test", config=config)
+        mock_embed.assert_called_once_with("test", "all-MiniLM-L6-v2")
+        assert result == [0.1, 0.2]
 
 
 class TestProviderDefaults:

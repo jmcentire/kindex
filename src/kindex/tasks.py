@@ -27,6 +27,27 @@ def _now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def _now_dt() -> datetime.datetime:
+    return datetime.datetime.now()
+
+
+def _claim_expires_at(ttl_minutes: int | None) -> str:
+    ttl = 120 if ttl_minutes is None else ttl_minutes
+    return (_now_dt() + datetime.timedelta(minutes=ttl)).isoformat(timespec="seconds")
+
+
+def _claim_expired(claim: dict | None) -> bool:
+    if not claim:
+        return False
+    expires = claim.get("expires_at")
+    if not expires:
+        return False
+    try:
+        return datetime.datetime.fromisoformat(expires) <= _now_dt()
+    except ValueError:
+        return False
+
+
 def _parse_priority(val: int | str) -> int:
     """Accept int 1-5 or label string, return int."""
     if isinstance(val, str):
@@ -117,6 +138,7 @@ def complete_task(store: Store, task_id: str) -> dict | None:
     extra = node.get("extra") or {}
     extra["task_status"] = "done"
     extra["completed_at"] = _now()
+    extra.pop("claim", None)
 
     store.update_node(task_id, status="archived", extra=extra, weight=0.01)
     return store.get_node(task_id)
@@ -130,6 +152,7 @@ def cancel_task(store: Store, task_id: str) -> dict | None:
 
     extra = node.get("extra") or {}
     extra["task_status"] = "cancelled"
+    extra.pop("claim", None)
 
     store.update_node(task_id, status="archived", extra=extra, weight=0.01)
     return store.get_node(task_id)
@@ -167,6 +190,72 @@ def update_task(store: Store, task_id: str, **fields) -> dict | None:
     node_updates["weight"] = weight
     store.update_node(task_id, **node_updates)
     return store.get_node(task_id)
+
+
+def claim_task(
+    store: Store,
+    task_id: str,
+    agent: str,
+    *,
+    ttl_minutes: int = 120,
+    note: str = "",
+    force: bool = False,
+) -> dict | None:
+    """Claim a task for an agent with an expiry to avoid stale locks."""
+    node = store.get_node(task_id)
+    if not node or node.get("type") != "task":
+        return None
+    if not agent.strip():
+        raise ValueError("Agent is required")
+
+    extra = dict(node.get("extra") or {})
+    existing = extra.get("claim")
+    if existing and not _claim_expired(existing) and not force:
+        owner = existing.get("agent", "unknown")
+        raise ValueError(f"Task already claimed by {owner}")
+
+    extra["task_status"] = "in_progress"
+    extra["claim"] = {
+        "agent": agent.strip(),
+        "claimed_at": _now(),
+        "expires_at": _claim_expires_at(ttl_minutes),
+        "note": note,
+    }
+    store.update_node(task_id, extra=extra)
+    return store.get_node(task_id)
+
+
+def release_task_claim(store: Store, task_id: str, *, agent: str = "", force: bool = False) -> dict | None:
+    """Release a task claim. Non-forced releases must match the claiming agent."""
+    node = store.get_node(task_id)
+    if not node or node.get("type") != "task":
+        return None
+
+    extra = dict(node.get("extra") or {})
+    claim = extra.get("claim")
+    if not claim:
+        return node
+    if agent and claim.get("agent") != agent and not force:
+        raise ValueError(f"Task claimed by {claim.get('agent', 'unknown')}")
+
+    extra.pop("claim", None)
+    if extra.get("task_status") == "in_progress":
+        extra["task_status"] = "open"
+    store.update_node(task_id, extra=extra)
+    return store.get_node(task_id)
+
+
+def cleanup_expired_claims(store: Store) -> int:
+    """Release expired task claims and return the number cleaned up."""
+    count = 0
+    for task in list_tasks(store, status="in_progress", limit=500):
+        extra = dict(task.get("extra") or {})
+        if _claim_expired(extra.get("claim")):
+            extra.pop("claim", None)
+            extra["task_status"] = "open"
+            store.update_node(task["id"], extra=extra)
+            count += 1
+    return count
 
 
 # ── Queries ───────────────────────────────────────────────────────────
@@ -336,6 +425,11 @@ def format_task(task: dict) -> str:
         lines.append(f"    Due: {due}")
     if effort:
         lines.append(f"    Effort: {effort}")
+    claim = extra.get("claim") or {}
+    if claim:
+        lines.append(
+            f"    Claimed by: {claim.get('agent', '?')} until {claim.get('expires_at', '?')}"
+        )
     if task.get("content"):
         lines.append(f"    Notes: {task['content'][:120]}")
     return "\n".join(lines)
@@ -355,11 +449,13 @@ def format_task_list(tasks: list[dict]) -> str:
         due_str = f" due:{due[:10]}" if due else ""
         scope = extra.get("scope", "contextual")
         scope_tag = " [global]" if scope == "global" else ""
+        claim = extra.get("claim") or {}
+        claim_str = f" claimed:{claim.get('agent')}" if claim else ""
         proximity = t.get("proximity")
         prox_str = f" prox={proximity:.2f}" if proximity is not None else ""
 
         lines.append(
-            f"  [{p_tag}] {t.get('title', '?')}{due_str}{scope_tag}{prox_str}"
+            f"  [{p_tag}] {t.get('title', '?')}{due_str}{scope_tag}{claim_str}{prox_str}"
             f"  w={t.get('weight', 0):.2f}  {t.get('id', '?')[:12]}"
         )
     return "\n".join(lines)

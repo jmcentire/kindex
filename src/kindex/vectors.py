@@ -44,8 +44,8 @@ def _resolve_embedding_config(config: Config | None) -> tuple[str, str, int, str
     Returns (provider, model, dimensions, api_key_env).
     """
     if config is None:
-        defaults = PROVIDER_DEFAULTS["local"]
-        return "local", defaults["model"], defaults["dimensions"], ""
+        defaults = PROVIDER_DEFAULTS["voyage"]
+        return "voyage", defaults["model"], defaults["dimensions"], defaults["api_key_env"]
 
     ec = config.embedding
     provider = ec.provider
@@ -76,12 +76,15 @@ def _get_model(model_name: str = "all-MiniLM-L6-v2"):
         return _MODEL
     try:
         from sentence_transformers import SentenceTransformer
-        _MODEL = SentenceTransformer(model_name)
+        _MODEL = SentenceTransformer(model_name, local_files_only=True)
         _MODEL._kindex_model_name = model_name
         return _MODEL
     except ImportError:
         print("Warning: sentence-transformers not installed. "
               "Install with: pip install sentence-transformers", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Warning: local embedding model unavailable: {e}", file=sys.stderr)
         return None
 
 

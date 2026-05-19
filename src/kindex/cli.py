@@ -2626,6 +2626,57 @@ def cmd_task(args):
         else:
             print(f"Task not found: {task_id}", file=sys.stderr)
 
+    elif action == "claim":
+        from .tasks import claim_task
+        task_id = getattr(args, "task_id", None)
+        agent = getattr(args, "agent", None)
+        if not task_id or not agent:
+            print("Usage: kin task claim --task-id <id> --agent <name>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            result = claim_task(
+                store,
+                task_id,
+                agent,
+                ttl_minutes=getattr(args, "ttl", 120) or 120,
+                note=getattr(args, "note", "") or "",
+                force=getattr(args, "force", False),
+            )
+            if result:
+                claim = (result.get("extra") or {}).get("claim") or {}
+                print(f"Claimed: {result['title']} by {claim.get('agent')}")
+            else:
+                print(f"Task not found: {task_id}", file=sys.stderr)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "release":
+        from .tasks import release_task_claim
+        task_id = getattr(args, "task_id", None)
+        if not task_id:
+            print("Usage: kin task release --task-id <id> [--agent <name>]", file=sys.stderr)
+            store.close()
+            return
+        try:
+            result = release_task_claim(
+                store,
+                task_id,
+                agent=getattr(args, "agent", "") or "",
+                force=getattr(args, "force", False),
+            )
+            if result:
+                print(f"Released claim: {result['title']}")
+            else:
+                print(f"Task not found: {task_id}", file=sys.stderr)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "cleanup":
+        from .tasks import cleanup_expired_claims
+        count = cleanup_expired_claims(store)
+        print(f"Cleaned expired claims: {count}")
+
     elif action == "done":
         from .tasks import complete_task
         task_id = getattr(args, "task_id", None)
@@ -2695,6 +2746,99 @@ def cmd_task(args):
         else:
             print(f"Tasks near: {topic}")
             print(format_task_list(tasks))
+
+    store.close()
+
+
+# ── coordination ──────────────────────────────────────────────────────
+
+
+def cmd_coord(args):
+    """Short-lived coordination conversations for agents."""
+    store = _store(args)
+    action = getattr(args, "coord_action", "list")
+
+    if action == "start":
+        from .coordination import create_conversation
+        name = getattr(args, "name", None)
+        if not name:
+            print("Usage: kin coord start <name>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            conv_id = create_conversation(
+                store,
+                name,
+                task_id=getattr(args, "task_id", None),
+                ttl_minutes=getattr(args, "ttl", 240) or 240,
+                project_path=os.getcwd(),
+                created_by=getattr(args, "agent", "") or "",
+            )
+            print(f"Started coordination conversation: {conv_id}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "post":
+        from .coordination import post_message
+        ref = getattr(args, "name", None)
+        body = " ".join(getattr(args, "message_words", []) or [])
+        agent = getattr(args, "agent", "") or ""
+        if not ref or not body or not agent:
+            print("Usage: kin coord post <name-or-id> --agent <name> <message>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            msg = post_message(store, ref, agent, body)
+            print(f"Posted message #{msg['id']}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "read":
+        from .coordination import format_messages, read_messages
+        ref = getattr(args, "name", None)
+        if not ref:
+            print("Usage: kin coord read <name-or-id>", file=sys.stderr)
+            store.close()
+            return
+        try:
+            payload = read_messages(
+                store,
+                ref,
+                since_id=getattr(args, "since_id", 0) or 0,
+                limit=getattr(args, "limit", 50) or 50,
+            )
+            print(_dumps(payload) if getattr(args, "json", False) else format_messages(payload))
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "list":
+        from .coordination import format_conversations, list_conversations
+        conversations = list_conversations(
+            store,
+            status=getattr(args, "status", None) or "active",
+            project_path=os.getcwd() if getattr(args, "project", False) else None,
+            task_id=getattr(args, "task_id", None),
+        )
+        print(_dumps(conversations) if getattr(args, "json", False)
+              else format_conversations(conversations))
+
+    elif action == "end":
+        from .coordination import end_conversation
+        ref = getattr(args, "name", None)
+        if not ref:
+            print("Usage: kin coord end <name-or-id>", file=sys.stderr)
+            store.close()
+            return
+        result = end_conversation(store, ref, summary=getattr(args, "summary", "") or "")
+        if result:
+            print(f"Ended coordination conversation: {ref}")
+        else:
+            print(f"Conversation not found: {ref}", file=sys.stderr)
+
+    elif action == "cleanup":
+        from .coordination import cleanup_expired_conversations
+        count = cleanup_expired_conversations(store)
+        print(f"Cleaned expired conversations: {count}")
 
     store.close()
 
@@ -4322,7 +4466,8 @@ def build_parser() -> argparse.ArgumentParser:
     # task
     s = sub.add_parser("task", help="Graph-connected task management")
     s.add_argument("task_action", nargs="?", default="list",
-                   choices=["add", "list", "show", "done", "cancel", "update", "nearby"])
+                   choices=["add", "list", "show", "claim", "release", "cleanup",
+                            "done", "cancel", "update", "nearby"])
     s.add_argument("title_words", nargs="*", help="Task title (for add)")
     s.add_argument("--priority", type=int, choices=[1, 2, 3, 4, 5], default=3,
                    help="Priority: 1=urgent 2=high 3=normal 4=low 5=someday")
@@ -4333,8 +4478,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", help="Filter: open, in_progress, done, all")
     s.add_argument("--effort", choices=["small", "medium", "large"])
     s.add_argument("--domain", help="Filter by domain")
+    s.add_argument("--agent", help="Agent name for claim/release")
+    s.add_argument("--ttl", type=int, default=120, help="Claim TTL in minutes")
+    s.add_argument("--note", help="Claim note")
+    s.add_argument("--force", action="store_true", help="Force claim/release takeover")
     _common(s)
     s.set_defaults(func=cmd_task)
+
+    # coord
+    s = sub.add_parser("coord", help="Short-lived agent coordination conversations")
+    s.add_argument("coord_action", nargs="?", default="list",
+                   choices=["start", "post", "read", "list", "end", "cleanup"])
+    s.add_argument("name", nargs="?", help="Conversation name or id")
+    s.add_argument("message_words", nargs="*", help="Message body for post")
+    s.add_argument("--agent", help="Agent name")
+    s.add_argument("--task-id", help="Related task id")
+    s.add_argument("--ttl", type=int, default=240, help="Conversation TTL in minutes")
+    s.add_argument("--since-id", type=int, default=0, help="Read messages after id")
+    s.add_argument("--limit", type=int, default=50, help="Read/list limit")
+    s.add_argument("--status", default="active", help="Filter: active, ended, all")
+    s.add_argument("--project", action="store_true", help="Filter by current project")
+    s.add_argument("--summary", help="End summary retained after clearing messages")
+    _common(s)
+    s.set_defaults(func=cmd_coord)
 
     # remind
     s = sub.add_parser("remind", help="Reminder management (create, list, snooze, done, cancel, check)")

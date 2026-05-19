@@ -2,6 +2,17 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.20.0] - 2026-05-19
+
+### Added
+- Short-lived agent coordination plane with `coord_start`, `coord_post`, `coord_read`, `coord_list`, and `coord_end` MCP tools plus matching `kin coord` CLI commands.
+- Expiring task claims with `task_claim` and `task_release` MCP tools plus `kin task claim`, `kin task release`, and cleanup support.
+
+### Changed
+- MCP agent guidance now distinguishes operational coordination messages from durable knowledge capture.
+- Task formatting shows active claim ownership when present.
+- Default embedding provider is now Voyage so vector search uses the pure-HTTP first-class provider by default; local `sentence-transformers` remains available via `embedding.provider: local`.
+
 ## [0.19.0] - 2026-05-15
 
 ### Added
