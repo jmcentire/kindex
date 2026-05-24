@@ -31,6 +31,7 @@ def test_export_understand_anything_projection(tmp_path):
             prov_activity="code-ingest",
             extra={
                 "relative_path": "src/app.py",
+                "repo_root": str(tmp_path),
                 "language": "Python",
                 "class_count": 1,
                 "function_count": 3,
@@ -46,6 +47,7 @@ def test_export_understand_anything_projection(tmp_path):
             prov_activity="code-ingest",
             extra={
                 "relative_path": "src/app.py",
+                "repo_root": str(tmp_path),
                 "language": "Python",
                 "kind": "class",
                 "public_methods": ["run"],
@@ -81,6 +83,38 @@ def test_export_understand_anything_projection(tmp_path):
     assert graph["edges"][0]["type"] == "contains"
     assert graph["layers"]
     assert graph["tour"]
+
+
+def test_export_understand_anything_filters_by_repo_root(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    try:
+        store.add_node(
+            "src/a.py",
+            node_id="code-mod-a",
+            node_type="artifact",
+            domains=["code", "python"],
+            prov_activity="code-ingest",
+            extra={"relative_path": "src/a.py", "repo_root": str(repo_a)},
+        )
+        store.add_node(
+            "src/b.py",
+            node_id="code-mod-b",
+            node_type="artifact",
+            domains=["code", "python"],
+            prov_activity="code-ingest",
+            extra={"relative_path": "src/b.py", "repo_root": str(repo_b)},
+        )
+
+        graph = export_understand_anything(store, directory=repo_a)
+    finally:
+        store.close()
+
+    assert [n["id"] for n in graph["nodes"]] == ["code-mod-a"]
 
 
 def test_ingest_understand_anything_graph(tmp_path):

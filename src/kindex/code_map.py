@@ -59,6 +59,31 @@ def _node_is_code(node: dict) -> bool:
     )
 
 
+def _node_matches_root(node: dict, root: Path | None) -> bool:
+    """Return whether a code node belongs to the requested repo root."""
+    if root is None:
+        return True
+
+    extra = node.get("extra") or {}
+    repo_root = extra.get("repo_root")
+    if repo_root:
+        try:
+            if Path(repo_root).expanduser().resolve() == root:
+                return True
+        except OSError:
+            pass
+
+    prov_source = node.get("prov_source") or ""
+    if prov_source:
+        try:
+            Path(prov_source).expanduser().resolve().relative_to(root)
+            return True
+        except (OSError, ValueError):
+            pass
+
+    return False
+
+
 def _ua_node_type(node: dict) -> str:
     if node.get("type") == "artifact":
         return "file"
@@ -135,7 +160,10 @@ def export_understand_anything(
     """Project Kindex code nodes into an Understand-Anything-compatible graph."""
     root = Path(directory).resolve() if directory else None
     all_nodes = store.all_nodes(limit=limit)
-    code_nodes = [n for n in all_nodes if _node_is_code(n)]
+    code_nodes = [
+        n for n in all_nodes
+        if _node_is_code(n) and _node_matches_root(n, root)
+    ]
     code_ids = {n["id"] for n in code_nodes}
 
     if project_name is None:
