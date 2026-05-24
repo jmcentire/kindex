@@ -145,5 +145,11 @@ def _register_builtins() -> None:
     except Exception:
         pass
 
+    try:
+        from .understand_anything import adapter as understand_anything
+        register(understand_anything)
+    except Exception:
+        pass
+
 
 _register_builtins()

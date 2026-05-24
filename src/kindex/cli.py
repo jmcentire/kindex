@@ -1014,7 +1014,38 @@ def cmd_export(args):
     --audience private: exports everything (for personal backup)
     """
     store = _store(args)
+    if getattr(args, "export_kind", "graph") == "code-map":
+        from .code_map import export_understand_anything
+
+        output_format = getattr(args, "format", "understand-anything")
+        if output_format not in ("understand-anything", "json"):
+            print("Error: code-map export supports --format understand-anything or json",
+                  file=sys.stderr)
+            sys.exit(1)
+        graph = export_understand_anything(
+            store,
+            directory=getattr(args, "directory", None),
+            project_name=getattr(args, "project_name", None),
+            limit=getattr(args, "limit", 10000),
+        )
+        output = _dumps(graph, indent=2)
+        output_path = getattr(args, "output", None)
+        if output_path:
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(output + "\n")
+            print(f"Wrote {path}", file=sys.stderr)
+        else:
+            print(output)
+        store.close()
+        return
+
     target_audience = args.audience
+
+    if args.format == "understand-anything":
+        print("Error: --format understand-anything requires `kin export code-map`",
+              file=sys.stderr)
+        sys.exit(1)
 
     if target_audience == "private":
         nodes = store.all_nodes(limit=10000)
@@ -4140,8 +4171,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     # export
     s = sub.add_parser("export", help="Export graph (audience-aware)")
+    s.add_argument("export_kind", nargs="?", choices=["graph", "code-map"], default="graph",
+                   help="Export graph (default) or a UA-compatible code map")
     s.add_argument("--audience", choices=["private", "team", "org", "public"], default="team")
-    s.add_argument("--format", choices=["json", "jsonl"], default="json")
+    s.add_argument("--format", choices=["json", "jsonl", "understand-anything"], default="json")
+    s.add_argument("--directory", help="Repository root for code-map metadata")
+    s.add_argument("--project-name", help="Project name for code-map export")
+    s.add_argument("--output", help="Write export to this file instead of stdout")
+    s.add_argument("--limit", type=int, default=10000,
+                   help="Maximum nodes to scan for export (default 10000)")
     _common(s)
     s.set_defaults(func=cmd_export)
 
