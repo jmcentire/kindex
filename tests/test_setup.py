@@ -53,6 +53,23 @@ class TestSetupHooks:
         assert "Stop" in data["hooks"]
         assert "stop-guard" not in str(data["hooks"]["Stop"])
         assert "compact-hook" in str(data["hooks"]["Stop"])
+        assert "dream" in str(data["hooks"]["Stop"])
+
+    def test_setup_hooks_can_disable_stop_dream(self, tmp_path):
+        """Should omit stop-time dream when explicitly disabled."""
+        from kindex.setup import install_claude_hooks
+
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings = claude_dir / "settings.json"
+        settings.write_text("{}")
+
+        cfg = Config(data_dir=str(tmp_path), claude_dir=str(claude_dir))
+        cfg.reminders.dream_on_stop_enabled = False
+        install_claude_hooks(cfg)
+
+        data = json.loads(settings.read_text())
+        assert "compact-hook" in str(data["hooks"]["Stop"])
         assert "dream" not in str(data["hooks"]["Stop"])
 
     def test_setup_hooks_idempotent(self, tmp_path):

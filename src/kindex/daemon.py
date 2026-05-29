@@ -86,12 +86,21 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["reminders_fired"] = reminder_results.get("fired", 0)
     results["reminders_auto_snoozed"] = reminder_results.get("auto_snoozed", 0)
 
-    # 11. Lightweight dream — dedup + suggestion auto-apply
+    # 11. Lightweight dream — dedup + suggestion auto-apply, on its own cadence
     try:
-        from .dream import dream_lightweight
-        dream_results = dream_lightweight(config, store, verbose=verbose)
-        results["dream_merged"] = dream_results.get("merged", 0)
-        results["dream_suggestions_applied"] = dream_results.get("suggestions_applied", 0)
+        from .dream import dream_cycle, dream_due
+        min_interval = max(0, int(getattr(config.reminders, "dream_min_interval", 3600) or 0))
+        decision = dream_due(store, min_interval_seconds=min_interval)
+        if decision.get("due"):
+            dream_results = dream_cycle(config, store, mode="lightweight", verbose=verbose)
+            results["dream_merged"] = dream_results.get("merged", 0)
+            results["dream_suggestions_applied"] = dream_results.get("suggestions_applied", 0)
+            if dream_results.get("skipped"):
+                results["dream_skipped"] = dream_results["skipped"]
+        else:
+            results["dream_merged"] = 0
+            results["dream_suggestions_applied"] = 0
+            results["dream_skipped"] = decision.get("skipped", "not_due")
     except Exception:
         results["dream_merged"] = 0
         results["dream_suggestions_applied"] = 0

@@ -248,6 +248,8 @@ class TestDreamCycle:
 
         last = s.get_meta("last_dream_run")
         assert last is not None
+        started = s.get_meta("last_dream_started")
+        assert started is not None
 
         s.close()
 
@@ -272,6 +274,55 @@ class TestDreamCycle:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
         s.close()
+
+    def test_detach_dream_throttles_recent_spawn(self, tmp_path, monkeypatch):
+        from kindex.dream import detach_dream
+
+        class FakeProc:
+            pid = 12345
+
+        calls = []
+
+        def fake_popen(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeProc()
+
+        cfg = Config(data_dir=str(tmp_path))
+        cfg.reminders.dream_min_interval = 3600
+        monkeypatch.setattr("kindex.setup._find_kin_path", lambda: "/tmp/kin")
+        monkeypatch.setattr("kindex.dream.subprocess.Popen", fake_popen)
+
+        first = detach_dream(cfg, mode="lightweight")
+        second = detach_dream(cfg, mode="lightweight")
+
+        assert first["detached"] is True
+        assert first["pid"] == 12345
+        assert second["detached"] is False
+        assert second["skipped"] == "recent"
+        assert len(calls) == 1
+
+    def test_detach_dream_force_bypasses_throttle(self, tmp_path, monkeypatch):
+        from kindex.dream import detach_dream
+
+        class FakeProc:
+            pid = 12345
+
+        calls = []
+
+        def fake_popen(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeProc()
+
+        cfg = Config(data_dir=str(tmp_path))
+        cfg.reminders.dream_min_interval = 3600
+        monkeypatch.setattr("kindex.setup._find_kin_path", lambda: "/tmp/kin")
+        monkeypatch.setattr("kindex.dream.subprocess.Popen", fake_popen)
+
+        detach_dream(cfg, mode="lightweight")
+        forced = detach_dream(cfg, mode="lightweight", force=True)
+
+        assert forced["detached"] is True
+        assert len(calls) == 2
 
 
 class TestDreamIdempotent:

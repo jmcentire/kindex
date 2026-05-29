@@ -149,7 +149,8 @@ class ReminderConfig(BaseModel):
     idle_suppress_after: int = 600
     action_enabled: bool = True        # enable action execution on reminder fire
     stop_guard_enabled: bool = False   # block Claude exit for pending actions (noisy; opt-in)
-    dream_on_stop_enabled: bool = False  # run knowledge consolidation when Claude exits (CPU-heavy; opt-in)
+    dream_on_stop_enabled: bool = True  # run throttled knowledge consolidation when Claude exits
+    dream_min_interval: int = 3600      # seconds between scheduled/hook dream runs
     stop_guard_window: int = 7200      # seconds (2h) — block exit if actions due within
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     adaptive_scheduling: bool = True   # dynamically adjust cron interval

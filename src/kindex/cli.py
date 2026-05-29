@@ -2474,11 +2474,16 @@ def cmd_dream(args):
 
     if detach:
         from .dream import detach_dream
-        pid = detach_dream(cfg, mode=mode)
+        result = detach_dream(cfg, mode=mode, force=getattr(args, "force", False))
         if not args.json:
-            print(f"Dream detached (pid={pid}, mode={mode})")
+            if result.get("detached"):
+                print(f"Dream detached (pid={result['pid']}, mode={mode})")
+            else:
+                skipped = result.get("skipped", "not_due")
+                detail = f"; next allowed {result['next_allowed']}" if result.get("next_allowed") else ""
+                print(f"Dream detach skipped: {skipped}{detail}")
         else:
-            print(_dumps({"detached": True, "pid": pid, "mode": mode}))
+            print(_dumps(result))
         store.close()
         return
 
@@ -4805,6 +4810,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Include LLM-powered cluster consolidation")
     s.add_argument("--detach", action="store_true",
                    help="Fork detached subprocess and return immediately")
+    s.add_argument("--force", action="store_true",
+                   help="With --detach, bypass the scheduled dream throttle")
     _common(s)
     s.set_defaults(func=cmd_dream)
 

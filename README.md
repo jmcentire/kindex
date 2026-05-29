@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.21.0](https://img.shields.io/badge/version-0.21.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.21.1](https://img.shields.io/badge/version-0.21.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1072%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1075%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -261,11 +261,11 @@ kin dream --lightweight
 # Include LLM-powered cluster summarisation
 kin dream --deep
 
-# Fork and return immediately
+# Fork and return immediately; repeated detached starts are throttled
 kin dream --detach --lightweight
 ```
 
-Default triggers are manual CLI and periodic cron (step 11 of `kin cron`). File locking prevents concurrent cycles. Stop-time detached dream is opt-in via `reminders.dream_on_stop_enabled: true` because it can be CPU-heavy on the hook path.
+Default triggers are manual CLI, periodic cron (step 11 of `kin cron`), and a throttled detached Stop hook. File locking prevents concurrent cycles, and `reminders.dream_min_interval` prevents hooks or cron from relaunching dream repeatedly after a recent start. Set `reminders.dream_on_stop_enabled: false` to disable Stop-time detached dream while leaving manual and cron dream available.
 
 ### Conversation Modes
 
@@ -421,7 +421,7 @@ Reminders:
 
 Dream (kin dream):
   Modes:         lightweight (<5s) | full (non-LLM) | deep (claude -p clusters)
-  Triggers:      CLI | cron step 11 | optional Stop-time detach
+  Triggers:      CLI | cron step 11 | throttled Stop-time detach
   Dedup:         difflib.SequenceMatcher, 4-char title bucketing, 0.95 merge / 0.85 suggest
   Consolidation: suggestion auto-apply, domain edge strengthening, cluster summarisation
   Safety:        fcntl.flock exclusion, protected types skip, provenance tracking
@@ -597,7 +597,8 @@ reminders:
   auto_snooze_timeout: 300       # auto-snooze after 5 min inaction
   idle_suppress_after: 600       # suppress if idle > 10 min
   stop_guard_enabled: false      # opt-in; blocking Stop hooks are noisy in Claude
-  dream_on_stop_enabled: false   # opt-in; dream can be CPU-heavy on hook path
+  dream_on_stop_enabled: true    # launch throttled detached dream from Claude Stop hook
+  dream_min_interval: 3600       # seconds between scheduled/hook dream starts
   channels:
     slack:
       enabled: false
