@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from kindex.config import Config
@@ -49,6 +51,21 @@ def test_post_and_read_messages(store):
     payload = read_messages(store, "chat", since_id=1)
     assert payload["name"] == "chat"
     assert [m["body"] for m in payload["messages"]] == ["I will take tests"]
+
+
+def test_post_refreshes_expiry_from_last_message(store, monkeypatch):
+    import kindex.coordination as coordination
+    from kindex.coordination import create_conversation, get_conversation, post_message
+
+    now = datetime.datetime(2026, 5, 29, 12, 0, 0)
+    monkeypatch.setattr(coordination, "_now_dt", lambda: now)
+    create_conversation(store, "Sliding", ttl_minutes=10)
+    assert get_conversation(store, "sliding")["extra"]["expires_at"] == "2026-05-29T12:10:00"
+
+    now = datetime.datetime(2026, 5, 29, 12, 9, 0)
+    monkeypatch.setattr(coordination, "_now_dt", lambda: now)
+    post_message(store, "sliding", "agent-a", "still active")
+    assert get_conversation(store, "sliding")["extra"]["expires_at"] == "2026-05-29T12:19:00"
 
 
 def test_end_conversation_clears_messages(store):

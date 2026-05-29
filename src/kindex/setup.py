@@ -2,12 +2,55 @@
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .config import Config
+
+
+def _kin_command_parts(kin_path: str) -> list[str]:
+    """Split the fallback python -m invocation while preserving normal kin paths."""
+    if " -m kindex.cli" in kin_path:
+        return shlex.split(kin_path)
+    return [kin_path]
+
+
+def _kin_hook_command(kin_path: str, args: list[str]) -> str:
+    """Build a hook command that loads shell exports before running kin."""
+    command = " ".join(shlex.quote(part) for part in [*_kin_command_parts(kin_path), *args])
+    script = f"source ~/.profile >/dev/null 2>&1 || true; exec {command}"
+    return f"/bin/bash -lc {shlex.quote(script)}"
+
+
+def _kin_stop_hook_command(kin_path: str, args: list[str]) -> str:
+    """Build a Claude Stop hook command that avoids stop-hook recursion."""
+    command = " ".join(shlex.quote(part) for part in [*_kin_command_parts(kin_path), *args])
+    active_check = (
+        "import json,sys; "
+        "raw=sys.stdin.read(); "
+        "\ntry:\n data=json.loads(raw or '{}') if raw.strip() else {}\n"
+        "except Exception:\n data={}\n"
+        "sys.exit(0 if data.get('stop_hook_active') else 1)"
+    )
+    script = (
+        "payload=$(cat); "
+        f"if printf '%s' \"$payload\" | python3 -c {shlex.quote(active_check)}; "
+        "then exit 0; fi; "
+        "source ~/.profile >/dev/null 2>&1 || true; "
+        f"printf '%s' \"$payload\" | {command}"
+    )
+    return f"/bin/bash -lc {shlex.quote(script)}"
+
+
+def _hook_needs_profile(entry: object) -> bool:
+    return "source ~/.profile" not in str(entry)
+
+
+def _hook_needs_stop_active_guard(entry: object) -> bool:
+    return "stop_hook_active" not in str(entry)
 
 
 def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
@@ -39,14 +82,22 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": f"{kin_path} prime --for hook",
+            "command": _kin_hook_command(kin_path, ["prime", "--for", "hook"]),
             "timeout": 5000
         }]
     }
     # Check if already installed
-    if not any("kin prime" in str(h) or "kindex" in str(h).lower() for h in session_start):
+    existing_idx = next(
+        (i for i, h in enumerate(session_start)
+         if "kin prime" in str(h) or "kindex" in str(h).lower()),
+        None,
+    )
+    if existing_idx is None:
         session_start.append(kindex_hook)
         actions.append("Added SessionStart hook: kin prime --for hook")
+    elif _hook_needs_profile(session_start[existing_idx]):
+        session_start[existing_idx] = kindex_hook
+        actions.append("Updated SessionStart hook to source ~/.profile")
     else:
         actions.append("SessionStart hook already installed")
 
@@ -56,13 +107,17 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": f"{kin_path} compact-hook --emit-context",
+            "command": _kin_hook_command(kin_path, ["compact-hook", "--emit-context"]),
             "timeout": 10000
         }]
     }
-    if not any("compact-hook" in str(h) for h in pre_compact):
+    existing_idx = next((i for i, h in enumerate(pre_compact) if "compact-hook" in str(h)), None)
+    if existing_idx is None:
         pre_compact.append(compact_hook)
         actions.append("Added PreCompact hook: kin compact-hook --emit-context")
+    elif _hook_needs_profile(pre_compact[existing_idx]):
+        pre_compact[existing_idx] = compact_hook
+        actions.append("Updated PreCompact hook to source ~/.profile")
     else:
         actions.append("PreCompact hook already installed")
 
@@ -72,55 +127,98 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": f"{kin_path} prompt-check",
+            "command": _kin_hook_command(kin_path, ["prompt-check"]),
             "timeout": 2000
         }]
     }
-    if not any("prompt-check" in str(h) for h in prompt_submit):
+    existing_idx = next((i for i, h in enumerate(prompt_submit) if "prompt-check" in str(h)), None)
+    if existing_idx is None:
         prompt_submit.append(prompt_hook)
         actions.append("Added UserPromptSubmit hook: kin prompt-check")
+    elif _hook_needs_profile(prompt_submit[existing_idx]):
+        prompt_submit[existing_idx] = prompt_hook
+        actions.append("Updated UserPromptSubmit hook to source ~/.profile")
     else:
         actions.append("UserPromptSubmit hook already installed")
 
-    # Stop hook — guard for actionable reminders + session capture + dream
+    # PreToolUse hook — advisory attention near actions, modeled after signet-eval INJECT.
+    pre_tool = hooks.setdefault("PreToolUse", [])
+    attention_hook = {
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": _kin_hook_command(kin_path, ["attention-hook", "--adapter", "claude", "--event", "PreToolUse"]),
+            "timeout": 5000,
+        }]
+    }
+    existing_idx = next((i for i, h in enumerate(pre_tool) if "attention-hook" in str(h)), None)
+    if existing_idx is None:
+        pre_tool.append(attention_hook)
+        actions.append("Added PreToolUse hook: kin attention-hook")
+    elif _hook_needs_profile(pre_tool[existing_idx]):
+        pre_tool[existing_idx] = attention_hook
+        actions.append("Updated PreToolUse hook to source ~/.profile")
+    else:
+        actions.append("PreToolUse attention hook already installed")
+
+    # Stop hook — session capture. Blocking and expensive work are opt-in because
+    # Claude surfaces blocking output and dream can consume noticeable CPU.
     stop_hooks = hooks.setdefault("Stop", [])
+    stop_hook_commands = []
+    if config.reminders.stop_guard_enabled:
+        stop_hook_commands.append({
+            "type": "command",
+            "command": _kin_stop_hook_command(kin_path, ["stop-guard"]),
+            "timeout": 5000,
+        })
+    stop_hook_commands.extend([
+        {
+            "type": "command",
+            "command": _kin_stop_hook_command(kin_path, ["compact-hook", "--text", "Session ended"]),
+            "timeout": 5000,
+        }
+    ])
+    if config.reminders.dream_on_stop_enabled:
+        stop_hook_commands.append({
+            "type": "command",
+            "command": _kin_stop_hook_command(kin_path, ["dream", "--detach", "--lightweight"]),
+            "timeout": 3000,
+        })
     stop_guard_entry = {
         "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": f"{kin_path} stop-guard",
-                "timeout": 5000,
-            },
-            {
-                "type": "command",
-                "command": f'{kin_path} compact-hook --text "Session ended"',
-                "timeout": 5000,
-            },
-            {
-                "type": "command",
-                "command": f"{kin_path} dream --detach --lightweight",
-                "timeout": 3000,
-            },
-        ]
+        "hooks": stop_hook_commands,
     }
-    if not any("stop-guard" in str(h) for h in stop_hooks):
-        hooks["Stop"] = [stop_guard_entry]
-        actions.append("Added Stop hook: kin stop-guard + compact-hook + dream")
-    elif not any("dream" in str(h) for h in stop_hooks):
-        # Existing stop-guard but no dream — add dream to existing entry
-        for entry in stop_hooks:
-            if isinstance(entry, dict) and "hooks" in entry:
-                hook_list = entry["hooks"]
-                if not any("dream" in str(h) for h in hook_list):
-                    hook_list.append({
-                        "type": "command",
-                        "command": f"{kin_path} dream --detach --lightweight",
-                        "timeout": 3000,
-                    })
-        actions.append("Added dream --detach to existing Stop hook")
+    existing_idx = next(
+        (i for i, h in enumerate(stop_hooks)
+         if "stop-guard" in str(h) or "compact-hook" in str(h) or "dream" in str(h)),
+        None,
+    )
+    if existing_idx is None:
+        stop_hooks.append(stop_guard_entry)
+        if config.reminders.stop_guard_enabled:
+            action = "Added Stop hook: kin stop-guard + compact-hook"
+        else:
+            action = "Added Stop hook: kin compact-hook"
+        if config.reminders.dream_on_stop_enabled:
+            action += " + dream"
+        actions.append(action)
+    elif (
+        _hook_needs_profile(stop_hooks[existing_idx])
+        or _hook_needs_stop_active_guard(stop_hooks[existing_idx])
+        or ("dream" in str(stop_hooks[existing_idx]) and not config.reminders.dream_on_stop_enabled)
+        or ("dream" not in str(stop_hooks[existing_idx]) and config.reminders.dream_on_stop_enabled)
+        or ("stop-guard" in str(stop_hooks[existing_idx]) and not config.reminders.stop_guard_enabled)
+        or ("stop-guard" not in str(stop_hooks[existing_idx]) and config.reminders.stop_guard_enabled)
+    ):
+        stop_hooks[existing_idx] = stop_guard_entry
+        action = "Updated Stop hook to source ~/.profile and avoid recursion"
+        if config.reminders.stop_guard_enabled:
+            action += " with guard"
+        if config.reminders.dream_on_stop_enabled:
+            action += " with dream"
+        actions.append(action)
     else:
-        actions.append("Stop hook already installed (with dream)")
+        actions.append("Stop hook already installed")
 
     if not dry_run:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +226,110 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         actions.append(f"Wrote {settings_path}")
 
     return actions
+
+
+def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex prompt-time attention hook into ~/.codex/hooks.json."""
+    hooks_path = config.codex_path / "hooks.json"
+    actions = []
+    if hooks_path.exists():
+        data = json.loads(hooks_path.read_text())
+    else:
+        data = {}
+    hooks = data.setdefault("hooks", {})
+    prompt_submit = hooks.setdefault("UserPromptSubmit", [])
+    kin_path = _find_kin_path()
+    entry = {
+        "hooks": [{
+            "type": "command",
+            "command": _kin_hook_command(kin_path, ["attention-hook", "--adapter", "codex", "--event", "UserPromptSubmit"]),
+            "timeout": 5,
+            "statusMessage": "Checking Kindex attention",
+        }]
+    }
+
+    existing_idx = next(
+        (i for i, h in enumerate(prompt_submit)
+         if "prompt-check" in str(h) or "attention-hook" in str(h)),
+        None,
+    )
+    if existing_idx is None:
+        prompt_submit.append(entry)
+        actions.append("Added Codex UserPromptSubmit hook: kin attention-hook")
+    elif (
+        _hook_needs_profile(prompt_submit[existing_idx])
+        or "prompt-check" in str(prompt_submit[existing_idx])
+        or "--adapter" not in str(prompt_submit[existing_idx])
+    ):
+        prompt_submit[existing_idx] = entry
+        actions.append("Updated Codex UserPromptSubmit hook to source ~/.profile")
+    else:
+        actions.append("Codex UserPromptSubmit hook already installed")
+
+    post_tool = hooks.setdefault("PostToolUse", [])
+    post_entry = {
+        "hooks": [{
+            "type": "command",
+            "command": _kin_hook_command(kin_path, ["attention-hook", "--adapter", "codex", "--event", "PostToolUse"]),
+            "timeout": 5,
+            "statusMessage": "Checking Kindex attention",
+        }]
+    }
+    existing_idx = next((i for i, h in enumerate(post_tool) if "attention-hook" in str(h)), None)
+    if existing_idx is None:
+        post_tool.append(post_entry)
+        actions.append("Added Codex PostToolUse hook: kin attention-hook")
+    elif _hook_needs_profile(post_tool[existing_idx]):
+        post_tool[existing_idx] = post_entry
+        actions.append("Updated Codex PostToolUse hook to source ~/.profile")
+    else:
+        actions.append("Codex PostToolUse attention hook already installed")
+
+    if dry_run:
+        actions.append(f"Would write {hooks_path}")
+        return actions
+
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append(f"Wrote {hooks_path}")
+    return actions
+
+
+def uninstall_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex prompt-time attention hook from ~/.codex/hooks.json."""
+    hooks_path = config.codex_path / "hooks.json"
+    if not hooks_path.exists():
+        return ["No Codex hooks.json found"]
+
+    data = json.loads(hooks_path.read_text())
+    hooks = data.get("hooks", {})
+    prompt_submit = hooks.get("UserPromptSubmit", [])
+    post_tool = hooks.get("PostToolUse", [])
+    kept = [
+        h for h in prompt_submit
+        if "prompt-check" not in str(h) and "attention-hook" not in str(h)
+    ]
+    kept_post = [h for h in post_tool if "attention-hook" not in str(h)]
+    if len(kept) == len(prompt_submit) and len(kept_post) == len(post_tool):
+        return ["No Kindex Codex UserPromptSubmit hook found"]
+
+    if dry_run:
+        return [f"Would remove Codex UserPromptSubmit hook from {hooks_path}"]
+
+    if kept:
+        hooks["UserPromptSubmit"] = kept
+    else:
+        hooks.pop("UserPromptSubmit", None)
+    if kept_post:
+        hooks["PostToolUse"] = kept_post
+    else:
+        hooks.pop("PostToolUse", None)
+    if hooks:
+        data["hooks"] = hooks
+    else:
+        data.pop("hooks", None)
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    return [f"Removed Codex UserPromptSubmit hook from {hooks_path}"]
 
 
 def install_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:

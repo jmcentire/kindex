@@ -5,22 +5,41 @@ Falls back gracefully to keyword matching when LLM is unavailable or over budget
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from types import SimpleNamespace
+
 from .budget import BudgetLedger
 from .config import Config
 
 # Authoritative pricing per token (cache-aware)
 PRICING = {
     "claude-haiku-4-5-20251001": {
-        "input": 0.80e-6, "output": 4.00e-6,
-        "cache_write": 1.00e-6, "cache_read": 0.08e-6,
+        "input": 1.00e-6, "output": 5.00e-6,
+        "cache_write": 1.25e-6, "cache_read": 0.10e-6,
     },
     "claude-sonnet-4-6": {
         "input": 3.00e-6, "output": 15.00e-6,
         "cache_write": 3.75e-6, "cache_read": 0.30e-6,
     },
     "claude-opus-4-6": {
-        "input": 15.00e-6, "output": 75.00e-6,
-        "cache_write": 18.75e-6, "cache_read": 1.50e-6,
+        "input": 5.00e-6, "output": 25.00e-6,
+        "cache_write": 6.25e-6, "cache_read": 0.50e-6,
+    },
+    "gpt-5.4-nano": {
+        "input": 0.20e-6, "output": 1.25e-6,
+        "cache_write": 0.20e-6, "cache_read": 0.02e-6,
+    },
+    "gpt-5.4-mini": {
+        "input": 0.75e-6, "output": 4.50e-6,
+        "cache_write": 0.75e-6, "cache_read": 0.075e-6,
+    },
+    "gpt-5-nano": {
+        "input": 0.05e-6, "output": 0.40e-6,
+        "cache_write": 0.05e-6, "cache_read": 0.005e-6,
     },
 }
 _DEFAULT_PRICE = {
@@ -29,22 +48,181 @@ _DEFAULT_PRICE = {
 }
 
 
+def _key_env_names(config: Config) -> list[str]:
+    """Return configured API key env vars, supporting comma-separated fallback."""
+    names: list[str] = []
+    for chunk in str(config.llm.api_key_env or "").replace(";", ",").split(","):
+        name = chunk.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def resolve_api_key(config: Config) -> tuple[str | None, str]:
+    """Resolve the first available configured API key env var."""
+    for name in _key_env_names(config):
+        value = os.environ.get(name)
+        if value:
+            return value, name
+    return None, ", ".join(_key_env_names(config))
+
+
+def is_configured(config: Config) -> bool:
+    """Return True when the configured LLM provider can make calls."""
+    if not config.llm.enabled:
+        return False
+    provider = config.llm.provider.lower()
+    if provider not in {"anthropic", "openai"}:
+        return False
+    api_key, _ = resolve_api_key(config)
+    return bool(api_key)
+
+
+class _OpenAIResponsesMessages:
+    """Small adapter that exposes the Anthropic-like messages.create shape."""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def create(self, *, model: str, max_tokens: int, messages: list[dict]) -> SimpleNamespace:
+        payload = {
+            "model": model,
+            "input": [
+                {
+                    "role": message.get("role", "user"),
+                    "content": message.get("content", ""),
+                }
+                for message in messages
+            ],
+            "max_output_tokens": max_tokens,
+        }
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI API error {exc.code}: {body}") from exc
+
+        usage = data.get("usage") or {}
+        cached = _nested_usage_value(
+            usage,
+            ("input_tokens_details", "cached_tokens"),
+            ("prompt_tokens_details", "cached_tokens"),
+        )
+        total_input = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        usage_obj = SimpleNamespace(
+            input_tokens=max(0, total_input - cached),
+            output_tokens=output_tokens,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=cached,
+        )
+        return SimpleNamespace(
+            content=[SimpleNamespace(text=_extract_openai_text(data))],
+            usage=usage_obj,
+        )
+
+
+class _OpenAIResponsesClient:
+    def __init__(self, api_key: str):
+        self.messages = _OpenAIResponsesMessages(api_key)
+
+
+def _extract_openai_text(data: dict) -> str:
+    text = data.get("output_text")
+    if isinstance(text, str):
+        return text
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            value = content.get("text")
+            if isinstance(value, str):
+                parts.append(value)
+    if parts:
+        return "\n".join(parts)
+    choices = data.get("choices") or []
+    if choices:
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _nested_usage_value(usage, *paths: tuple[str, ...]) -> int:
+    for path in paths:
+        current = usage
+        for key in path:
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                current = getattr(current, key, None)
+            if current is None:
+                break
+        else:
+            try:
+                return int(current or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _usage_value(usage, *names: str) -> int:
+    for name in names:
+        if isinstance(usage, dict):
+            value = usage.get(name)
+        else:
+            value = getattr(usage, name, None)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
 def get_client(config: Config):
-    """Get anthropic client, or None if not available."""
+    """Get configured LLM client, or None if not available."""
     if not config.llm.enabled:
         return None
+    api_key, key_env = resolve_api_key(config)
+    if not api_key:
+        print(
+            f"Warning: LLM enabled but none of {key_env or 'llm.api_key_env'} are set. "
+            "Falling back to keyword matching.",
+            file=sys.stderr,
+        )
+        return None
+
+    provider = config.llm.provider.lower()
+    if provider == "openai":
+        return _OpenAIResponsesClient(api_key)
+
+    if provider != "anthropic":
+        print(
+            f"Warning: unsupported LLM provider '{config.llm.provider}'. "
+            "Supported providers: anthropic, openai.",
+            file=sys.stderr,
+        )
+        return None
+
     try:
-        import os
         import anthropic
-        api_key = os.environ.get(config.llm.api_key_env)
-        if not api_key:
-            import sys
-            print(f"Warning: LLM enabled but {config.llm.api_key_env} not set. "
-                  f"Falling back to keyword matching.", file=sys.stderr)
-            return None
         return anthropic.Anthropic(api_key=api_key)
     except ImportError:
-        import sys
         print("Warning: LLM enabled but 'anthropic' package not installed. "
               "Install with: pip install kindex[llm]", file=sys.stderr)
         return None
@@ -55,14 +233,22 @@ _get_client = get_client
 
 
 def calculate_cost(model: str, usage) -> dict:
-    """Calculate cost from Anthropic response usage, cache-aware."""
+    """Calculate cost from response usage, cache-aware."""
     p = PRICING.get(model, _DEFAULT_PRICE)
-    tokens_in = getattr(usage, "input_tokens", 0)
-    tokens_out = getattr(usage, "output_tokens", 0)
-    cache_write = getattr(usage, "cache_creation_input_tokens", 0)
-    cache_read = getattr(usage, "cache_read_input_tokens", 0)
+    tokens_in = _usage_value(usage, "input_tokens", "prompt_tokens")
+    tokens_out = _usage_value(usage, "output_tokens", "completion_tokens")
+    cache_write = _usage_value(usage, "cache_creation_input_tokens")
+    cache_read = _usage_value(usage, "cache_read_input_tokens")
+    nested_cache_read = _nested_usage_value(
+        usage,
+        ("input_tokens_details", "cached_tokens"),
+        ("prompt_tokens_details", "cached_tokens"),
+    )
+    if not cache_read:
+        cache_read = nested_cache_read
+    billable_input = max(0, tokens_in - nested_cache_read) if nested_cache_read else tokens_in
     amount = (
-        tokens_in * p["input"]
+        billable_input * p["input"]
         + cache_write * p["cache_write"]
         + cache_read * p["cache_read"]
         + tokens_out * p["output"]
@@ -80,6 +266,11 @@ def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     """Legacy cost estimation (no cache awareness)."""
     pricing = PRICING.get(model, _DEFAULT_PRICE)
     return tokens_in * pricing["input"] + tokens_out * pricing["output"]
+
+
+def estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    """Estimate LLM cost before a call."""
+    return _estimate_cost(model, tokens_in, tokens_out)
 
 
 def classify_for_graph(

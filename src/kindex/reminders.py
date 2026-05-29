@@ -6,6 +6,8 @@ import datetime
 import re
 from typing import TYPE_CHECKING
 
+from .scoping import item_matches_conversation
+
 if TYPE_CHECKING:
     from .config import Config
     from .store import Store
@@ -272,21 +274,36 @@ def create_reminder(
     action_command: str = "",
     action_instructions: str = "",
     action_mode: str = "auto",
+    attention_triggers: list[str] | None = None,
+    conversation_id: str = "",
+    scope: str = "",
 ) -> str:
     """Create a new reminder. Returns the reminder ID."""
     if priority not in _VALID_PRIORITIES:
         raise ValueError(f"Invalid priority {priority!r}; must be one of {_VALID_PRIORITIES}")
+    scope = scope.strip().lower()
+    if scope and scope not in {"chat", "global"}:
+        raise ValueError("Invalid reminder scope; must be 'chat' or 'global'")
 
     next_due, schedule, reminder_type = parse_time_spec(time_spec)
 
     extra: dict | None = None
-    if action_command or action_instructions:
-        extra = {
-            "action_command": action_command,
-            "action_instructions": action_instructions,
-            "action_mode": action_mode,
-            "action_status": "pending",
-        }
+    if action_command or action_instructions or attention_triggers or conversation_id or scope:
+        extra = {}
+        if action_command or action_instructions:
+            extra.update({
+                "action_command": action_command,
+                "action_instructions": action_instructions,
+                "action_mode": action_mode,
+                "action_status": "pending",
+            })
+        if attention_triggers:
+            extra["attention_triggers"] = attention_triggers
+        if conversation_id:
+            extra["conversation_id"] = conversation_id
+            extra["reminder_scope"] = "chat"
+        elif scope:
+            extra["reminder_scope"] = scope
 
     rid = store.add_reminder(
         title,
@@ -302,6 +319,58 @@ def create_reminder(
     )
     _try_repack(store)
     return rid
+
+
+def reminder_matches_conversation(
+    reminder: dict,
+    conversation_id: str | None,
+    *,
+    include_global: bool = True,
+    include_legacy: bool = False,
+) -> bool:
+    """Return whether a reminder should be visible in a conversation hook."""
+    return item_matches_conversation(
+        reminder,
+        conversation_id,
+        include_global=include_global,
+        include_legacy=include_legacy,
+    )
+
+
+def filter_reminders_for_conversation(
+    reminders: list[dict],
+    conversation_id: str | None,
+    *,
+    include_global: bool = True,
+    include_legacy: bool = False,
+) -> list[dict]:
+    """Filter reminders for a hook-visible reminder board."""
+    return [
+        reminder for reminder in reminders
+        if reminder_matches_conversation(
+            reminder,
+            conversation_id,
+            include_global=include_global,
+            include_legacy=include_legacy,
+        )
+    ]
+
+
+def scoped_due_reminders(
+    store: Store,
+    conversation_id: str | None,
+    *,
+    include_global: bool = True,
+    include_legacy: bool = False,
+    as_of: str | None = None,
+) -> list[dict]:
+    """Return due reminders visible to a specific conversation hook."""
+    return filter_reminders_for_conversation(
+        store.due_reminders(as_of=as_of),
+        conversation_id,
+        include_global=include_global,
+        include_legacy=include_legacy,
+    )
 
 
 def snooze_reminder(

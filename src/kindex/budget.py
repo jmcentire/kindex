@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -59,7 +60,10 @@ class BudgetLedger:
     def record(self, amount: float, model: str = "", purpose: str = "",
                tokens_in: int = 0, tokens_out: int = 0,
                cache_creation_tokens: int = 0,
-               cache_read_tokens: int = 0) -> None:
+               cache_read_tokens: int = 0,
+               conversation_id: str = "",
+               estimate: float | None = None,
+               metadata: dict[str, Any] | None = None) -> None:
         entry = {
             "date": _today(),
             "amount": round(amount, 6),
@@ -68,6 +72,12 @@ class BudgetLedger:
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
         }
+        if conversation_id:
+            entry["conversation_id"] = conversation_id
+        if estimate is not None:
+            entry["estimate"] = round(estimate, 6)
+        if metadata:
+            entry["metadata"] = metadata
         if cache_creation_tokens:
             entry["cache_creation_tokens"] = cache_creation_tokens
         if cache_read_tokens:
@@ -75,10 +85,18 @@ class BudgetLedger:
         self.entries.append(entry)
         self._save()
 
-    def _spend_since(self, since: str) -> float:
+    def _spend_since(
+        self,
+        since: str,
+        *,
+        purpose: str | None = None,
+        conversation_id: str | None = None,
+    ) -> float:
         return sum(
             e.get("amount", 0) for e in self.entries
             if e.get("date", "") >= since
+            and (purpose is None or e.get("purpose") == purpose)
+            and (conversation_id is None or e.get("conversation_id") == conversation_id)
         )
 
     @property
@@ -103,7 +121,22 @@ class BudgetLedger:
     def remaining_today(self) -> float:
         return max(0, self.limits.daily - self.today_spend)
 
-    def summary(self) -> dict:
+    def conversation_spend(
+        self,
+        conversation_id: str,
+        *,
+        since: str | None = None,
+        purpose: str | None = None,
+    ) -> float:
+        """Spend for one conversation, optionally filtered by date/purpose."""
+        start = since or "0000-00-00"
+        return self._spend_since(
+            start,
+            purpose=purpose,
+            conversation_id=conversation_id,
+        )
+
+    def summary(self, conversation_id: str | None = None) -> dict:
         s = {
             "today": {"spent": round(self.today_spend, 4),
                       "limit": self.limits.daily,
@@ -116,6 +149,15 @@ class BudgetLedger:
                       "remaining": round(max(0, self.limits.monthly - self.month_spend), 4)},
             "can_spend": self.can_spend(),
         }
+        if conversation_id:
+            s["conversation"] = {
+                "id": conversation_id,
+                "spent": round(self.conversation_spend(conversation_id), 4),
+                "spent_today": round(
+                    self.conversation_spend(conversation_id, since=_today()),
+                    4,
+                ),
+            }
         cache = self.cache_efficiency()
         if cache["total_cacheable"] > 0:
             s["cache"] = cache

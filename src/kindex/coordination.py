@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .store import Store
 
+_DEFAULT_TTL_MINUTES = 240
+
 
 def _now_dt() -> datetime.datetime:
     return datetime.datetime.now()
@@ -24,8 +26,26 @@ def _now() -> str:
 
 
 def _expires_at(ttl_minutes: int | None) -> str:
-    ttl = 240 if ttl_minutes is None else ttl_minutes
+    ttl = _DEFAULT_TTL_MINUTES if ttl_minutes is None else ttl_minutes
     return (_now_dt() + datetime.timedelta(minutes=ttl)).isoformat(timespec="seconds")
+
+
+def _ttl_from_extra(extra: dict) -> int:
+    ttl = extra.get("ttl_minutes")
+    if isinstance(ttl, int):
+        return ttl
+
+    # Legacy conversations did not store ttl_minutes. Preserve the configured
+    # lifetime when it can be inferred from the original timestamps.
+    try:
+        created = datetime.datetime.fromisoformat(extra.get("created_at", ""))
+        expires = datetime.datetime.fromisoformat(extra.get("expires_at", ""))
+        inferred = int((expires - created).total_seconds() / 60)
+        if inferred > 0:
+            return inferred
+    except (TypeError, ValueError):
+        pass
+    return _DEFAULT_TTL_MINUTES
 
 
 def _slug(name: str) -> str:
@@ -66,6 +86,7 @@ def create_conversation(
         "project_path": project_path or "",
         "created_by": created_by,
         "created_at": _now(),
+        "ttl_minutes": ttl_minutes,
         "expires_at": _expires_at(ttl_minutes),
         "messages": [],
     }
@@ -162,8 +183,9 @@ def post_message(
     }
     messages.append(message)
     extra["messages"] = messages
-    if ttl_minutes:
-        extra["expires_at"] = _expires_at(ttl_minutes)
+    ttl = ttl_minutes if ttl_minutes is not None else _ttl_from_extra(extra)
+    extra["ttl_minutes"] = ttl
+    extra["expires_at"] = _expires_at(ttl)
     store.update_node(node["id"], extra=extra)
     return message
 

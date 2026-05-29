@@ -34,3 +34,13 @@ class TestBudgetLedger:
         assert "week" in s
         assert "month" in s
         assert s["can_spend"] is True
+
+    def test_conversation_summary(self, tmp_path):
+        ledger = BudgetLedger(tmp_path / "budget.yaml", BudgetConfig())
+        ledger.record(0.002, purpose="attention", conversation_id="conv-a")
+        ledger.record(0.003, purpose="attention", conversation_id="conv-b")
+
+        assert ledger.conversation_spend("conv-a", purpose="attention") == 0.002
+        s = ledger.summary(conversation_id="conv-a")
+        assert s["conversation"]["id"] == "conv-a"
+        assert s["conversation"]["spent"] == 0.002

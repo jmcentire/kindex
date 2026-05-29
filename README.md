@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.20.1](https://img.shields.io/badge/version-0.20.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.21.0](https://img.shields.io/badge/version-0.21.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1039%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1072%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -79,6 +79,7 @@ durable decisions, and end the tag with a summary.
 
 ```bash
 kin setup-codex-mcp
+kin setup-codex-hooks
 kin setup-agents-md --install --global
 kin ingest codex-sessions   # optional: backfill saved Codex sessions
 ```
@@ -118,6 +119,7 @@ Or hand-edit `~/.config/opencode/opencode.json`:
 ```
 
 OpenCode reads `AGENTS.md` natively, so `kin setup-agents-md --install` works for OpenCode too.
+OpenCode also supports plugins, but Kindex currently uses MCP + instructions there rather than prompt-time attention injection.
 
 ### Cursor
 
@@ -130,6 +132,8 @@ Or hand-edit `~/.cursor/mcp.json`:
 ```json
 { "mcpServers": { "kindex": { "type": "stdio", "command": "kin-mcp" } } }
 ```
+
+Cursor integration is MCP + always-applied rules. Cursor rules provide prompt-level guidance, but Kindex does not currently install a Cursor prompt-submit hook because Cursor does not expose the same hook surface as Claude Code or Codex CLI.
 
 ## Why Kindex
 
@@ -221,7 +225,9 @@ With the directives active, the agent will:
 
 ### Actionable Reminders
 
-Reminders can carry shell commands and/or natural-language instructions. When due, the daemon executes them automatically — simple commands run directly, complex tasks launch headless `claude -p`. A Stop hook guard blocks Claude from exiting when actionable reminders are pending.
+Reminders can carry shell commands and/or natural-language instructions. When due, the daemon executes them automatically — simple commands run directly, complex tasks launch headless `claude -p`. A Stop hook guard can block Claude from exiting when actionable reminders are pending, but it is opt-in because Claude displays visible "Blocked by hook" output when a Stop hook blocks.
+
+Hook-time reminder injection uses a scoped reminder board. When a client supplies a chat/session id (`conversation_id`, `chat_id`, `session_id`, `CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, `OPENCODE_SESSION_ID`, `CURSOR_SESSION_ID`, etc.), Kindex injects only reminders scoped to that id plus reminders explicitly marked `--scope global`. Legacy unscoped reminders still work for manual `kin prompt-check`, daemon checks, and notifications, but they are not injected into an identified chat by default.
 
 ```bash
 # Kill a cloud instance in 1 hour (but download results first)
@@ -229,13 +235,18 @@ kin remind create "Kill vast.ai instance" --at "in 1 hour" \
   --action "vastai destroy instance 12345" \
   --instructions "Download results from /workspace/ before killing"
 
+# Chat-scoped or intentionally global hook-visible reminders
+kin remind create "Deploy checklist" --at "tomorrow 9am" \
+  --conversation-id "$CLAUDE_SESSION_ID" --attention-trigger deploy
+kin remind create "Monthly billing review" --at "next Monday 9am" --scope global
+
 # Manual trigger
 kin remind exec --reminder-id <id>
 ```
 
 ### Dream — Knowledge Consolidation
 
-Kindex dreams. After each Claude Code session, a detached background process runs fuzzy deduplication, auto-applies pending suggestions, and strengthens edges between nodes that share domains. Like memory consolidation during sleep — replay, strengthen important paths, prune noise.
+Kindex can run fuzzy deduplication, auto-apply pending suggestions, and strengthen edges between nodes that share domains. Like memory consolidation during sleep — replay, strengthen important paths, prune noise.
 
 ```bash
 # See what would happen (no changes)
@@ -250,11 +261,11 @@ kin dream --lightweight
 # Include LLM-powered cluster summarisation
 kin dream --deep
 
-# Fork and return immediately (used by Stop hook)
+# Fork and return immediately
 kin dream --detach --lightweight
 ```
 
-Three triggers: manual CLI, periodic cron (step 11 of `kin cron`), and automatic detached subprocess on Claude Code session exit. File locking prevents concurrent cycles. The detached process uses `start_new_session=True` to survive Claude Code's exit.
+Default triggers are manual CLI and periodic cron (step 11 of `kin cron`). File locking prevents concurrent cycles. Stop-time detached dream is opt-in via `reminders.dream_on_stop_enabled: true` because it can be CPU-heavy on the hook path.
 
 ### Conversation Modes
 
@@ -410,7 +421,7 @@ Reminders:
 
 Dream (kin dream):
   Modes:         lightweight (<5s) | full (non-LLM) | deep (claude -p clusters)
-  Triggers:      CLI | cron step 11 | Stop hook (detached, start_new_session=True)
+  Triggers:      CLI | cron step 11 | optional Stop-time detach
   Dedup:         difflib.SequenceMatcher, 4-char title bucketing, 0.95 merge / 0.85 suggest
   Consolidation: suggestion auto-apply, domain edge strengthening, cluster summarisation
   Safety:        fcntl.flock exclusion, protected types skip, provenance tracking
@@ -502,6 +513,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin config [show\|get\|set]` | View or edit configuration |
 | `kin policy [show\|check]` | Show or enforce project work policy from `.kin/config` |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
+| `kin setup-codex-hooks` | Install prompt-time attention hook into Codex |
 | `kin setup-codex-mcp` | Install kindex MCP server into Codex |
 | `kin setup-gemini-mcp` | Install kindex MCP server into Gemini CLI |
 | `kin setup-opencode-mcp` | Install kindex MCP server into OpenCode |
@@ -515,6 +527,8 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin doctor` | Health check with graph enforcement (--fix) |
 | `kin migrate` | Import markdown topics into SQLite |
 | `kin budget` | LLM spend tracking |
+| `kin attention` | Toggle/check/estimate conversation-attention reminder injection |
+| `kin attention-hook` | Advisory attention hook for prompt/tool events |
 | `kin whoami` | Show current user identity |
 | `kin changelog` | What changed (--since, --days, --actor) |
 | `kin log` | Recent activity log |
@@ -538,8 +552,9 @@ data_dir: ~/.kindex
 
 llm:
   enabled: false
+  provider: anthropic             # anthropic or openai
   model: claude-haiku-4-5-20251001
-  api_key_env: ANTHROPIC_API_KEY
+  api_key_env: ANTHROPIC_API_KEY   # comma-separated fallback allowed
   cache_control: true              # Prompt caching (90% savings on repeated prefixes)
   codebook_min_weight: 0.5         # Min node weight for codebook inclusion
   tier2_max_tokens: 4000           # Token budget for query-relevant context
@@ -554,6 +569,14 @@ budget:
   daily: 0.50
   weekly: 2.00
   monthly: 5.00
+
+attention:
+  enabled: false                  # default; runtime override with `kin attention on/off`
+  tick_interval: 3                # run every N prompt-check ticks
+  max_candidates: 6               # deterministic prefilter size before LLM judge
+  max_check_cost: 0.01            # estimated per-check cap
+  max_conversation_cost: 0.25     # best-effort cap when the client provides a stable session id
+  cooldown_seconds: 1800          # suppress repeat injections
 
 project_dirs:
   - ~/Code
@@ -573,6 +596,8 @@ reminders:
   snooze_duration: 900           # 15 min default snooze
   auto_snooze_timeout: 300       # auto-snooze after 5 min inaction
   idle_suppress_after: 600       # suppress if idle > 10 min
+  stop_guard_enabled: false      # opt-in; blocking Stop hooks are noisy in Claude
+  dream_on_stop_enabled: false   # opt-in; dream can be CPU-heavy on hook path
   channels:
     slack:
       enabled: false
@@ -582,6 +607,8 @@ reminders:
       smtp_host: ""
       to_addr: ""
 ```
+
+Use `kin attention estimate --messages 1000` to estimate cost over a fixed prompt window. Conversation accounting is retained when a client provides a stable session id. Hook-driven attention does not fall back to cwd as a fake conversation id, because that would cross-pollute two chats open in the same repo.
 
 ## Development
 

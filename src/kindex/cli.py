@@ -183,6 +183,10 @@ def cmd_add(args):
             extra["expires"] = args.expires
         if args.resets:
             extra["resets"] = args.resets
+        if getattr(args, "attention_trigger", None):
+            extra["attention_triggers"] = [
+                t.strip() for t in args.attention_trigger.split(",") if t.strip()
+            ]
 
         nid = store.add_node(
             title=content,
@@ -604,7 +608,8 @@ def cmd_status(args):
 
 def cmd_budget(args):
     ledger, _ = _ledger(args)
-    s = ledger.summary()
+    conversation_id = getattr(args, "conversation_id", None)
+    s = ledger.summary(conversation_id=conversation_id)
 
     if args.json:
         print(_dumps(s, indent=2))
@@ -619,6 +624,12 @@ def cmd_budget(args):
             print(f"  {period:6s} {bar} ${d['spent']:.4f} / ${d['limit']:.2f}")
         status = "OK" if s["can_spend"] else "LIMIT REACHED"
         print(f"\n  Status: {status}")
+        if "conversation" in s:
+            c = s["conversation"]
+            print(
+                f"  Conversation {c['id']}: "
+                f"${c['spent']:.4f} total, ${c['spent_today']:.4f} today"
+            )
 
 
 # ── init / migrate / doctor ────────────────────────────────────────────
@@ -1345,19 +1356,34 @@ def cmd_prime(args):
     kin prime [--topic TOPIC] [--tokens N] [--for hook|stdout] [--codebook]
     """
     store = _store(args)
+    cfg = _config(args)
 
     if getattr(args, "codebook", False):
         _prime_codebook(store, args)
         store.close()
         return
 
+    from .attention import parse_hook_payload, resolve_conversation_id
     from .hooks import prime_context
 
     topic = getattr(args, "topic", None)
     tokens = getattr(args, "tokens", 750) or 750
     output_for = getattr(args, "output_for", "stdout") or "stdout"
+    conversation_id = getattr(args, "conversation_id", None)
+    if output_for == "hook" and not conversation_id and not sys.stdin.isatty():
+        conversation_id = resolve_conversation_id(
+            None,
+            parse_hook_payload(sys.stdin.read()),
+            fallback_to_cwd=False,
+        )
 
-    block = prime_context(store, topic=topic, max_tokens=tokens)
+    block = prime_context(
+        store,
+        topic=topic,
+        max_tokens=tokens,
+        config=cfg,
+        conversation_id=conversation_id,
+    )
 
     if output_for == "hook":
         # Just the context block, no header
@@ -2991,6 +3017,12 @@ def cmd_remind(args):
                 action_command=getattr(args, "action_command", "") or "",
                 action_instructions=getattr(args, "action_instructions", "") or "",
                 action_mode=getattr(args, "action_mode", "auto") or "auto",
+                attention_triggers=([
+                    t.strip() for t in getattr(args, "attention_trigger", "").split(",")
+                    if t.strip()
+                ] if getattr(args, "attention_trigger", None) else None),
+                conversation_id=getattr(args, "conversation_id", "") or "",
+                scope=getattr(args, "reminder_scope", "") or "",
             )
             r = store.get_reminder(rid)
             if getattr(args, "json", False):
@@ -3115,10 +3147,24 @@ def cmd_stop_guard(args):
     """
     import json as _json
 
+    if not sys.stdin.isatty():
+        raw = sys.stdin.read()
+        if raw.strip():
+            try:
+                payload = _json.loads(raw)
+            except _json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, dict) and payload.get("stop_hook_active"):
+                return
+
     store = _store(args)
     cfg = _config(args)
 
-    if not cfg.reminders.enabled or not cfg.reminders.action_enabled:
+    if (
+        not cfg.reminders.enabled
+        or not cfg.reminders.action_enabled
+        or not cfg.reminders.stop_guard_enabled
+    ):
         store.close()
         return
 
@@ -3166,6 +3212,24 @@ def cmd_stop_guard(args):
         print(_json.dumps(result))
 
 
+def _hook_context_output(context: str, *, adapter: str, event: str) -> str:
+    """Render advisory context in the hook protocol for a client."""
+    if not context.strip():
+        return ""
+    adapter = (adapter or "plain").lower()
+    event = event or "UserPromptSubmit"
+    if adapter in {"plain", "claude-plain"}:
+        return context
+
+    hook_output = {
+        "hookEventName": event,
+        "additionalContext": context,
+    }
+    if adapter in {"claude", "claude-code"} and event == "PreToolUse":
+        hook_output["permissionDecision"] = "allow"
+    return _dumps({"hookSpecificOutput": hook_output})
+
+
 def cmd_prompt_check(args):
     """UserPromptSubmit hook: inject due reminders into conversation context.
 
@@ -3175,21 +3239,81 @@ def cmd_prompt_check(args):
     store = _store(args)
     cfg = _config(args)
 
-    if not cfg.reminders.enabled:
-        store.close()
-        return
+    adapter = getattr(args, "adapter", "plain")
+    hook_event = "UserPromptSubmit"
+    hook_payload = {}
+    conversation_id = ""
+    strict_scope = bool(getattr(args, "conversation_id", None))
 
-    due = store.due_reminders()
-    if not due:
-        store.close()
-        return
+    # Conversation-attention checks are separate from time-due reminders.
+    attention_lines: list[str] = []
+    try:
+        from .attention import (
+            extract_conversation_text,
+            format_attention_injections,
+            read_hook_payload,
+            resolve_conversation_id,
+            run_attention_check,
+        )
+        from .budget import BudgetLedger
+
+        hook_payload = read_hook_payload()
+        strict_scope = strict_scope or bool(hook_payload)
+        hook_event = str(
+            hook_payload.get("hook_event_name")
+            or hook_payload.get("hookEventName")
+            or hook_event
+        )
+        conversation_text = extract_conversation_text(
+            getattr(args, "text", None),
+            hook_payload,
+        )
+        conversation_id = resolve_conversation_id(
+            getattr(args, "conversation_id", None),
+            hook_payload,
+            fallback_to_cwd=False,
+        )
+        if conversation_text and conversation_id:
+            ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
+            attention_result = run_attention_check(
+                store,
+                cfg,
+                ledger,
+                conversation_text,
+                conversation_id,
+                force=getattr(args, "force_attention", False),
+            )
+            attention_lines = format_attention_injections(attention_result)
+    except Exception:
+        attention_lines = []
+
+    due = []
+    if cfg.reminders.enabled:
+        try:
+            from .reminders import scoped_due_reminders
+            due = scoped_due_reminders(
+                store,
+                conversation_id,
+                include_global=True,
+                include_legacy=not strict_scope,
+            )
+        except Exception:
+            due = []
 
     # Also check tasks that are urgent/overdue
     task_lines = []
     try:
+        from .scoping import item_matches_conversation
         from .tasks import list_tasks
         urgent_tasks = list_tasks(store, status="open", limit=5)
         for t in urgent_tasks:
+            if not item_matches_conversation(
+                t,
+                conversation_id,
+                include_global=True,
+                include_legacy=not strict_scope,
+            ):
+                continue
             extra = t.get("extra") or {}
             p = extra.get("priority", 3)
             due_date = extra.get("due", "")
@@ -3198,6 +3322,10 @@ def cmd_prompt_check(args):
                 task_lines.append(f"  - [{p_label}] {t['title']} (id: {t['id']})")
     except Exception:
         pass
+
+    if not due and not attention_lines and not task_lines:
+        store.close()
+        return
 
     # ANSI codes for visual distinction
     BOLD = "\033[1m"
@@ -3209,24 +3337,30 @@ def cmd_prompt_check(args):
 
     lines = []
     lines.append(f"{BEL}<system-reminder>")
-    lines.append(f"{BOLD}{RED}{'=' * 50}")
-    lines.append(f"  KINDEX REMINDERS DUE ({len(due)})")
-    lines.append(f"{'=' * 50}{RESET}")
-    for r in due[:5]:
-        priority = r.get("priority", "normal")
-        p_color = RED if priority in ("urgent", "high") else YELLOW
-        p_marker = f" {p_color}[{priority.upper()}]{RESET}" if priority != "normal" else ""
-        extra = r.get("extra") or {}
-        lines.append(f"  {BOLD}{CYAN}-{RESET}{p_marker} {r['title']} (due: {r['next_due'][:16]}, id: {r['id']})")
-        if extra.get("action_instructions"):
-            lines.append(f"    Instructions: {extra['action_instructions'][:100]}")
-        if extra.get("action_command"):
-            lines.append(f"    Action: `{extra['action_command']}`")
-    lines.append("")
-    lines.append(f"{BOLD}Act on these NOW:{RESET}")
-    lines.append(f"  - `kin remind done <id>` to complete")
-    lines.append(f"  - `kin remind snooze <id>` to defer")
-    lines.append(f"  - `kin remind exec <id>` to run action")
+    if due:
+        lines.append(f"{BOLD}{RED}{'=' * 50}")
+        lines.append(f"  KINDEX REMINDERS DUE ({len(due)})")
+        lines.append(f"{'=' * 50}{RESET}")
+        for r in due[:5]:
+            priority = r.get("priority", "normal")
+            p_color = RED if priority in ("urgent", "high") else YELLOW
+            p_marker = f" {p_color}[{priority.upper()}]{RESET}" if priority != "normal" else ""
+            extra = r.get("extra") or {}
+            lines.append(f"  {BOLD}{CYAN}-{RESET}{p_marker} {r['title']} (due: {r['next_due'][:16]}, id: {r['id']})")
+            if extra.get("action_instructions"):
+                lines.append(f"    Instructions: {extra['action_instructions'][:100]}")
+            if extra.get("action_command"):
+                lines.append(f"    Action: `{extra['action_command']}`")
+        lines.append("")
+        lines.append(f"{BOLD}Act on these NOW:{RESET}")
+        lines.append(f"  - `kin remind done <id>` to complete")
+        lines.append(f"  - `kin remind snooze <id>` to defer")
+        lines.append(f"  - `kin remind exec <id>` to run action")
+
+    if attention_lines:
+        if due:
+            lines.append("")
+        lines.extend(attention_lines)
 
     if task_lines:
         lines.append("")
@@ -3235,7 +3369,173 @@ def cmd_prompt_check(args):
 
     lines.append("</system-reminder>")
 
-    print("\n".join(lines))
+    rendered = _hook_context_output(
+        "\n".join(lines),
+        adapter=adapter,
+        event=hook_event,
+    )
+    if rendered:
+        print(rendered)
+    store.close()
+
+
+def cmd_attention_hook(args):
+    """Advisory attention hook for tool/action boundaries."""
+    from .attention import (
+        extract_conversation_text,
+        format_attention_injections,
+        read_hook_payload,
+        resolve_conversation_id,
+        run_attention_check,
+    )
+    from .budget import BudgetLedger
+
+    payload = read_hook_payload()
+    event = str(
+        getattr(args, "event", None)
+        or payload.get("hook_event_name")
+        or payload.get("hookEventName")
+        or "PreToolUse"
+    )
+    text = extract_conversation_text(getattr(args, "text", None), payload)
+    if not text:
+        return
+
+    store = _store(args)
+    cfg = _config(args)
+    conversation_id = resolve_conversation_id(
+        getattr(args, "conversation_id", None),
+        payload,
+        fallback_to_cwd=False,
+    )
+    if not conversation_id:
+        store.close()
+        return
+    result = run_attention_check(
+        store,
+        cfg,
+        BudgetLedger(cfg.ledger_path, cfg.budget),
+        text,
+        conversation_id,
+        force=getattr(args, "force", False),
+    )
+    store.close()
+
+    lines = format_attention_injections(result)
+    if not lines:
+        return
+    rendered = _hook_context_output(
+        "\n".join(lines),
+        adapter=getattr(args, "adapter", "claude"),
+        event=event,
+    )
+    if rendered:
+        print(rendered)
+
+
+def cmd_attention(args):
+    """Runtime controls for conversation-attention checks."""
+    store = _store(args)
+    cfg = _config(args)
+    action = getattr(args, "attention_action", "status")
+    conversation_id = getattr(args, "conversation_id", None)
+
+    from .attention import (
+        clear_runtime_enabled,
+        extract_conversation_text,
+        estimate_message_window,
+        format_attention_injections,
+        parse_hook_payload,
+        resolve_conversation_id,
+        run_attention_check,
+        runtime_status,
+        set_runtime_enabled,
+    )
+    from .budget import BudgetLedger
+
+    if action == "on":
+        set_runtime_enabled(store, True, conversation_id=conversation_id)
+        scope = f"conversation {conversation_id}" if conversation_id else "global runtime"
+        print(f"Attention enabled ({scope}).")
+        store.close()
+        return
+
+    if action == "off":
+        set_runtime_enabled(store, False, conversation_id=conversation_id)
+        scope = f"conversation {conversation_id}" if conversation_id else "global runtime"
+        print(f"Attention disabled ({scope}).")
+        store.close()
+        return
+
+    if action == "inherit":
+        clear_runtime_enabled(store, conversation_id=conversation_id)
+        scope = f"conversation {conversation_id}" if conversation_id else "global runtime"
+        print(f"Attention override cleared ({scope}).")
+        store.close()
+        return
+
+    if action == "check":
+        raw = ""
+        if not getattr(args, "text", None) and not sys.stdin.isatty():
+            raw = sys.stdin.read()
+        payload = parse_hook_payload(raw)
+        conversation_id = resolve_conversation_id(conversation_id, payload)
+        text = extract_conversation_text(getattr(args, "text", None), payload)
+        if not text:
+            print("Error: attention check needs --text or hook JSON on stdin", file=sys.stderr)
+            store.close()
+            sys.exit(1)
+        ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
+        result = run_attention_check(
+            store,
+            cfg,
+            ledger,
+            text,
+            conversation_id,
+            force=getattr(args, "force", False),
+        )
+        if getattr(args, "json", False):
+            print(_dumps(result, indent=2))
+        else:
+            lines = format_attention_injections(result)
+            if lines:
+                print("\n".join(lines))
+            else:
+                print(f"No attention injection ({result.get('status')}).")
+        store.close()
+        return
+
+    if action == "budget":
+        ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
+        resolved = conversation_id or ""
+        summary = ledger.summary(conversation_id=resolved or None)
+        if getattr(args, "json", False):
+            print(_dumps(summary, indent=2))
+        else:
+            print(yaml.dump(summary, default_flow_style=False, sort_keys=False).strip())
+        store.close()
+        return
+
+    if action == "estimate":
+        ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
+        messages = getattr(args, "messages", None) or 100
+        estimate = estimate_message_window(
+            cfg,
+            messages=messages,
+            observed_entries=ledger.entries,
+        )
+        if getattr(args, "json", False):
+            print(_dumps(estimate, indent=2))
+        else:
+            print(yaml.dump(estimate, default_flow_style=False, sort_keys=False).strip())
+        store.close()
+        return
+
+    status = runtime_status(store, cfg, conversation_id)
+    if getattr(args, "json", False):
+        print(_dumps(status, indent=2))
+    else:
+        print(yaml.dump(status, default_flow_style=False, sort_keys=False).strip())
     store.close()
 
 
@@ -3456,13 +3756,17 @@ def cmd_setup_hooks(args):
             data = _json.loads(settings_path.read_text())
             hooks = data.get("hooks", {})
             changed = False
-            for key in ["SessionStart", "PreCompact"]:
+            for key in ["SessionStart", "PreCompact", "UserPromptSubmit", "PreToolUse", "Stop"]:
                 if key in hooks:
                     before = len(hooks[key])
                     hooks[key] = [
                         h for h in hooks[key]
                         if "kin prime" not in str(h)
                         and "compact-hook" not in str(h)
+                        and "prompt-check" not in str(h)
+                        and "attention-hook" not in str(h)
+                        and "stop-guard" not in str(h)
+                        and "dream --detach" not in str(h)
                         and "kindex" not in str(h).lower()
                     ]
                     if len(hooks[key]) < before:
@@ -3478,6 +3782,22 @@ def cmd_setup_hooks(args):
         return
 
     actions = install_claude_hooks(cfg, dry_run=dry_run)
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_codex_hooks(args):
+    """Install/uninstall Kindex prompt-time hooks in Codex."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_codex_hooks
+        actions = uninstall_codex_hooks(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_codex_hooks
+        actions = install_codex_hooks(cfg, dry_run=dry_run)
+
     for a in actions:
         print(f"  {a}")
 
@@ -4072,6 +4392,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--owner", help="Person responsible (for watches/directives)")
     s.add_argument("--expires", help="Expiry date YYYY-MM-DD (for watches)")
     s.add_argument("--resets", help="Reset schedule (e.g. monday, monthly)")
+    s.add_argument("--attention-trigger",
+                   help="Comma-separated conversation trigger terms for attention injection")
     s.add_argument("--audience", choices=["private", "team", "org", "public"],
                    help="Audience scope")
     s.add_argument("--tags", help="Comma-separated tags for contextual surfacing")
@@ -4135,6 +4457,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # budget
     s = sub.add_parser("budget", help="LLM budget usage")
+    s.add_argument("--conversation-id", help="Show spend for one conversation")
     _common(s)
     s.set_defaults(func=cmd_budget)
 
@@ -4241,6 +4564,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Output mode: hook (raw block) or stdout (with header)")
     s.add_argument("--codebook", action="store_true",
                    help="Regenerate the LLM prompt cache codebook")
+    s.add_argument("--conversation-id", help="Conversation/session id for scoped reminders")
     _common(s)
     s.set_defaults(func=cmd_prime)
 
@@ -4314,6 +4638,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--uninstall", action="store_true", help="Remove installed hooks")
     _common(s)
     s.set_defaults(func=cmd_setup_hooks)
+
+    # setup-codex-hooks
+    s = sub.add_parser("setup-codex-hooks", help="Install Kindex prompt hooks into Codex")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed hooks")
+    _common(s)
+    s.set_defaults(func=cmd_setup_codex_hooks)
 
     # setup-codex-mcp
     s = sub.add_parser("setup-codex-mcp", help="Install Kindex MCP server into Codex")
@@ -4397,6 +4728,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Write to global config (~/.config/kindex/kin.yaml)")
     _common(s)
     s.set_defaults(func=cmd_config)
+
+    # attention
+    s = sub.add_parser("attention", help="Conversation-attention runtime controls")
+    s.add_argument("attention_action", nargs="?", default="status",
+                   choices=["status", "on", "off", "inherit", "check", "budget", "estimate"],
+                   help="Action: status, on, off, inherit, check, budget, estimate")
+    s.add_argument("--conversation-id", help="Conversation/session id for per-conversation state")
+    s.add_argument("--text", help="Conversation snippet for manual check")
+    s.add_argument("--force", action="store_true", help="Run check regardless of tick interval")
+    s.add_argument("--messages", type=int, default=100,
+                   help="Message-window size for attention estimate")
+    _common(s)
+    s.set_defaults(func=cmd_attention)
 
     # policy
     s = sub.add_parser("policy", help="Show/check project work policy from .kin config")
@@ -4558,6 +4902,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--action-mode", dest="action_mode",
                    choices=["shell", "claude", "auto"], default="auto",
                    help="Execution mode (default: auto)")
+    s.add_argument("--attention-trigger",
+                   help="Comma-separated conversation trigger terms for attention injection")
+    s.add_argument("--conversation-id", help="Scope reminder to this conversation/session id")
+    s.add_argument("--scope", dest="reminder_scope", choices=["chat", "global"],
+                   help="Visibility scope for hook injection")
     _common(s)
     s.set_defaults(func=cmd_remind)
 
@@ -4582,8 +4931,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     # prompt-check (Claude Code UserPromptSubmit hook)
     s = sub.add_parser("prompt-check", help="Check for due reminders on prompt submit")
+    s.add_argument("--text", help="Conversation snippet (normally read from hook stdin)")
+    s.add_argument("--conversation-id", help="Conversation/session id for attention budgets")
+    s.add_argument("--force-attention", action="store_true",
+                   help="Run attention regardless of tick interval")
+    s.add_argument("--adapter", default="plain", choices=["plain", "claude", "codex"],
+                   help="Render hook output for a client protocol")
     _common(s)
     s.set_defaults(func=cmd_prompt_check)
+
+    # attention-hook (advisory tool/action hook)
+    s = sub.add_parser("attention-hook", help="Advisory attention hook for tool/action events")
+    s.add_argument("--adapter", default="claude", choices=["plain", "claude", "codex"],
+                   help="Render hook output for a client protocol")
+    s.add_argument("--event", help="Hook event name (default from stdin, then PreToolUse)")
+    s.add_argument("--text", help="Conversation/action snippet (normally read from hook stdin)")
+    s.add_argument("--conversation-id", help="Conversation/session id for attention budgets")
+    s.add_argument("--force", action="store_true", help="Run attention regardless of tick interval")
+    _common(s)
+    s.set_defaults(func=cmd_attention_hook)
 
     return p
 

@@ -359,6 +359,51 @@ class TestCalculateCost:
         result = calculate_cost("unknown-model-v99", usage)
         assert result["amount"] > 0
 
+    def test_openai_cached_usage_from_dict(self):
+        from kindex.llm import calculate_cost
+        usage = {
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 400},
+        }
+
+        result = calculate_cost("gpt-5.4-nano", usage)
+
+        assert result["tokens_in"] == 1000
+        assert result["tokens_out"] == 100
+        assert result["cache_read_tokens"] == 400
+
+
+class TestLLMProviderConfig:
+    def test_resolve_api_key_uses_first_available_fallback(self, monkeypatch):
+        from kindex.llm import resolve_api_key
+
+        monkeypatch.delenv("JMC_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
+        cfg = Config(llm=LLMConfig(
+            enabled=True,
+            provider="openai",
+            api_key_env="JMC_OPENAI_API_KEY,OPENAI_API_KEY",
+        ))
+
+        key, env_name = resolve_api_key(cfg)
+
+        assert key == "test-openai"
+        assert env_name == "OPENAI_API_KEY"
+
+    def test_openai_configured_with_fallback_key(self, monkeypatch):
+        from kindex.llm import is_configured
+
+        monkeypatch.delenv("JMC_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
+        cfg = Config(llm=LLMConfig(
+            enabled=True,
+            provider="openai",
+            api_key_env="JMC_OPENAI_API_KEY,OPENAI_API_KEY",
+        ))
+
+        assert is_configured(cfg) is True
+
 
 # ── Config ────────────────────────────────────────────────────────────
 

@@ -1406,7 +1406,8 @@ def watch_resolve(id: str, reason: str = "") -> str:
 @mcp.tool()
 def remind_create(text: str, when: str, priority: str = "normal",
                   channels: str = "", action: str = "",
-                  instructions: str = "") -> str:
+                  instructions: str = "", conversation_id: str = "",
+                  scope: str = "chat") -> str:
     """Create a reminder with natural language time parsing.
 
     Args:
@@ -1416,16 +1417,27 @@ def remind_create(text: str, when: str, priority: str = "normal",
         channels: Comma-separated notification channels (system, slack, email, claude).
         action: Shell command to execute when the reminder fires (optional).
         instructions: Natural language instructions for Claude to follow when due (optional).
+        conversation_id: Optional chat/session id for scoped hook injection.
+        scope: Reminder visibility for hook injection: chat or global.
     """
     store, config = _get_store()
     from .reminders import create_reminder
     channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
+    if scope == "chat" and not conversation_id:
+        try:
+            from .attention import resolve_conversation_id
+            conversation_id = resolve_conversation_id(fallback_to_cwd=False)
+        except Exception:
+            conversation_id = ""
+    effective_scope = "global" if scope == "global" else ("chat" if conversation_id else "")
     try:
         rid = create_reminder(
             store, text, when,
             priority=priority, channels=channel_list,
             action_command=action,
             action_instructions=instructions,
+            conversation_id=conversation_id,
+            scope=effective_scope,
         )
         r = store.get_reminder(rid)
         action_info = ""

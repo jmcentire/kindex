@@ -48,6 +48,12 @@ class TestSetupHooks:
         assert "hooks" in data
         assert "SessionStart" in data["hooks"]
         assert "UserPromptSubmit" in data["hooks"]
+        assert "PreToolUse" in data["hooks"]
+        assert "attention-hook" in str(data["hooks"]["PreToolUse"])
+        assert "Stop" in data["hooks"]
+        assert "stop-guard" not in str(data["hooks"]["Stop"])
+        assert "compact-hook" in str(data["hooks"]["Stop"])
+        assert "dream" not in str(data["hooks"]["Stop"])
 
     def test_setup_hooks_idempotent(self, tmp_path):
         """Installing twice should not duplicate hooks."""
@@ -167,6 +173,81 @@ class TestSetupCodex:
         assert "[mcp_servers.kindex]" not in text
         assert "[mcp_servers.other]" in text
         assert 'trust_level = "trusted"' in text
+
+    def test_setup_codex_hooks_installs(self, tmp_path):
+        """Should install Kindex prompt hook into Codex hooks.json."""
+        from kindex.setup import install_codex_hooks
+
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        hooks_path = codex_dir / "hooks.json"
+        hooks_path.write_text(json.dumps({
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "echo done"}]}],
+            },
+        }))
+
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+        actions = install_codex_hooks(cfg)
+
+        assert any("Codex UserPromptSubmit" in a for a in actions)
+        assert any("Codex PostToolUse" in a for a in actions)
+        data = json.loads(hooks_path.read_text())
+        assert "Stop" in data["hooks"]
+        prompt_hooks = data["hooks"]["UserPromptSubmit"]
+        assert len(prompt_hooks) == 1
+        assert "attention-hook" in prompt_hooks[0]["hooks"][0]["command"]
+        assert "--adapter" in prompt_hooks[0]["hooks"][0]["command"]
+        assert "source ~/.profile" in prompt_hooks[0]["hooks"][0]["command"]
+        post_hooks = data["hooks"]["PostToolUse"]
+        assert len(post_hooks) == 1
+        assert "attention-hook" in post_hooks[0]["hooks"][0]["command"]
+
+    def test_setup_codex_hooks_idempotent(self, tmp_path):
+        """Installing twice should not duplicate Codex prompt hook."""
+        from kindex.setup import install_codex_hooks
+
+        codex_dir = tmp_path / ".codex"
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+
+        install_codex_hooks(cfg)
+        actions2 = install_codex_hooks(cfg)
+
+        assert any("already installed" in a for a in actions2)
+        data = json.loads((codex_dir / "hooks.json").read_text())
+        assert len(data["hooks"]["UserPromptSubmit"]) == 1
+        assert len(data["hooks"]["PostToolUse"]) == 1
+
+    def test_uninstall_codex_hooks_preserves_other_hooks(self, tmp_path):
+        """Uninstall should remove only Kindex prompt-check hooks."""
+        from kindex.setup import install_codex_hooks, uninstall_codex_hooks
+
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        hooks_path = codex_dir / "hooks.json"
+        hooks_path.write_text(json.dumps({
+            "hooks": {
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "echo other"}]},
+                ],
+            },
+        }))
+        cfg = Config(data_dir=str(tmp_path), codex_dir=str(codex_dir))
+        install_codex_hooks(cfg)
+        actions = uninstall_codex_hooks(cfg)
+
+        assert any("Removed" in a for a in actions)
+        data = json.loads(hooks_path.read_text())
+        prompt_hooks = data["hooks"]["UserPromptSubmit"]
+        assert len(prompt_hooks) == 1
+        assert prompt_hooks[0]["hooks"][0]["command"] == "echo other"
+        assert "PostToolUse" not in data["hooks"]
+
+    def test_setup_codex_hooks_cli_dry_run(self, tmp_path):
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        r = run("setup-codex-hooks", "--dry-run", data_dir=d)
+        assert r.returncode == 0
 
 
 class TestSetupGemini:

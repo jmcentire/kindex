@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import subprocess
 import sys
 
@@ -220,6 +221,35 @@ class TestStoreCRUD:
         assert len(due) == 1
         assert due[0]["title"] == "Past"
 
+    def test_scoped_due_reminders_filters_by_conversation(self, store):
+        from kindex.reminders import scoped_due_reminders
+
+        past = (datetime.datetime.now() - datetime.timedelta(hours=1)).isoformat(timespec="seconds")
+        chat_a = store.add_reminder(
+            "Chat A",
+            past,
+            extra={"conversation_id": "chat-a", "reminder_scope": "chat"},
+        )
+        chat_b = store.add_reminder(
+            "Chat B",
+            past,
+            extra={"conversation_id": "chat-b", "reminder_scope": "chat"},
+        )
+        legacy = store.add_reminder("Legacy", past)
+        global_id = store.add_reminder(
+            "Global",
+            past,
+            extra={"reminder_scope": "global"},
+        )
+
+        due = scoped_due_reminders(store, "chat-a")
+        ids = {r["id"] for r in due}
+
+        assert chat_a in ids
+        assert global_id in ids
+        assert chat_b not in ids
+        assert legacy not in ids
+
     def test_due_includes_snoozed_past(self, store):
         past = (datetime.datetime.now() - datetime.timedelta(hours=1)).isoformat(timespec="seconds")
         rid = store.add_reminder("Snoozed", past)
@@ -429,12 +459,12 @@ class TestAutoSnooze:
 # ── CLI ─────────────────────────────────────────────────────────────
 
 
-def _run_cli(*args, tmp_path=None):
+def _run_cli(*args, tmp_path=None, input_text=None):
     """Run kin CLI as subprocess."""
     cmd = [sys.executable, "-m", "kindex.cli"] + list(args)
     if tmp_path:
         cmd.extend(["--data-dir", str(tmp_path)])
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(cmd, input=input_text, capture_output=True, text=True, timeout=30)
 
 
 class TestReminderCLI:
@@ -459,6 +489,36 @@ class TestReminderCLI:
         result = _run_cli("remind", "check", tmp_path=tmp_path)
         assert result.returncode == 0
         assert "Checked:" in result.stdout
+
+    def test_prompt_check_uses_conversation_scoped_reminder_board(self, tmp_path):
+        cfg = Config(data_dir=str(tmp_path))
+        store = Store(cfg)
+        past = (datetime.datetime.now() - datetime.timedelta(hours=1)).isoformat(timespec="seconds")
+        store.add_reminder(
+            "Chat A reminder",
+            past,
+            extra={"conversation_id": "chat-a", "reminder_scope": "chat"},
+        )
+        store.add_reminder(
+            "Chat B reminder",
+            past,
+            extra={"conversation_id": "chat-b", "reminder_scope": "chat"},
+        )
+        store.add_reminder("Legacy reminder", past)
+        store.add_reminder("Global reminder", past, extra={"reminder_scope": "global"})
+        store.close()
+
+        result = _run_cli(
+            "prompt-check",
+            tmp_path=tmp_path,
+            input_text=json.dumps({"session_id": "chat-a", "prompt": "status"}),
+        )
+
+        assert result.returncode == 0
+        assert "Chat A reminder" in result.stdout
+        assert "Global reminder" in result.stdout
+        assert "Chat B reminder" not in result.stdout
+        assert "Legacy reminder" not in result.stdout
 
 
 # ── Actions ────────────────────────────────────────────────────────
@@ -596,6 +656,20 @@ class TestCreateReminderWithAction:
         r = store.get_reminder(rid)
         assert not r["extra"].get("action_command")
 
+    def test_create_with_conversation_scope(self, store):
+        from kindex.reminders import create_reminder
+        rid = create_reminder(
+            store,
+            "Review deployment",
+            "in 1 hour",
+            conversation_id="chat-a",
+            attention_triggers=["deploy"],
+        )
+        r = store.get_reminder(rid)
+        assert r["extra"]["conversation_id"] == "chat-a"
+        assert r["extra"]["reminder_scope"] == "chat"
+        assert r["extra"]["attention_triggers"] == ["deploy"]
+
 
 class TestCheckAndFireWithActions:
     def test_fires_and_executes_action(self, store, config, monkeypatch):
@@ -664,6 +738,30 @@ class TestFormatReminderWithAction:
 class TestStopGuardCLI:
     def test_stop_guard_blocks_with_pending(self, tmp_path):
         import json as _json
+        cfg = tmp_path / "kin.yaml"
+        result = _run_cli(
+            "config", "set", "reminders.stop_guard_enabled", "true",
+            "--config", str(cfg),
+            tmp_path=tmp_path,
+        )
+        assert result.returncode == 0
+        result = _run_cli(
+            "remind", "create", "Kill instance",
+            "--at", "in 30 minutes",
+            "--action", "vastai destroy 123",
+            "--config", str(cfg),
+            tmp_path=tmp_path,
+        )
+        assert result.returncode == 0
+
+        result = _run_cli("stop-guard", "--config", str(cfg), tmp_path=tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip()
+        data = _json.loads(result.stdout)
+        assert data["decision"] == "block"
+        assert "Kill instance" in data["message"]
+
+    def test_stop_guard_default_quiet_with_pending(self, tmp_path):
         result = _run_cli(
             "remind", "create", "Kill instance",
             "--at", "in 30 minutes",
@@ -674,13 +772,19 @@ class TestStopGuardCLI:
 
         result = _run_cli("stop-guard", tmp_path=tmp_path)
         assert result.returncode == 0
-        if result.stdout.strip():
-            data = _json.loads(result.stdout)
-            assert data["decision"] == "block"
-            assert "Kill instance" in data["message"]
+        assert result.stdout.strip() == ""
 
     def test_stop_guard_allows_without_pending(self, tmp_path):
         result = _run_cli("stop-guard", tmp_path=tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_stop_guard_allows_recursive_stop_hook(self, tmp_path):
+        result = _run_cli(
+            "stop-guard",
+            tmp_path=tmp_path,
+            input_text='{"stop_hook_active": true}',
+        )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 

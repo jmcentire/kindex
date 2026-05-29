@@ -48,6 +48,19 @@ class BudgetConfig(BaseModel):
     monthly: float = 5.00
 
 
+class AttentionConfig(BaseModel):
+    enabled: bool = False
+    tick_interval: int = 3
+    max_candidates: int = 6
+    min_confidence: float = 0.65
+    max_context_chars: int = 1800
+    max_candidate_chars: int = 500
+    max_output_tokens: int = 300
+    cooldown_seconds: int = 1800
+    max_check_cost: float = 0.01
+    max_conversation_cost: float = 0.25
+
+
 class RankingConfig(BaseModel):
     rrf_k: int = 30               # RRF smoothing parameter (lower = sharper discrimination)
     fts_weight: float = 0.40      # FTS5 BM25 signal weight
@@ -135,6 +148,8 @@ class ReminderConfig(BaseModel):
     auto_snooze_timeout: int = 300
     idle_suppress_after: int = 600
     action_enabled: bool = True        # enable action execution on reminder fire
+    stop_guard_enabled: bool = False   # block Claude exit for pending actions (noisy; opt-in)
+    dream_on_stop_enabled: bool = False  # run knowledge consolidation when Claude exits (CPU-heavy; opt-in)
     stop_guard_window: int = 7200      # seconds (2h) — block exit if actions due within
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     adaptive_scheduling: bool = True   # dynamically adjust cron interval
@@ -173,6 +188,7 @@ class Config(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    attention: AttentionConfig = Field(default_factory=AttentionConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)

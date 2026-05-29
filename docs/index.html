@@ -265,10 +265,10 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.20.1</span>
+      <span class="badge green">v0.21.0</span>
       <span class="badge orange">MCP Plugin</span>
       <span class="badge blue">45 MCP Tools</span>
-      <span class="badge purple">60 CLI Commands</span>
+      <span class="badge purple">63 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -310,7 +310,7 @@
       </div>
       <div class="card">
         <h3>Reminders &amp; Actions</h3>
-        <p>Natural language scheduling with recurring support. Reminders can carry shell commands and Claude instructions &mdash; the daemon executes them automatically when due. A Stop hook guard blocks session exit when actionable reminders are pending. <code>kin remind create "deploy" --at "in 1h" --action "..."</code>.</p>
+        <p>Natural language scheduling with recurring support. Reminders can carry shell commands and Claude instructions &mdash; the daemon executes them automatically when due. When explicitly enabled, a Stop hook guard can block session exit for actionable reminders. <code>kin remind create "deploy" --at "in 1h" --action "..."</code>.</p>
       </div>
       <div class="card">
         <h3>Adaptive Scheduling</h3>
@@ -335,7 +335,7 @@
 <span class="comment"># Or auto-append to ~/.claude/CLAUDE.md</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-claude-md</span> <span class="flag">--install</span>
 
-<span class="comment"># Install lifecycle hooks (SessionStart + Stop guard)</span>
+<span class="comment"># Install lifecycle hooks</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">The directives add:</p>
@@ -527,7 +527,7 @@
   Daemon:        launchd/cron <span class="highlight">adaptive interval</span> ── check due ── notify ── auto-snooze
   Scheduling:    adaptive tiers (&gt;7d=daily, &gt;1d=hourly, &gt;1h=10min, &lt;1h=5min, none=disabled)
   Actions:       shell commands run directly | complex tasks launch <span class="highlight">claude -p</span>
-  Stop guard:    blocks session exit when actionable reminders pending
+  Stop guard:    optional block when actionable reminders are pending
 
 <span class="green">Three integration paths:</span>
   MCP plugin ──&gt; Claude calls tools natively (search, add, learn, remind, ...)
@@ -732,7 +732,7 @@ work_policy:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.20.1 &middot; MCP Plugin &middot; 45 MCP Tools &middot; 60 CLI Commands &middot; 1039 Tests</p>
+    <p style="margin-top: 8px;">v0.21.0 &middot; MCP Plugin &middot; 45 MCP Tools &middot; 63 CLI Commands &middot; 1072 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

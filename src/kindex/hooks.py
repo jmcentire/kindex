@@ -19,8 +19,13 @@ if TYPE_CHECKING:
     from .budget import BudgetLedger
 
 
-def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
-                  config: Config | None = None) -> str:
+def prime_context(
+    store: Store,
+    topic: str | None = None,
+    max_tokens: int = 750,
+    config: Config | None = None,
+    conversation_id: str | None = None,
+) -> str:
     """Generate compact context injection (~500-750 tokens) for SessionStart hook.
 
     - Auto-detects topic from current working directory if not provided
@@ -179,12 +184,26 @@ def prime_context(store: Store, topic: str | None = None, max_tokens: int = 750,
     # -- Due/upcoming reminders --
     try:
         if config and config.reminders.enabled:
+            from .reminders import filter_reminders_for_conversation, scoped_due_reminders
             upcoming_window = datetime.datetime.now() + datetime.timedelta(hours=1)
             upcoming_iso = upcoming_window.isoformat(timespec="seconds")
 
-            due_now = store.due_reminders()
-            upcoming = [r for r in store.list_reminders(status="active")
-                        if r["next_due"] <= upcoming_iso]
+            include_legacy = conversation_id is None
+            due_now = scoped_due_reminders(
+                store,
+                conversation_id,
+                include_global=True,
+                include_legacy=include_legacy,
+            )
+            upcoming = [
+                r for r in filter_reminders_for_conversation(
+                    store.list_reminders(status="active"),
+                    conversation_id,
+                    include_global=True,
+                    include_legacy=include_legacy,
+                )
+                if r["next_due"] <= upcoming_iso
+            ]
             due_ids = {d["id"] for d in due_now}
             all_reminders = due_now + [r for r in upcoming if r["id"] not in due_ids]
 
