@@ -151,6 +151,7 @@ class ReminderConfig(BaseModel):
     stop_guard_enabled: bool = False   # block Claude exit for pending actions (noisy; opt-in)
     dream_on_stop_enabled: bool = True  # run throttled knowledge consolidation when Claude exits
     dream_min_interval: int = 3600      # seconds between scheduled/hook dream runs
+    dream_max_new_suggestions: int = 100  # cap suggestion writes per dream run
     stop_guard_window: int = 7200      # seconds (2h) — block exit if actions due within
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     adaptive_scheduling: bool = True   # dynamically adjust cron interval

@@ -150,6 +150,10 @@ class Store:
                         created_at TEXT NOT NULL DEFAULT (datetime('now'))
                     );
                     CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
+                    CREATE INDEX IF NOT EXISTS idx_suggestions_status_created
+                        ON suggestions(status, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_suggestions_status_pair
+                        ON suggestions(status, concept_a, concept_b);
                 """)
                 c.commit()
             except Exception:
@@ -181,6 +185,19 @@ class Store:
                     CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
                     CREATE INDEX IF NOT EXISTS idx_reminders_next_due ON reminders(next_due);
                     CREATE INDEX IF NOT EXISTS idx_reminders_priority ON reminders(priority);
+                """)
+                c.commit()
+            except Exception:
+                pass
+
+        if current_version < 6:
+            # v6: index suggestions for scheduled dream workloads
+            try:
+                c.executescript("""
+                    CREATE INDEX IF NOT EXISTS idx_suggestions_status_created
+                        ON suggestions(status, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_suggestions_status_pair
+                        ON suggestions(status, concept_a, concept_b);
                 """)
                 c.commit()
             except Exception:
@@ -313,6 +330,27 @@ class Store:
             return [dict(r) for r in rows]
         except Exception:
             return []
+
+    def suggestion_exists(
+        self,
+        concept_a: str,
+        concept_b: str,
+        *,
+        status: str = "pending",
+    ) -> bool:
+        """Return true if a suggestion exists for this pair in either order."""
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM suggestions
+             WHERE status = ? AND concept_a = ? AND concept_b = ?
+            UNION ALL
+            SELECT 1 FROM suggestions
+             WHERE status = ? AND concept_a = ? AND concept_b = ?
+            LIMIT 1
+            """,
+            (status, concept_a, concept_b, status, concept_b, concept_a),
+        ).fetchone()
+        return row is not None
 
     def update_suggestion(self, suggestion_id: int, status: str) -> None:
         """Update suggestion status (accepted/rejected)."""

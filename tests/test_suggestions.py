@@ -72,6 +72,30 @@ class TestAddAndListSuggestions:
         limited = store.pending_suggestions(limit=3)
         assert len(limited) == 3
 
+    def test_suggestion_exists_matches_either_order(self, store):
+        """Pair lookup deduplicates direct and reversed suggestions."""
+        store.add_suggestion("Alpha", "Beta", reason="test")
+
+        assert store.suggestion_exists("Alpha", "Beta") is True
+        assert store.suggestion_exists("Beta", "Alpha") is True
+        assert store.suggestion_exists("Alpha", "Gamma") is False
+
+    def test_suggestion_exists_honors_status(self, store):
+        """Rejected/accepted suggestions do not count as pending."""
+        sid = store.add_suggestion("Alpha", "Beta", reason="test")
+        store.update_suggestion(sid, "accepted")
+
+        assert store.suggestion_exists("Alpha", "Beta") is False
+        assert store.suggestion_exists("Alpha", "Beta", status="accepted") is True
+
+    def test_suggestions_have_dream_indexes(self, store):
+        """Schema includes indexes needed by scheduled dream runs."""
+        rows = store.conn.execute("PRAGMA index_list('suggestions')").fetchall()
+        names = {row["name"] for row in rows}
+
+        assert "idx_suggestions_status_created" in names
+        assert "idx_suggestions_status_pair" in names
+
 
 class TestAcceptSuggestion:
     def test_accept_suggestion(self, store):

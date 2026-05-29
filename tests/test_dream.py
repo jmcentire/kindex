@@ -227,6 +227,69 @@ class TestDreamLightweight:
         titles = [n["title"] for n in nodes]
         assert titles.count("Duplicate concept here") == 2
 
+    def test_dedupes_existing_suggestion_outside_recent_window(
+        self,
+        config,
+        store,
+        monkeypatch,
+    ):
+        import kindex.dream as dream
+
+        a = store.add_node("Alpha anchor")
+        b = store.add_node("Zeta unrelated bridge")
+        sid = store.add_suggestion(a, b, reason="old duplicate", source="test")
+        store.conn.execute(
+            "UPDATE suggestions SET created_at = '2000-01-01 00:00:00' WHERE id = ?",
+            (sid,),
+        )
+        store.conn.commit()
+        for i in range(250):
+            store.add_suggestion(f"new-{i}", f"other-{i}", reason="newer filler")
+
+        monkeypatch.setattr(
+            dream,
+            "find_duplicates",
+            lambda _store: {"merge": [], "suggest": [(a, b, 0.9)]},
+        )
+
+        results = dream.dream_lightweight(config, store)
+        row = store.conn.execute(
+            """
+            SELECT COUNT(*) AS count FROM suggestions
+             WHERE (concept_a = ? AND concept_b = ?)
+                OR (concept_a = ? AND concept_b = ?)
+            """,
+            (a, b, b, a),
+        ).fetchone()
+
+        assert results["suggested"] == 0
+        assert results["suggestion_existing"] == 1
+        assert row["count"] == 1
+
+    def test_caps_new_suggestion_writes(self, config, store, monkeypatch):
+        import kindex.dream as dream
+
+        config.reminders.dream_max_new_suggestions = 2
+        monkeypatch.setattr(
+            dream,
+            "find_duplicates",
+            lambda _store: {
+                "merge": [],
+                "suggest": [
+                    ("a1", "b1", 0.9),
+                    ("a2", "b2", 0.9),
+                    ("a3", "b3", 0.9),
+                ],
+            },
+        )
+
+        results = dream.dream_lightweight(config, store)
+
+        assert results["suggested"] == 2
+        assert results["suggestion_candidates"] == 3
+        assert results["suggestion_cap"] == 2
+        assert results["suggestion_capped"] is True
+
 
 class TestDreamFull:
     def test_runs_on_empty_store(self, config, store):

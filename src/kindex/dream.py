@@ -37,6 +37,7 @@ PROTECTED_TYPES = frozenset({"constraint", "directive", "checkpoint"})
 # Similarity thresholds (CD002)
 DEFAULT_MERGE_THRESHOLD = 0.95
 DEFAULT_SUGGEST_THRESHOLD = 0.85
+DEFAULT_MAX_NEW_SUGGESTIONS = 100
 
 LAST_DREAM_STARTED_META = "last_dream_started"
 LAST_DREAM_RUN_META = "last_dream_run"
@@ -182,6 +183,7 @@ def find_duplicates(
     merge_pairs: list[tuple[str, str, float]] = []
     suggest_pairs: list[tuple[str, str, float]] = []
     seen: set[tuple[str, str]] = set()
+    min_title_for_suggest = max(0.0, (suggest_threshold - 0.3) / 0.7)
 
     # Group by first 4 chars of lowercase title for O(n*k) instead of O(n^2)
     # Cap bucket size at 50 to bound worst-case pairwise comparisons
@@ -205,7 +207,11 @@ def find_duplicates(
                     continue
                 seen.add(pair_key)
 
-                score = combined_similarity(a, b)
+                t_sim = title_similarity(a.get("title", ""), b.get("title", ""))
+                if t_sim < min_title_for_suggest:
+                    continue
+                c_sim = content_overlap(a.get("content", ""), b.get("content", ""))
+                score = 0.7 * t_sim + 0.3 * c_sim
                 if score >= merge_threshold:
                     merge_pairs.append((a["id"], b["id"], score))
                 elif score >= suggest_threshold:
@@ -404,25 +410,39 @@ def dream_lightweight(
             if verbose:
                 print(f"  Merged: {source_id} -> {target_id} (score={score:.3f})")
 
-    # Create suggestions for near-misses
+    # Create suggestions for near-misses. This path runs from hooks, so keep
+    # writes bounded even if the graph has a large duplicate backlog.
+    max_new_suggestions = max(
+        0,
+        int(
+            getattr(
+                config.reminders,
+                "dream_max_new_suggestions",
+                DEFAULT_MAX_NEW_SUGGESTIONS,
+            )
+            or 0
+        ),
+    )
     suggested = 0
+    existing_suggestions = 0
+    suggestion_candidates = len(dupes["suggest"])
+    suggestion_capped = False
     for a_id, b_id, score in dupes["suggest"]:
         if dry_run:
             suggested += 1
             continue
-        # Deduplicate against existing suggestions
-        existing = store.pending_suggestions(limit=200)
-        already = any(
-            (e["concept_a"] in (a_id, b_id) and e["concept_b"] in (a_id, b_id))
-            for e in existing
+        if suggested >= max_new_suggestions:
+            suggestion_capped = True
+            break
+        if store.suggestion_exists(a_id, b_id):
+            existing_suggestions += 1
+            continue
+        store.add_suggestion(
+            concept_a=a_id, concept_b=b_id,
+            reason=f"Fuzzy match (score={score:.3f})",
+            source="dream-cycle",
         )
-        if not already:
-            store.add_suggestion(
-                concept_a=a_id, concept_b=b_id,
-                reason=f"Fuzzy match (score={score:.3f})",
-                source="dream-cycle",
-            )
-            suggested += 1
+        suggested += 1
 
     # Auto-apply pending suggestions
     applied = 0
@@ -431,6 +451,10 @@ def dream_lightweight(
 
     results["merged"] = merged
     results["suggested"] = suggested
+    results["suggestion_candidates"] = suggestion_candidates
+    results["suggestion_existing"] = existing_suggestions
+    results["suggestion_cap"] = max_new_suggestions
+    results["suggestion_capped"] = suggestion_capped
     results["suggestions_applied"] = applied
 
     return results

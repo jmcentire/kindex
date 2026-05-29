@@ -2,6 +2,16 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.21.2] - 2026-05-28
+
+### Fixed
+- Lightweight dream no longer repeatedly scans and sorts the pending suggestion backlog while creating duplicate suggestions.
+- Scheduled dream runs now cap new suggestion writes per run with `reminders.dream_max_new_suggestions` (default `100`).
+
+### Changed
+- Schema v6 adds suggestion indexes for recent pending reads and pair-existence checks.
+- Dream duplicate detection skips content similarity work when title similarity is too low to meet the configured threshold.
+
 ## [0.20.0] - 2026-05-19
 
 ### Added
