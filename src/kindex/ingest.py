@@ -908,10 +908,28 @@ def detect_expertise(store: "Store", person_node_id: str) -> dict[str, int]:
 # ── Git-tracked index ────────────────────────────────────────────────
 
 
-def _now_iso() -> str:
-    """Return current timestamp in ISO format."""
-    from datetime import datetime
-    return datetime.now(tz=None).isoformat(timespec="seconds")
+def _node_time(node: dict) -> str:
+    return str(
+        node.get("updated_at")
+        or node.get("prov_when")
+        or node.get("created_at")
+        or ""
+    )
+
+
+def _latest_node_time(nodes: list[dict]) -> str:
+    return max((_node_time(n) for n in nodes), default="")
+
+
+def _kin_index_node(node: dict) -> dict:
+    return {
+        "domains": sorted(node.get("domains") or []),
+        "id": node["id"],
+        "title": node["title"],
+        "type": node["type"],
+        "updated_at": _node_time(node),
+        "weight": node["weight"],
+    }
 
 
 def _detect_repo_for_index(output_dir: Path) -> str | None:
@@ -947,27 +965,27 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
         sym_prefix = f"code-sym-{repo_slug}-"
         rows = store.conn.execute(
             "SELECT * FROM nodes WHERE id LIKE ? OR id LIKE ? "
-            "ORDER BY weight DESC, updated_at DESC",
+            "ORDER BY id ASC",
             (f"{mod_prefix}%", f"{sym_prefix}%"),
         ).fetchall()
         nodes = [store._row_to_dict(r) for r in rows]
     else:
-        nodes = store.all_nodes(limit=500)
+        rows = store.conn.execute(
+            "SELECT * FROM nodes ORDER BY id ASC LIMIT ?",
+            (500,),
+        ).fetchall()
+        nodes = [store._row_to_dict(r) for r in rows]
 
     index = {
-        "version": 1,
-        "generated_at": _now_iso(),
-        "repo": repo_slug,
+        "domains": sorted(set(d for n in nodes for d in (n.get("domains") or []))),
         "node_count": len(nodes),
-        "nodes": [
-            {"id": n["id"], "title": n["title"], "type": n["type"],
-             "weight": n["weight"], "domains": n.get("domains", [])}
-            for n in nodes
-        ],
-        "domains": list(set(d for n in nodes for d in (n.get("domains") or []))),
+        "nodes": [_kin_index_node(n) for n in nodes],
+        "repo": repo_slug,
+        "source_updated_at": _latest_node_time(nodes),
+        "version": 1,
     }
 
     output_path = output_dir / ".kin" / "index.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(index, indent=2) + "\n")
+    output_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     return output_path

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 # Config layers, loaded bottom-up and merged (like git config).
@@ -179,6 +179,8 @@ class WorkPolicyConfig(BaseModel):
 
 
 class Config(BaseModel):
+    _project_path: Path | None = PrivateAttr(default=None)
+
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
     project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
@@ -201,7 +203,7 @@ class Config(BaseModel):
         """Resolve current user identity. Config > git > OS."""
         if self.user:
             return self.user
-        return _detect_user()
+        return _detect_user(self._project_path)
 
     @property
     def data_path(self) -> Path:
@@ -252,21 +254,35 @@ class Config(BaseModel):
         return [Path(d).expanduser().resolve() for d in self.project_dirs]
 
 
-def _detect_user() -> str:
-    """Auto-detect user identity from git config or OS username."""
+def _detect_user(project_path: str | Path | None = None) -> str:
+    """Auto-detect user identity from repo-local/global git config or OS username."""
     import subprocess
-    # Try git config
-    try:
-        result = subprocess.run(
-            ["git", "config", "--global", "user.name"],
-            capture_output=True, text=True, timeout=2,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip().lower().replace(" ", "-")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+
+    commands: list[list[str]] = []
+    if project_path:
+        repo_path = str(Path(project_path).expanduser().resolve())
+        # `git config user.name` follows git's normal precedence: local, then global.
+        commands.append(["git", "-C", repo_path, "config", "user.name"])
+    commands.append(["git", "config", "--global", "user.name"])
+
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().lower().replace(" ", "-")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
     # Fall back to OS username
     return os.environ.get("USER", os.environ.get("USERNAME", "unknown"))
+
+
+def _attach_project_path(cfg: Config, project_root: Path) -> Config:
+    cfg._project_path = project_root
+    return cfg
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -292,12 +308,14 @@ def load_config(
     worktree root, then cwd.
     An explicit config_path bypasses layering and loads only that file.
     """
+    project_root = resolve_project_root(project_path)
+
     if config_path:
         p = Path(config_path).expanduser().resolve()
         if p.exists():
             data = yaml.safe_load(p.read_text()) or {}
-            return Config(**data)
-        return Config()
+            return _attach_project_path(Config(**data), project_root)
+        return _attach_project_path(Config(), project_root)
 
     # Layer 1: global config (user-level)
     merged: dict = {}
@@ -308,7 +326,6 @@ def load_config(
             merged = _deep_merge(merged, data)
             break  # use first global found
 
-    project_root = resolve_project_root(project_path)
     project_layers = _project_config_paths(project_root)
 
     # Layer 2: local config (project-level) merges over global
@@ -318,7 +335,8 @@ def load_config(
             merged = _deep_merge(merged, data)
             break  # use first local found
 
-    return Config(**merged) if merged else Config()
+    cfg = Config(**merged) if merged else Config()
+    return _attach_project_path(cfg, project_root)
 
 
 def resolve_project_root(project_path: str | Path | None = None) -> Path:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,10 +20,6 @@ if TYPE_CHECKING:
 
 
 UA_VERSION = "1.0.0"
-
-
-def _now() -> str:
-    return datetime.now(tz=None).isoformat(timespec="seconds")
 
 
 def _sha(value: str, length: int = 12) -> str:
@@ -47,6 +42,37 @@ def _git_commit(directory: Path | None) -> str:
     except Exception:
         pass
     return ""
+
+
+def _git_commit_time(directory: Path | None) -> str:
+    if not directory:
+        return ""
+    try:
+        r = subprocess.run(
+            ["git", "show", "-s", "--format=%cI", "HEAD"],
+            cwd=str(directory),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _node_time(node: dict) -> str:
+    return str(
+        node.get("updated_at")
+        or node.get("prov_when")
+        or node.get("created_at")
+        or ""
+    )
+
+
+def _latest_node_time(nodes: list[dict]) -> str:
+    return max((_node_time(n) for n in nodes), default="")
 
 
 def _node_is_code(node: dict) -> bool:
@@ -94,6 +120,12 @@ def _ua_node_type(node: dict) -> str:
     if "function" in kind or "method" in kind:
         return "function"
     return "concept"
+
+
+def _canonical_code_node_key(node: dict) -> tuple[str, str, str]:
+    extra = node.get("extra") or {}
+    rel_path = extra.get("relative_path") or node.get("prov_source") or ""
+    return (str(rel_path), _ua_node_type(node), str(node.get("id", "")))
 
 
 def _summary(node: dict) -> str:
@@ -164,6 +196,7 @@ def export_understand_anything(
         n for n in all_nodes
         if _node_is_code(n) and _node_matches_root(n, root)
     ]
+    code_nodes.sort(key=_canonical_code_node_key)
     code_ids = {n["id"] for n in code_nodes}
 
     if project_name is None:
@@ -219,6 +252,7 @@ def export_understand_anything(
                 "direction": "outbound",
                 "weight": edge.get("weight", 0.5),
             })
+    ua_edges.sort(key=lambda e: (e["source"], e["target"], e["type"]))
 
     layers = [
         {
@@ -247,7 +281,7 @@ def export_understand_anything(
             "description": f"Code map exported from Kindex for {project_name}.",
             "languages": sorted(languages),
             "frameworks": [],
-            "analyzedAt": _now(),
+            "analyzedAt": _git_commit_time(root) or _latest_node_time(code_nodes),
             "gitCommitHash": _git_commit(root),
         },
         "nodes": ua_nodes,

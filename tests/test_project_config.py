@@ -73,6 +73,40 @@ def test_resolve_project_root_prefers_kin_project_env(tmp_path, monkeypatch):
     assert resolve_project_root() == project.resolve()
 
 
+def test_current_user_prefers_repo_local_git_config(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    empty_config = tmp_path / "empty.yaml"
+    empty_config.write_text("")
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Repo User"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+
+    cfg = load_config(config_path=empty_config, project_path=project)
+
+    assert cfg.current_user == "repo-user"
+
+
+def test_current_user_uses_global_git_config_when_local_missing(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    empty_config = tmp_path / "empty.yaml"
+    empty_config.write_text("")
+    git_config = tmp_path / "gitconfig"
+    git_config.write_text("[user]\n\tname = Global User\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(git_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+
+    cfg = load_config(config_path=empty_config, project_path=project)
+
+    assert cfg.current_user == "global-user"
+
+
 def test_policy_check_allows_absent_policy(tmp_path):
     data_dir = tmp_path / "data"
     project = tmp_path / "project"

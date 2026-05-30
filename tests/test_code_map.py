@@ -117,6 +117,64 @@ def test_export_understand_anything_filters_by_repo_root(tmp_path):
     assert [n["id"] for n in graph["nodes"]] == ["code-mod-a"]
 
 
+def test_export_understand_anything_uses_canonical_ordering_and_source_time(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    try:
+        store.add_node(
+            "src/z.py",
+            node_id="code-mod-demo-z",
+            node_type="artifact",
+            domains=["python", "code"],
+            weight=1.0,
+            prov_activity="code-ingest",
+            extra={"relative_path": "src/z.py", "repo_root": str(tmp_path)},
+        )
+        store.add_node(
+            "src/a.py",
+            node_id="code-mod-demo-a",
+            node_type="artifact",
+            domains=["code", "python"],
+            weight=0.1,
+            prov_activity="code-ingest",
+            extra={"relative_path": "src/a.py", "repo_root": str(tmp_path)},
+        )
+        store.add_edge(
+            "code-mod-demo-z",
+            "code-mod-demo-a",
+            edge_type="depends_on",
+            weight=0.4,
+            bidirectional=False,
+        )
+        store.add_edge(
+            "code-mod-demo-a",
+            "code-mod-demo-z",
+            edge_type="relates_to",
+            weight=0.2,
+            bidirectional=False,
+        )
+
+        graph = export_understand_anything(store, directory=tmp_path)
+        graph_again = export_understand_anything(store, directory=tmp_path)
+        node_times = [
+            store.get_node("code-mod-demo-a")["updated_at"],
+            store.get_node("code-mod-demo-z")["updated_at"],
+        ]
+    finally:
+        store.close()
+
+    assert graph == graph_again
+    assert [node["id"] for node in graph["nodes"]] == [
+        "code-mod-demo-a",
+        "code-mod-demo-z",
+    ]
+    assert graph["edges"] == sorted(
+        graph["edges"],
+        key=lambda edge: (edge["source"], edge["target"], edge["type"]),
+    )
+    assert graph["project"]["analyzedAt"] == max(node_times)
+
+
 def test_ingest_understand_anything_graph(tmp_path):
     graph_dir = tmp_path / "repo" / ".understand-anything"
     graph_dir.mkdir(parents=True)

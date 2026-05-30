@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.21.2](https://img.shields.io/badge/version-0.21.2-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.21.3](https://img.shields.io/badge/version-0.21.3-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1080%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1084%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -381,6 +381,8 @@ Kindex resolves project config from `--project-path`, then `KIN_PROJECT`, then
 the git worktree root, then the current directory. User config still lives in
 `~/.config/kindex/kin.yaml` and deep-merges below project config, so user
 preferences remain local while the repo's work contract travels with the repo.
+Generated `.kin/` snapshots use canonical ordering and source-derived time
+metadata so repeated exports of unchanged source do not churn Git diffs.
 
 The payments service gets Acme's voice principles, the platform's engineering standards, AND its own domain context. Local values override ancestors. Lists merge with dedup. Parent directories auto-walk when no explicit `inherits` is set.
 

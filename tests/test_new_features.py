@@ -344,6 +344,36 @@ class TestKinIndex:
         assert (output_dir / ".kin").is_dir()
         assert path.exists()
 
+    def test_write_kin_index_uses_canonical_ordering(self, store_and_config, tmp_path):
+        store, cfg = store_and_config
+        store.add_node(
+            "Zeta concept",
+            node_id="z-node",
+            domains=["zeta", "alpha"],
+            weight=1.0,
+        )
+        store.add_node(
+            "Alpha concept",
+            node_id="a-node",
+            domains=["beta"],
+            weight=0.1,
+        )
+
+        from kindex.ingest import write_kin_index
+
+        output_dir = tmp_path / "canonical"
+        output_dir.mkdir()
+        path = write_kin_index(store, output_dir)
+
+        data = json.loads(path.read_text())
+        node_ids = [node["id"] for node in data["nodes"]]
+        assert node_ids == sorted(node_ids)
+        assert data["domains"] == sorted(data["domains"])
+        assert "generated_at" not in data
+        assert data["source_updated_at"] == max(
+            node["updated_at"] for node in data["nodes"]
+        )
+
 
 # ── 6. Analytics module ──────────────────────────────────────────────
 

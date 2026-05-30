@@ -2,6 +2,16 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.21.3] - 2026-05-30
+
+### Changed
+- Generated `.kin/index.json` now uses canonical stable ordering, sorted domains/JSON keys, and source-derived time metadata instead of wall-clock generation time.
+- Code-map export now sorts nodes and edges canonically and derives `analyzedAt` from Git commit time or latest code-node time.
+- Current-user provenance now prefers repo-local Git `user.name`, then global Git `user.name`, then OS username.
+
+### Fixed
+- Repeated `.kin` snapshot exports of unchanged source no longer churn Git diffs because of run-time timestamps or unstable ordering.
+
 ## [0.21.2] - 2026-05-28
 
 ### Fixed
