@@ -9,6 +9,7 @@ from kindex.cli import build_parser
 from kindex.attention import (
     estimate_message_window,
     extract_conversation_text,
+    is_background_action,
     resolve_conversation_id,
     run_attention_check,
     runtime_status,
@@ -365,6 +366,41 @@ def test_extract_conversation_text_falls_back_to_tool_payload():
 
     assert "tool_name: Bash" in text
     assert "git commit" in text
+
+
+def test_is_background_action_skips_noise_and_fires_on_actions():
+    cfg = Config()
+
+    def bg(tool_name, command=None, **tool_input):
+        payload = {"tool_name": tool_name}
+        if command is not None:
+            payload["tool_input"] = {"command": command}
+        elif tool_input:
+            payload["tool_input"] = tool_input
+        return is_background_action(payload, cfg)
+
+    # Kindex's own tool calls and pure inspection are background noise.
+    assert bg("mcp__kindex__add", text="x") is True
+    assert bg("Read", file_path="/x") is True
+    assert bg("Grep", pattern="x") is True
+    assert bg("Bash", "grep -rn export src") is True
+    assert bg("Bash", "ls -la | sort") is True
+    assert bg("Bash", "git status") is True
+    assert bg("Bash", "kin search foo") is True
+    assert bg("Bash", "sudo cat /var/log/y") is True
+
+    # Real actions fire — including API I/O and arbitrary commands.
+    assert bg("Bash", "curl -X POST https://api.example.com -d @body") is False
+    assert bg("Bash", "grep x f && curl https://y") is False
+    assert bg("Bash", "git push origin main") is False
+    assert bg("Bash", "kin index") is False
+    assert bg("Bash", "echo hi > out.txt") is False
+    assert bg("Bash", "pytest -q") is False
+    assert bg("Edit", file_path="/x") is False
+    assert bg("WebFetch", url="http://x") is False
+
+    # Non-tool events (real user prompts) always run.
+    assert is_background_action({"prompt": "push to github"}, cfg) is False
 
 
 def test_prompt_check_parser_accepts_adapter():

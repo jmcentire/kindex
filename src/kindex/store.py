@@ -203,6 +203,30 @@ class Store:
             except Exception:
                 pass
 
+        if current_version < 7:
+            # v7: stigmergic injection pheromone (retrieval channel, not topology)
+            try:
+                c.executescript("""
+                    CREATE TABLE IF NOT EXISTS injection_pheromone (
+                        node_id TEXT NOT NULL REFERENCES nodes(id),
+                        context TEXT NOT NULL DEFAULT '',
+                        strength REAL NOT NULL DEFAULT 0.0,
+                        deposits INTEGER NOT NULL DEFAULT 0,
+                        reinforcements INTEGER NOT NULL DEFAULT 0,
+                        missed INTEGER NOT NULL DEFAULT 0,
+                        last_deposit TEXT NOT NULL DEFAULT (datetime('now')),
+                        last_decay TEXT NOT NULL DEFAULT (datetime('now')),
+                        PRIMARY KEY (node_id, context)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_pheromone_node
+                        ON injection_pheromone(node_id);
+                    CREATE INDEX IF NOT EXISTS idx_pheromone_strength
+                        ON injection_pheromone(strength DESC);
+                """)
+                c.commit()
+            except Exception:
+                pass
+
         if current_version < SCHEMA_VERSION:
             c.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'",
@@ -670,6 +694,172 @@ class Store:
 
         self.conn.commit()
         return count
+
+    # ── Stigmergic injection pheromone ──────────────────────────────────
+
+    @staticmethod
+    def _decayed_strength(strength: float, last_decay: str, half_life_days: float,
+                          now: datetime | None = None) -> float:
+        """Effective pheromone after exponential decay since last_decay."""
+        if strength <= 0 or half_life_days <= 0:
+            return max(0.0, strength)
+        now = now or datetime.now()
+        try:
+            last = datetime.fromisoformat(last_decay)
+        except (ValueError, TypeError):
+            return strength
+        days = (now - last).total_seconds() / 86400.0
+        if days <= 0:
+            return strength
+        return strength * (0.5 ** (days / half_life_days))
+
+    def deposit_pheromone(self, node_id: str, context: str = "",
+                          amount: float = 1.0, half_life_days: float = 14.0,
+                          reinforce: bool = False, missed: bool = False) -> float:
+        """Lay (or reinforce) pheromone on a node for a context.
+
+        Folds prior decay into the stored strength before adding `amount`, so the
+        accumulator stays current. Counter bumped depends on the kind of deposit:
+        - default: `deposits` (a node was injected)
+        - reinforce=True: `reinforcements` (a confirmed-useful injection)
+        - missed=True: `missed` (counterfactual — would have helped but wasn't injected)
+        Returns the new stored strength.
+        """
+        now = _now()
+        d_inc = 0 if (reinforce or missed) else 1
+        r_inc = 1 if reinforce else 0
+        m_inc = 1 if missed else 0
+        row = self.conn.execute(
+            "SELECT strength, deposits, reinforcements, missed, last_decay "
+            "FROM injection_pheromone WHERE node_id = ? AND context = ?",
+            (node_id, context),
+        ).fetchone()
+        if row is None:
+            self.conn.execute(
+                "INSERT INTO injection_pheromone "
+                "(node_id, context, strength, deposits, reinforcements, missed, last_deposit, last_decay) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (node_id, context, round(amount, 4), d_inc, r_inc, m_inc, now, now),
+            )
+            self.conn.commit()
+            return round(amount, 4)
+
+        decayed = self._decayed_strength(
+            row["strength"], row["last_decay"], half_life_days)
+        new_strength = round(decayed + amount, 4)
+        self.conn.execute(
+            "UPDATE injection_pheromone SET strength = ?, deposits = ?, "
+            "reinforcements = ?, missed = ?, last_deposit = ?, last_decay = ? "
+            "WHERE node_id = ? AND context = ?",
+            (new_strength,
+             row["deposits"] + d_inc,
+             row["reinforcements"] + r_inc,
+             row["missed"] + m_inc,
+             now, now, node_id, context),
+        )
+        self.conn.commit()
+        return new_strength
+
+    def pheromone_scores(self, node_ids: set[str], context: str = "",
+                         half_life_days: float = 14.0,
+                         min_deposits: int = 5) -> list[tuple[str, float]]:
+        """Decayed pheromone strength per node for retrieval ranking (read-only).
+
+        Uses the context-conditioned trail when it has enough deposits to be
+        statistically real; otherwise falls back to the coarse global trail.
+        """
+        if not node_ids:
+            return []
+        now = datetime.now()
+        ids = list(node_ids)
+        placeholders = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT node_id, context, strength, deposits, last_decay "
+            f"FROM injection_pheromone "
+            f"WHERE node_id IN ({placeholders}) AND context IN ('', ?)",
+            (*ids, context),
+        ).fetchall()
+
+        conditioned: dict[str, sqlite3.Row] = {}
+        glob: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            (conditioned if row["context"] == context and context else glob)[row["node_id"]] = row
+
+        results: list[tuple[str, float]] = []
+        for nid in ids:
+            cond = conditioned.get(nid)
+            chosen = cond if (cond and cond["deposits"] >= min_deposits) else glob.get(nid)
+            if chosen is None:
+                continue
+            strength = self._decayed_strength(
+                chosen["strength"], chosen["last_decay"], half_life_days, now)
+            if strength > 0.0:
+                results.append((nid, strength))
+        return results
+
+    def decay_pheromone(self, half_life_days: float = 14.0,
+                        floor: float = 0.02) -> int:
+        """Write back decayed pheromone strength; prune trails below `floor`.
+
+        Lazy decay already keeps reads correct; this periodic pass keeps the
+        stored values honest and evaporates dead trails. Returns rows pruned.
+        """
+        now = datetime.now()
+        rows = self.conn.execute(
+            "SELECT node_id, context, strength, last_decay FROM injection_pheromone"
+        ).fetchall()
+        pruned = 0
+        for row in rows:
+            strength = self._decayed_strength(
+                row["strength"], row["last_decay"], half_life_days, now)
+            if strength < floor:
+                self.conn.execute(
+                    "DELETE FROM injection_pheromone WHERE node_id = ? AND context = ?",
+                    (row["node_id"], row["context"]),
+                )
+                pruned += 1
+            elif abs(strength - row["strength"]) > 0.001:
+                self.conn.execute(
+                    "UPDATE injection_pheromone SET strength = ?, last_decay = ? "
+                    "WHERE node_id = ? AND context = ?",
+                    (round(strength, 4), now.isoformat(timespec="seconds"),
+                     row["node_id"], row["context"]),
+                )
+        self.conn.commit()
+        return pruned
+
+    def pheromone_stats(self, half_life_days: float = 14.0,
+                        warm_floor: float = 0.5) -> dict:
+        """Decayed signal summary used to decide if pheromone is mature enough
+        to trust in ranking.
+
+        Counts only GRADED signal (reinforcements or counterfactual deposits) —
+        bare injection deposits are popularity, not usefulness, and are excluded.
+        Uses decayed strength so the measure falls when trails cool.
+        """
+        now = datetime.now()
+        rows = self.conn.execute(
+            "SELECT node_id, context, strength, reinforcements, missed, last_decay "
+            "FROM injection_pheromone WHERE reinforcements > 0 OR missed > 0"
+        ).fetchall()
+        warm_nodes: set[str] = set()
+        warm_signal = 0.0
+        signal_events = 0
+        for row in rows:
+            signal_events += (row["reinforcements"] or 0) + (row["missed"] or 0)
+            strength = self._decayed_strength(
+                row["strength"], row["last_decay"], half_life_days, now)
+            if strength >= warm_floor:
+                warm_nodes.add(row["node_id"])
+                warm_signal += strength
+        total_rows = self.conn.execute(
+            "SELECT COUNT(*) FROM injection_pheromone").fetchone()[0]
+        return {
+            "warm_graded_nodes": len(warm_nodes),
+            "warm_signal": round(warm_signal, 3),
+            "signal_events": signal_events,
+            "total_trails": total_rows,
+        }
 
     # ── Operational node queries ────────────────────────────────────────
 

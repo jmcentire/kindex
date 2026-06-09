@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import fnmatch
 import hashlib
 import json
 import math
@@ -234,6 +235,131 @@ def extract_conversation_text(
             tool_text = str(tool_input)
         return f"tool_name: {tool_name or ''}\ntool_input: {tool_text}".strip()
     return ""
+
+
+_BASH_SEGMENT_RE = re.compile(r"\|\||&&|\||;|&")
+_LEADING_NOISE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")  # FOO=bar env prefix
+_BASH_WRAPPERS = {"sudo", "command", "time", "nohup", "env", "exec", "builtin", "xargs", "nice", "stdbuf"}
+
+
+def _bash_segment_is_readonly(segment: str, config: Config) -> bool:
+    """True if a single pipeline segment is pure read-only inspection."""
+    tokens = segment.strip().split()
+    # Strip env-var assignments and benign wrappers (sudo/time/...) off the front.
+    while tokens and (_LEADING_NOISE_RE.match(tokens[0]) or tokens[0] in _BASH_WRAPPERS):
+        tokens = tokens[1:]
+    if not tokens:
+        return True  # nothing left (e.g. bare `FOO=bar`) — no action
+    cmd = tokens[0].lstrip("(")
+    sub = tokens[1] if len(tokens) > 1 else ""
+    if cmd == "git":
+        return sub in config.attention.readonly_git_subcommands
+    if cmd == "kin":
+        return sub in config.attention.readonly_kin_subcommands
+    return cmd in config.attention.readonly_bash_commands
+
+
+def is_background_action(
+    hook_payload: dict[str, Any] | None,
+    config: Config,
+) -> bool:
+    """True when a tool call is Kindex's own noise or pure read-only inspection.
+
+    Attention is a reminder about *actions* the agent takes ("when you do X,
+    always Y"). It should fire on real actions — edits, deploys, curl/API I/O,
+    arbitrary commands — and stay silent only on (a) Kindex's own tool calls and
+    (b) pure inspection. We use a read-only *denylist*, not an action allowlist:
+    an allowlist would silently drop reminders for commands we didn't predict.
+
+    Kindex's own LLM/API traffic (the attention judge, dream, extraction) runs in
+    Kindex's runtime, not as an agent tool call, so it never reaches this hook —
+    there is nothing to filter for it here.
+
+    Returns False for non-tool events (e.g. a real user prompt) so those still run.
+    """
+    payload = hook_payload or {}
+    tool_name = payload.get("tool_name") or payload.get("toolName")
+    if not tool_name:
+        return False  # not a tool event (user prompt, etc.) — let it run
+
+    for pattern in config.attention.skip_tools:
+        if fnmatch.fnmatchcase(tool_name, pattern):
+            return True
+
+    if tool_name == "Bash":
+        tool_input = (
+            payload.get("tool_input")
+            or payload.get("toolInput")
+            or payload.get("parameters")
+            or {}
+        )
+        command = ""
+        if isinstance(tool_input, dict):
+            command = str(tool_input.get("command") or "")
+        else:
+            command = str(tool_input or "")
+        if not command.strip():
+            return True
+        if ">" in command:  # redirection writes a file — that's an action
+            return False
+        segments = [s for s in _BASH_SEGMENT_RE.split(command) if s.strip()]
+        # Background only if EVERY segment is read-only inspection.
+        return all(_bash_segment_is_readonly(s, config) for s in segments)
+
+    return False
+
+
+def pheromone_context(config: Config) -> str:
+    """Coarse, cross-session context fingerprint for conditioned trails.
+
+    v1 = the project basename (stable across sessions, isolates trails per repo).
+    Intra-project regime conditioning can refine this later without schema change.
+    """
+    path = getattr(config, "_project_path", None)
+    if not path:
+        return ""
+    try:
+        return os.path.basename(str(path).rstrip("/")) or ""
+    except Exception:
+        return ""
+
+
+def injection_node_id(injection_id: str) -> str | None:
+    """Map a candidate/injection id to the bare graph node id it ranks against.
+
+    Candidates are namespaced 'node:<id>' / 'reminder:<id>'. Pheromone tracks
+    graph nodes only (reminders are ephemeral), and retrieval looks up bare ids,
+    so we strip the 'node:' prefix and ignore reminders.
+    """
+    if not injection_id:
+        return None
+    if injection_id.startswith("node:"):
+        return injection_id[len("node:"):]
+    if ":" in injection_id:
+        return None  # reminder:* or other namespaces — not a graph node
+    return injection_id  # already bare
+
+
+def _deposit_injection_pheromone(store: "Store", config: Config, node_id: str,
+                                 context: str) -> None:
+    """Lay a deposit on the global trail and (if known) the conditioned trail."""
+    bare = injection_node_id(node_id)
+    if not bare:
+        return
+    try:
+        store.deposit_pheromone(
+            bare, context="",
+            amount=config.attention.pheromone_deposit,
+            half_life_days=config.attention.pheromone_half_life_days,
+        )
+        if context:
+            store.deposit_pheromone(
+                bare, context=context,
+                amount=config.attention.pheromone_deposit,
+                half_life_days=config.attention.pheromone_half_life_days,
+            )
+    except Exception:
+        pass  # pheromone is advisory — never break the hook
 
 
 def parse_hook_payload(raw: str) -> dict[str, Any]:
@@ -774,8 +900,15 @@ def run_attention_check(
     if injections:
         injected = state.setdefault("injected", {})
         now = _now()
+        ctx = pheromone_context(config)
+        deposit = state.setdefault("pheromone_deposits", {})
         for injection in injections:
             injected[injection.id] = now
+            # Stigmergic trace: the injection itself is the deposit. Lay on both
+            # the coarse global trail and the context-conditioned trail.
+            if config.attention.pheromone_enabled:
+                _deposit_injection_pheromone(store, config, injection.id, ctx)
+                deposit[injection.id] = {"at": now, "context": ctx}
         state["last_injection_at"] = now
     _save_state(store, conversation_id, state)
 
@@ -789,10 +922,22 @@ def run_attention_check(
     }
 
 
-def format_attention_injections(result: dict) -> list[str]:
+def format_attention_injections(result: dict, display: str = "full") -> list[str]:
+    """Render attention injections.
+
+    display:
+      full    — labelled "KINDEX ATTENTION" block with Reason/Source + budget line
+      minimal — one bare line per injection (no header, no chrome, no budget)
+      quiet   — same bare lines (the user-facing block is suppressed at the hook
+                layer via suppressOutput; the model still receives this text)
+    """
     injections = result.get("injections") or []
     if not injections:
         return []
+
+    if display in ("minimal", "quiet"):
+        return [f"- {item['message']}" for item in injections]
+
     lines = ["KINDEX ATTENTION"]
     for item in injections:
         conf = item.get("confidence", 0)

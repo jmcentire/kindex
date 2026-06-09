@@ -1278,11 +1278,16 @@ def cmd_decay(args):
         node_half_life_days=args.node_half_life,
         edge_half_life_days=args.edge_half_life,
     )
+    cfg = _config(args)
+    pruned = store.decay_pheromone(
+        half_life_days=cfg.attention.pheromone_half_life_days,
+    )
 
     if args.json:
-        print(_dumps({"decayed_nodes": count}))
+        print(_dumps({"decayed_nodes": count, "pheromone_trails_pruned": pruned}))
     else:
-        print(f"Weight decay applied: {count} node(s) adjusted.")
+        print(f"Weight decay applied: {count} node(s) adjusted; "
+              f"{pruned} dead pheromone trail(s) pruned.")
 
     store.close()
 
@@ -1306,6 +1311,19 @@ def cmd_compact_hook(args):
             print("No text provided. Use --text or pipe via stdin.", file=sys.stderr)
             store.close()
             return
+
+    # Silent, lightweight: if a hook envelope (PreCompact/Stop) gave us a
+    # transcript path, queue the session for later reinforcement grading in cron.
+    try:
+        from .attention import parse_hook_payload, resolve_conversation_id
+        from .reinforce import enqueue_reinforce
+        env = parse_hook_payload(text) if text else {}
+        tpath = env.get("transcript_path") or env.get("transcriptPath") or ""
+        if tpath or env.get("session_id"):
+            enqueue_reinforce(store, resolve_conversation_id(None, env),
+                              transcript_path=tpath)
+    except Exception:
+        pass
 
     if not text or len(text.strip()) < 10:
         store.close()
@@ -1386,8 +1404,25 @@ def cmd_prime(args):
     )
 
     if output_for == "hook":
-        # Just the context block, no header
-        print(block, end="")
+        # A new session clears any operator guidance (session-scoped) and says so once.
+        notice = ""
+        try:
+            from .sim import clear_sim_guidance
+            if clear_sim_guidance(store):
+                notice = "sim guidance cleared\n"
+        except Exception:
+            pass
+        body = notice + block
+        # Quiet mode: feed the context to the model but ask the client not to
+        # render the SessionStart block. Needs the JSON adapter for suppressOutput.
+        if str(getattr(cfg.attention, "display", "full")).lower() == "quiet":
+            rendered = _hook_context_output(
+                body, adapter="claude", event="SessionStart", suppress=True,
+            )
+            if rendered:
+                print(rendered, end="")
+        else:
+            print(body, end="")
     else:
         # Add a header for human-readable output
         print("# Kindex Prime Context")
@@ -3217,8 +3252,15 @@ def cmd_stop_guard(args):
         print(_json.dumps(result))
 
 
-def _hook_context_output(context: str, *, adapter: str, event: str) -> str:
-    """Render advisory context in the hook protocol for a client."""
+def _hook_context_output(context: str, *, adapter: str, event: str,
+                         suppress: bool = False) -> str:
+    """Render advisory context in the hook protocol for a client.
+
+    suppress=True sets `suppressOutput` so the context still feeds the model via
+    `additionalContext` but the client is asked NOT to render the block to the
+    user (the "feed me, don't show you" quiet mode). Only meaningful for the JSON
+    adapters; plain adapters echo the text and cannot hide it.
+    """
     if not context.strip():
         return ""
     adapter = (adapter or "plain").lower()
@@ -3232,7 +3274,10 @@ def _hook_context_output(context: str, *, adapter: str, event: str) -> str:
     }
     if adapter in {"claude", "claude-code"} and event == "PreToolUse":
         hook_output["permissionDecision"] = "allow"
-    return _dumps({"hookSpecificOutput": hook_output})
+    payload: dict = {"hookSpecificOutput": hook_output}
+    if suppress:
+        payload["suppressOutput"] = True
+    return _dumps(payload)
 
 
 def cmd_prompt_check(args):
@@ -3288,9 +3333,56 @@ def cmd_prompt_check(args):
                 conversation_id,
                 force=getattr(args, "force_attention", False),
             )
-            attention_lines = format_attention_injections(attention_result)
+            attention_lines = format_attention_injections(
+                attention_result, display=cfg.attention.display
+            )
     except Exception:
         attention_lines = []
+
+    # Operator guidance is session-scoped: a new session (SessionStart) clears it
+    # and tells you once, so stale steering never silently outlives a restart.
+    sim_lines: list[str] = []
+    try:
+        if str(hook_event).lower() in ("sessionstart", "session_start"):
+            from .sim import clear_sim_guidance
+            if clear_sim_guidance(store):
+                sim_lines.append("sim guidance cleared")
+    except Exception:
+        pass
+
+    # Sim supervisory check-in (opt-in): enqueue a window snapshot for async
+    # review and surface any pending injection a prior drain already graded.
+    # Both halves are cheap (SQLite-only); the Sim/LLM spend happens in the daemon.
+    try:
+        from .sim import sim_effective_enabled
+        if conversation_id and sim_effective_enabled(store, cfg):
+            from .attention import _load_state as _att_state
+            from .sim import (
+                enqueue_sim_review,
+                format_sim_injection,
+                pop_pending_sim_injection,
+            )
+
+            tick = int(_att_state(store, conversation_id).get("ticks", 0))
+            window = ""
+            tpath = hook_payload.get("transcript_path") or hook_payload.get("transcriptPath")
+            if tpath:
+                from .reinforce import _bounded_trace
+                window = _bounded_trace(str(tpath), cfg.sim.window_chars)
+            if not window:
+                window = conversation_text
+            queued = enqueue_sim_review(store, cfg, conversation_id, window, tick=tick)
+            sim_injection = pop_pending_sim_injection(
+                store, cfg, conversation_id, window, tick=tick
+            )
+            sim_lines.extend(format_sim_injection(sim_injection, display=cfg.sim.display))
+            # No daemon? Drain off-path in the background so the review lands for
+            # a later tick. Only bother when we actually queued something new.
+            if queued and cfg.sim.drain_on_tick:
+                from .sim import spawn_background_drain
+                spawn_background_drain(cfg)
+    except Exception:
+        pass
 
     due = []
     if cfg.reminders.enabled:
@@ -3328,7 +3420,7 @@ def cmd_prompt_check(args):
     except Exception:
         pass
 
-    if not due and not attention_lines and not task_lines:
+    if not due and not attention_lines and not task_lines and not sim_lines:
         store.close()
         return
 
@@ -3367,6 +3459,11 @@ def cmd_prompt_check(args):
             lines.append("")
         lines.extend(attention_lines)
 
+    if sim_lines:
+        if due or attention_lines:
+            lines.append("")
+        lines.extend(sim_lines)
+
     if task_lines:
         lines.append("")
         lines.append(f"{BOLD}{RED}URGENT TASKS:{RESET}")
@@ -3374,10 +3471,19 @@ def cmd_prompt_check(args):
 
     lines.append("</system-reminder>")
 
+    # Quiet mode: still feed the context to the model, but ask the client not to
+    # render the block to the user — they see the system working in the agent's
+    # behavior, not as background status hum. (Empirically: depends on the client
+    # honoring suppressOutput while keeping additionalContext.)
+    suppress = str(getattr(cfg.attention, "display", "full")).lower() == "quiet"
+
     rendered = _hook_context_output(
         "\n".join(lines),
-        adapter=adapter,
+        # Quiet mode needs the JSON adapter so suppressOutput is honored; the
+        # plain adapter echoes raw text and can't hide anything.
+        adapter=("claude" if suppress else adapter),
         event=hook_event,
+        suppress=suppress,
     )
     if rendered:
         print(rendered)
@@ -3389,6 +3495,7 @@ def cmd_attention_hook(args):
     from .attention import (
         extract_conversation_text,
         format_attention_injections,
+        is_background_action,
         read_hook_payload,
         resolve_conversation_id,
         run_attention_check,
@@ -3408,6 +3515,12 @@ def cmd_attention_hook(args):
 
     store = _store(args)
     cfg = _config(args)
+
+    # Ignore Kindex's own noise and local/background tool calls — attention should
+    # only weigh in on the agent's outward-facing or irreversible actions.
+    if not getattr(args, "force", False) and is_background_action(payload, cfg):
+        store.close()
+        return
     conversation_id = resolve_conversation_id(
         getattr(args, "conversation_id", None),
         payload,
@@ -3436,6 +3549,90 @@ def cmd_attention_hook(args):
     )
     if rendered:
         print(rendered)
+
+
+def cmd_sim(args):
+    """Runtime controls for the Sim supervisory check-in."""
+    store = _store(args)
+    cfg = _config(args)
+    action = getattr(args, "sim_action", "status")
+
+    from .sim import (
+        call_sim,
+        clear_sim_guidance,
+        clear_sim_override,
+        drain_sim_queue,
+        get_sim_guidance,
+        set_sim_enabled,
+        set_sim_guidance,
+        sim_status,
+    )
+
+    if action == "guidance":
+        if getattr(args, "clear", False):
+            clear_sim_guidance(store)
+            print("Sim guidance cleared.")
+            store.close()
+            return
+        text = (getattr(args, "text", None) or "").strip()
+        if text:
+            set_sim_guidance(store, text)
+            print(f"Sim guidance set (clears on restart):\n  {text}")
+        else:
+            current = get_sim_guidance(store)
+            print(f"Sim guidance: {current}" if current else "Sim guidance: (none)")
+        store.close()
+        return
+
+    if action in ("on", "enable"):
+        set_sim_enabled(store, True)
+        print("Sim supervisory check-in enabled (runtime override).")
+        store.close()
+        return
+
+    if action in ("off", "disable"):
+        set_sim_enabled(store, False)
+        print("Sim supervisory check-in disabled (runtime override). Use `kin sim inherit` to follow config again.")
+        store.close()
+        return
+
+    if action == "inherit":
+        clear_sim_override(store)
+        print("Sim runtime override cleared; config.sim.enabled now governs.")
+        store.close()
+        return
+
+    if action == "drain":
+        result = drain_sim_queue(store, cfg)
+        print(_dumps(result, indent=2))
+        store.close()
+        return
+
+    if action == "check":
+        # Manual one-shot review of a window from --text or stdin (ignores the
+        # threshold — shows the raw rating/note so you can calibrate).
+        text = getattr(args, "text", None) or ""
+        if not text and not sys.stdin.isatty():
+            text = sys.stdin.read()
+        if not text.strip():
+            print("Error: sim check needs --text or a window on stdin", file=sys.stderr)
+            store.close()
+            sys.exit(1)
+        from .budget import BudgetLedger
+        ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
+        result, acct = call_sim(cfg, ledger, text, "sim-check", client=None)
+        payload = {"status": acct.get("status")}
+        if result:
+            payload.update({"rating": result.rating, "note": result.note,
+                            "basis": result.basis,
+                            "would_inject": result.rating >= cfg.sim.threshold})
+        print(_dumps(payload, indent=2))
+        store.close()
+        return
+
+    # status (default)
+    print(_dumps(sim_status(store, cfg), indent=2))
+    store.close()
 
 
 def cmd_attention(args):
@@ -3507,6 +3704,43 @@ def cmd_attention(args):
                 print("\n".join(lines))
             else:
                 print(f"No attention injection ({result.get('status')}).")
+        store.close()
+        return
+
+    if action == "reinforce":
+        # Session-end grading: read the trace (transcript/summary) from --text or stdin.
+        raw = ""
+        if not getattr(args, "text", None) and not sys.stdin.isatty():
+            raw = sys.stdin.read()
+        payload = parse_hook_payload(raw)
+        conversation_id = resolve_conversation_id(conversation_id, payload)
+
+        # --enqueue: super-lightweight hook path — record for later cron grading
+        # and return SILENTLY (no LLM, no output). Used by Stop / PreCompact.
+        if getattr(args, "enqueue", False):
+            from .reinforce import enqueue_reinforce
+            transcript_path = (payload.get("transcript_path")
+                               or payload.get("transcriptPath") or "")
+            enqueue_reinforce(store, conversation_id, transcript_path=transcript_path)
+            store.close()
+            return
+
+        trace = extract_conversation_text(getattr(args, "text", None), payload) or raw
+        from .reinforce import reinforce_session
+        ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
+        result = reinforce_session(store, cfg, conversation_id, trace, ledger=ledger)
+        if getattr(args, "json", False):
+            print(_dumps(result, indent=2))
+        else:
+            outs = result.get("outcomes", [])
+            obs = sum(1 for o in outs if o.get("injected"))
+            cf = sum(1 for o in outs if not o.get("injected"))
+            print(f"Reinforcement ({result.get('status')}): "
+                  f"{obs} confirmed-useful, {cf} counterfactual, "
+                  f"{len(result.get('gaps', []))} knowledge gap(s).")
+            for o in outs:
+                kind = "used" if o.get("injected") else "missed"
+                print(f"  [{kind}/{o.get('category')}] +{o.get('amount')} {o.get('title','')[:60]}")
         store.close()
         return
 
@@ -4737,15 +4971,28 @@ def build_parser() -> argparse.ArgumentParser:
     # attention
     s = sub.add_parser("attention", help="Conversation-attention runtime controls")
     s.add_argument("attention_action", nargs="?", default="status",
-                   choices=["status", "on", "off", "inherit", "check", "budget", "estimate"],
-                   help="Action: status, on, off, inherit, check, budget, estimate")
+                   choices=["status", "on", "off", "inherit", "check", "budget", "estimate", "reinforce"],
+                   help="Action: status, on, off, inherit, check, budget, estimate, reinforce")
     s.add_argument("--conversation-id", help="Conversation/session id for per-conversation state")
     s.add_argument("--text", help="Conversation snippet for manual check")
     s.add_argument("--force", action="store_true", help="Run check regardless of tick interval")
+    s.add_argument("--enqueue", action="store_true",
+                   help="Silently queue this session for later reinforcement (Stop/PreCompact hook)")
     s.add_argument("--messages", type=int, default=100,
                    help="Message-window size for attention estimate")
     _common(s)
     s.set_defaults(func=cmd_attention)
+
+    # sim — optional Jeremy-simulacrum supervisory check-in
+    s = sub.add_parser("sim", help="Sim supervisory check-in runtime controls")
+    s.add_argument("sim_action", nargs="?", default="status",
+                   choices=["status", "on", "off", "enable", "disable", "inherit",
+                            "check", "drain", "guidance"],
+                   help="Action: status, on/off (kill switch), inherit, check, drain, guidance")
+    s.add_argument("--text", help="Window for `check`, or guidance text for `guidance`")
+    s.add_argument("--clear", action="store_true", help="With `guidance`: clear it")
+    _common(s)
+    s.set_defaults(func=cmd_sim)
 
     # policy
     s = sub.add_parser("policy", help="Show/check project work policy from .kin config")

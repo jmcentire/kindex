@@ -45,11 +45,43 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     inbox_count = _process_inbox(config, store, verbose=verbose)
     results["inbox"] = inbox_count
 
-    # 4. Apply weight decay
+    # 4. Apply weight decay (nodes/edges + stigmergic pheromone trails)
     if verbose:
         print("Applying weight decay...")
     decay_count = store.apply_weight_decay()
     results["decayed"] = decay_count
+    try:
+        results["pheromone_pruned"] = store.decay_pheromone(
+            half_life_days=config.attention.pheromone_half_life_days)
+        # Drain queued session-end reinforcement (this is the LLM cost — kept
+        # off the agent's critical path; the Stop/compact hooks only enqueue).
+        from .reinforce import auto_ramp_pheromone_weight, drain_reinforce_queue
+        if verbose:
+            print("Grading queued sessions (reinforcement)...")
+        drained = drain_reinforce_queue(store, config)
+        results["reinforce_graded"] = drained.get("graded", 0)
+        results["reinforce_pending"] = drained.get("pending", 0)
+        # Re-evaluate maturity and auto-ramp the pheromone ranking weight.
+        ramp = auto_ramp_pheromone_weight(store, config)
+        results["pheromone_weight"] = ramp.get("weight")
+        if verbose and ramp.get("ramped"):
+            print(f"Pheromone ranking weight -> {ramp.get('weight')} ({ramp.get('reason')})")
+    except Exception:
+        results["pheromone_pruned"] = 0
+
+    # Drain queued Sim supervisory reviews (opt-in; the LLM/Sim spend, kept off
+    # the agent's path — the prompt hook only enqueues window snapshots).
+    try:
+        from .sim import drain_sim_queue, sim_effective_enabled
+        if sim_effective_enabled(store, config):
+            if verbose:
+                print("Reviewing queued windows (Sim supervisory)...")
+            sim_drained = drain_sim_queue(store, config)
+            results["sim_reviewed"] = sim_drained.get("reviewed", 0)
+            results["sim_flagged"] = sim_drained.get("flagged", 0)
+            results["sim_pending"] = sim_drained.get("pending", 0)
+    except Exception:
+        results["sim_reviewed"] = 0
 
     # 5. Run doctor checks
     if verbose:

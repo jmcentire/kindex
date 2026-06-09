@@ -179,6 +179,31 @@ def _node_weight_scores(store: Store, node_ids: set[str]) -> list[tuple[str, flo
     return results
 
 
+def _learned_pheromone_weight(store: Store) -> float:
+    """Auto-ramped pheromone ranking weight from the maturity gate (0 if immature)."""
+    try:
+        from .reinforce import learned_pheromone_weight
+        return learned_pheromone_weight(store)
+    except Exception:
+        return 0.0
+
+
+def _pheromone_scores(store: Store, node_ids: set[str]) -> list[tuple[str, float]]:
+    """Decayed injection-usefulness pheromone per node, conditioned on project."""
+    acfg = getattr(store.config, "attention", None)
+    half_life = getattr(acfg, "pheromone_half_life_days", 14.0)
+    min_deposits = getattr(acfg, "pheromone_min_deposits", 5)
+    project_path = getattr(store.config, "_project_path", None)
+    context = ""
+    if project_path:
+        import os
+        context = os.path.basename(str(project_path).rstrip("/")) or ""
+    return store.pheromone_scores(
+        node_ids, context=context,
+        half_life_days=half_life, min_deposits=min_deposits,
+    )
+
+
 def _weighted_ensemble(
     sources: dict[str, list[tuple[str, float]]],
     weights: dict[str, float] | None = None,
@@ -296,6 +321,15 @@ def hybrid_search(
         if all_ids:
             sources["node_weight"] = _node_weight_scores(store, all_ids)
             sources["recency"] = _recency_score(store, all_ids)
+            # Stigmergic injection-usefulness — separate channel from topology.
+            # Weight is the user's explicit override (ranking.pheromone_weight>0)
+            # else the auto-ramped learned weight (0 until trails mature).
+            phero_weight = cfg_weights.get("pheromone", 0) or _learned_pheromone_weight(store)
+            if phero_weight > 0:
+                phero = _pheromone_scores(store, all_ids)
+                if phero:
+                    sources["pheromone"] = phero
+                    cfg_weights = {**cfg_weights, "pheromone": phero_weight}
 
         merged = _weighted_ensemble(sources, weights=cfg_weights)
     else:

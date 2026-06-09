@@ -176,7 +176,14 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
             "type": "command",
             "command": _kin_stop_hook_command(kin_path, ["compact-hook", "--text", "Session ended"]),
             "timeout": 5000,
-        }
+        },
+        {
+            # Super lightweight + silent: records the session for later
+            # reinforcement grading in cron (no LLM, no output on the hot path).
+            "type": "command",
+            "command": _kin_stop_hook_command(kin_path, ["attention", "reinforce", "--enqueue"]),
+            "timeout": 3000,
+        },
     ])
     if config.reminders.dream_on_stop_enabled:
         stop_hook_commands.append({
@@ -190,7 +197,8 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     }
     existing_idx = next(
         (i for i, h in enumerate(stop_hooks)
-         if "stop-guard" in str(h) or "compact-hook" in str(h) or "dream" in str(h)),
+         if "stop-guard" in str(h) or "compact-hook" in str(h) or "dream" in str(h)
+         or "reinforce" in str(h)),
         None,
     )
     if existing_idx is None:

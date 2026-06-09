@@ -978,6 +978,40 @@ def tag_start(name: str, description: str = "", focus: str = "",
 
 
 @mcp.tool()
+def _reinforce_on_end(store, config, tag_name: str, summary: str) -> str:
+    """Silently queue this session for later reinforcement grading (no LLM, no
+    output here — the grading runs off the critical path in cron). Uses the
+    summary + segment history as the trace; a Stop hook's full transcript, if
+    present, supersedes it. Returns '' always — kin stays transparent. Never raises.
+    """
+    try:
+        if not config.attention.reinforce_enabled:
+            return ""
+        from .attention import resolve_conversation_id
+        from .sessions import get_tag
+        from .reinforce import enqueue_reinforce
+
+        conversation_id = resolve_conversation_id(fallback_to_cwd=False)
+        if not conversation_id:
+            return ""
+
+        parts = [summary] if summary else []
+        tag = get_tag(store, tag_name)
+        if tag:
+            parts.append(tag.get("content", "") or "")
+            for seg in (tag.get("extra") or {}).get("segments", []) or []:
+                if seg.get("focus"):
+                    parts.append(f"focus: {seg['focus']}")
+                if seg.get("summary"):
+                    parts.append(seg["summary"])
+        trace = "\n".join(p for p in parts if p).strip()
+        if trace:
+            enqueue_reinforce(store, conversation_id, trace=trace)
+    except Exception:
+        pass
+    return ""
+
+
 def tag_update(name: str = "", focus: str = "", description: str = "",
                remaining: str = "", add_remaining: str = "",
                done: str = "", summary: str = "",
@@ -994,7 +1028,7 @@ def tag_update(name: str = "", focus: str = "", description: str = "",
         summary: Summary for segment/pause/end actions.
         action: One of: update, segment, pause, end.
     """
-    store, _ = _get_store()
+    store, config = _get_store()
     from .sessions import (update_tag, add_segment, pause_tag,
                            complete_tag, get_active_tag, get_tag)
     import os
@@ -1024,7 +1058,8 @@ def tag_update(name: str = "", focus: str = "", description: str = "",
             return f"Paused: {name}"
         elif action == "end":
             complete_tag(store, name, summary=summary)
-            return f"Completed: {name}"
+            note = _reinforce_on_end(store, config, name, summary)
+            return f"Completed: {name}{note}"
         return f"Unknown action: {action}"
     except ValueError as e:
         return f"Error: {e}"

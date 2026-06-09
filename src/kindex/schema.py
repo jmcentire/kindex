@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Audience scopes for tenancy model
 AUDIENCES = ("private", "team", "org", "public")
@@ -167,4 +167,25 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
 CREATE INDEX IF NOT EXISTS idx_reminders_next_due ON reminders(next_due);
 CREATE INDEX IF NOT EXISTS idx_reminders_priority ON reminders(priority);
+
+-- Stigmergic injection pheromone: a retrieval-ranking channel SEPARATE from
+-- edge.weight/node.weight (which drive graph topology). Tracks which nodes have
+-- proven useful WHEN INJECTED, learned across sessions. Deposited on injection,
+-- reinforced when the agent actually used the injection, decayed over time.
+-- context='' is the coarse global trail (warm-up); context=<project> are
+-- conditioned trails that self-resolve when the work regime changes.
+CREATE TABLE IF NOT EXISTS injection_pheromone (
+    node_id TEXT NOT NULL REFERENCES nodes(id),
+    context TEXT NOT NULL DEFAULT '',
+    strength REAL NOT NULL DEFAULT 0.0,
+    deposits INTEGER NOT NULL DEFAULT 0,
+    reinforcements INTEGER NOT NULL DEFAULT 0,
+    missed INTEGER NOT NULL DEFAULT 0,   -- counterfactual deposits: would-have-helped but wasn't injected
+    last_deposit TEXT NOT NULL DEFAULT (datetime('now')),
+    last_decay TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (node_id, context)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pheromone_node ON injection_pheromone(node_id);
+CREATE INDEX IF NOT EXISTS idx_pheromone_strength ON injection_pheromone(strength DESC);
 """

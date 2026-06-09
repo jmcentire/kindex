@@ -53,12 +53,109 @@ class AttentionConfig(BaseModel):
     tick_interval: int = 3
     max_candidates: int = 6
     min_confidence: float = 0.65
+    display: str = "minimal"     # how reminders render: full | minimal | quiet
+                                 # full = header+Source+Reason+budget; minimal = bare
+                                 # lines; quiet = feed the model, suppress the user block
     max_context_chars: int = 1800
     max_candidate_chars: int = 500
     max_output_tokens: int = 300
     cooldown_seconds: int = 1800
     max_check_cost: float = 0.01
     max_conversation_cost: float = 0.25
+    # Tool calls that are Kindex's own noise or pure inspection — attention never
+    # fires on these. Names support fnmatch globs (e.g. "mcp__kindex__*"). Edits,
+    # writes, web calls and everything else are real actions and DO fire, so that
+    # "when you do X, always Y" reminders can trigger on arbitrary work.
+    skip_tools: list[str] = Field(default_factory=lambda: [
+        "Read", "Grep", "Glob", "LS", "NotebookRead", "TodoWrite",
+        "mcp__kindex__*",
+    ])
+    # For Bash, attention skips ONLY commands that are purely read-only
+    # inspection. Anything else (curl, deploys, edits, arbitrary actions) fires —
+    # an allowlist would silently drop reminders for commands we didn't predict.
+    readonly_bash_commands: list[str] = Field(default_factory=lambda: [
+        "ls", "cat", "head", "tail", "less", "more", "bat", "tac",
+        "grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd",
+        "pwd", "echo", "printf", "which", "type", "whoami", "id",
+        "env", "printenv", "wc", "sort", "uniq", "cut", "column", "tr",
+        "awk", "stat", "file", "tree", "du", "df", "ps", "date", "cal",
+        "uname", "hostname", "cd", "true", "false", "test", "diff",
+        "jq", "yq", "xxd", "od", "basename", "dirname", "realpath",
+    ])
+    # `git` and `kin` are read-only only for these subcommands; any other
+    # subcommand (push, commit, index, export, …) is an action and fires.
+    readonly_git_subcommands: list[str] = Field(default_factory=lambda: [
+        "status", "log", "diff", "show", "branch", "rev-parse", "describe",
+        "blame", "ls-files", "shortlog", "reflog", "whatchanged", "remote",
+        "config", "stash", "tag",
+    ])
+    readonly_kin_subcommands: list[str] = Field(default_factory=lambda: [
+        "search", "show", "status", "list", "context", "ask", "graph-stats",
+        "changelog", "list-nodes", "prime", "policy",
+    ])
+    # Stigmergic injection pheromone (deposited when a node is injected,
+    # reinforced when the agent actually used the injection, decayed over time).
+    pheromone_enabled: bool = True       # accumulate trails (ranking use is gated by ranking.pheromone_weight)
+    pheromone_deposit: float = 1.0       # laid per injection
+    pheromone_reinforce: float = 3.0     # confirmed use of an injection (used ≈ 4× bare)
+    pheromone_correction: float = 4.0    # HEAVIEST: a user correction grounds the signal (real ground truth)
+    pheromone_counterfactual: float = 1.5  # would-have-helped / agent "I should have…" admission — a signal, not too heavy
+    pheromone_half_life_days: float = 14.0   # aggressive: ignored trails die in weeks
+    pheromone_min_deposits: int = 5      # conditioned trail must clear this before it overrides the global trail
+    # Auto-ramp: lift pheromone into ranking automatically once trails are warm,
+    # so users never flip a bit. Measured on GRADED, decayed signal (not bare
+    # deposits) so it ramps down when the work moves on. Writes a learned weight
+    # to meta; ranking.pheromone_weight (if >0) is a manual override that wins.
+    pheromone_autoramp_enabled: bool = True
+    pheromone_target_weight: float = 0.12    # mature target weight in the ensemble
+    pheromone_min_nodes: int = 8             # distinct warm graded nodes before any ramp
+    pheromone_min_signal: float = 12.0       # warm graded strength before any ramp
+    pheromone_full_signal: float = 60.0      # warm graded strength at which weight hits target
+    # Session-end reinforcement (LLM-grades-the-trace) budget + behavior.
+    reinforce_enabled: bool = True
+    reinforce_max_cost: float = 0.05     # cap per session-end grading call
+    reinforce_min_confidence: float = 0.55  # grader confidence floor to act on a finding
+    reinforce_counterfactual_top_k: int = 3  # graph matches considered per missed-opportunity query
+    reinforce_gap_as_question: bool = True   # log a knowledge-gap when a real need matches no node
+
+
+class SimConfig(BaseModel):
+    """Optional async Sim (Jeremy-simulacrum) supervisory check-in.
+
+    Sim periodically reviews a conversation WINDOW as a supervisor and, if its
+    feedback self-rates at/above `threshold`, the feedback is injected into the
+    conversation via the same channel as attention reminders. Opt-in and
+    disable-able; the human + threshold is the whole feedback loop (no training).
+
+    Runs OFF the agent's critical path: the prompt-tick only enqueues a window
+    snapshot (cheap, SQLite-only); the LLM/Sim spend happens in the daemon drain;
+    the next tick picks up any pending injection (cheap) and surfaces it if still
+    fresh. Mirrors reinforce.py's queue/drain pattern.
+    """
+    enabled: bool = False
+    tick_interval: int = 6          # enqueue a review roughly every ~6 ticks
+    threshold: float = 0.7          # self-rating at/above this injects (0.0-1.0)
+    window_chars: int = 12000       # conversation-window size handed to Sim
+    max_review_cost: float = 0.05   # cap per Sim review call
+    max_conversation_cost: float = 0.50  # cumulative Sim spend cap per conversation
+    max_output_tokens: int = 400
+    max_queue: int = 20             # pending reviews retained (dedup by conversation)
+    max_stale_ticks: int = 4        # drop a pending injection older than this many ticks
+    min_overlap: float = 0.18       # token-overlap floor between reviewed tail and current tail
+    deposit_pheromone: bool = True  # lay an injection trail like attention does
+    # Supervisor model. Empty = fall back to llm.model (the cheap attention judge,
+    # often too weak for a demanding lens). Set a stronger model for real review.
+    model: str = ""
+    # Self-drain: when no daemon is draining the queue, the prompt tick
+    # fire-and-forgets a detached `kin sim drain` so Sim works without cron.
+    drain_on_tick: bool = True
+    display: str = "minimal"        # how Sim feedback renders: full | minimal | quiet
+    # How to invoke Sim. Empty = use the configured LLM client with the
+    # supervisor prompt (portable, testable). Set to a shell command that reads
+    # the prompt on stdin and writes the response on stdout to wire in the real
+    # Jeremy-simulacrum, e.g. "~/.claude/skills/simulacrum/run.py".
+    command: str = ""
+    command_timeout: int = 60
 
 
 class RankingConfig(BaseModel):
@@ -68,16 +165,20 @@ class RankingConfig(BaseModel):
     graph_weight: float = 0.15    # Graph expansion signal weight
     node_weight: float = 0.10     # Stored node weight signal
     recency_weight: float = 0.05  # Recency decay signal weight
+    pheromone_weight: float = 0.0  # Injection-usefulness signal — opt-in: accumulate trails, then enable once warm
 
     @property
     def ensemble_weights(self) -> dict[str, float]:
-        return {
+        weights = {
             "fts": self.fts_weight,
             "vector": self.vector_weight,
             "graph": self.graph_weight,
             "node_weight": self.node_weight,
             "recency": self.recency_weight,
         }
+        if self.pheromone_weight > 0:
+            weights["pheromone"] = self.pheromone_weight
+        return weights
 
 
 class DefaultsConfig(BaseModel):
@@ -193,6 +294,7 @@ class Config(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     attention: AttentionConfig = Field(default_factory=AttentionConfig)
+    sim: SimConfig = Field(default_factory=SimConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)
