@@ -66,6 +66,82 @@ def _meta_list(store, key):
     return json.loads(raw) if raw else []
 
 
+# ── grounding: Sim reviews WITH the graph's context, not blind ──────────────
+
+def test_build_sim_grounding_surfaces_constraints_and_concepts(tmp_path):
+    from kindex.sim import build_sim_grounding
+    cfg = _config(tmp_path)  # grounding_chars defaults to 1500
+    store = Store(cfg)
+    store.add_node("Microservice database ownership", content="each service owns its own store",
+                   node_type="concept", node_id="msdb")
+    store.add_node("No foreign keys across service boundaries", node_type="constraint",
+                   node_id="fk", extra={"trigger": "schema-change", "action": "warn"})
+    g = build_sim_grounding(store, _WINDOW, cfg)
+    assert g  # non-empty
+    assert "[constraint:warn]" in g  # active constraint surfaced via operational_summary
+    store.close()
+
+
+def test_build_sim_grounding_disabled_returns_empty(tmp_path):
+    from kindex.sim import build_sim_grounding
+    cfg = _config(tmp_path, grounding_chars=0)
+    store = Store(cfg)
+    store.add_node("Some concept", content="x", node_type="concept",
+                   node_id="c", extra={"action": "warn"})
+    assert build_sim_grounding(store, _WINDOW, cfg) == ""
+    store.close()
+
+
+def test_build_sim_grounding_respects_char_budget(tmp_path):
+    from kindex.sim import build_sim_grounding
+    cfg = _config(tmp_path, grounding_chars=120)
+    store = Store(cfg)
+    for i in range(12):
+        store.add_node(f"Microservice database concept {i}",
+                       content="microservice database foreign keys " * 10,
+                       node_type="concept", node_id=f"c{i}")
+    g = build_sim_grounding(store, _WINDOW, cfg)
+    assert len(g) <= 120 + 200  # capped (allow a single trailing line's overshoot)
+    store.close()
+
+
+def test_supervisor_prompt_includes_grounding_only_when_present():
+    from kindex.sim import build_supervisor_prompt
+    with_g = build_supervisor_prompt("window text", 1000,
+                                     grounding="- [constraint:warn] No FKs across services")
+    assert "WHAT KINDEX ALREADY KNOWS" in with_g and "No FKs across services" in with_g
+    without_g = build_supervisor_prompt("window text", 1000)
+    assert "WHAT KINDEX ALREADY KNOWS" not in without_g
+
+
+def test_drain_feeds_grounded_prompt_to_sim(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    store.add_node("No foreign keys across service boundaries", node_type="constraint",
+                   node_id="fk", extra={"trigger": "schema-change", "action": "warn"})
+    enqueue_sim_review(store, cfg, "c1", _WINDOW, tick=6)
+
+    captured = {}
+
+    class _CapMessages:
+        def create(self, **kwargs):
+            captured["prompt"] = kwargs["messages"][0]["content"]
+            return SimpleNamespace(
+                content=[SimpleNamespace(text=json.dumps({"rating": 0.1, "note": "", "basis": ""}))],
+                usage=SimpleNamespace(input_tokens=300, output_tokens=10,
+                                      cache_creation_input_tokens=0, cache_read_input_tokens=0),
+            )
+
+    class _CapClient:
+        messages = _CapMessages()
+
+    drain_sim_queue(store, cfg, client=_CapClient())
+    assert "WHAT KINDEX ALREADY KNOWS" in captured.get("prompt", "")
+    assert "[constraint:warn]" in captured["prompt"]
+    store.close()
+
+
 def test_enqueue_gated_by_tick_interval(tmp_path):
     cfg = _config(tmp_path)
     store = Store(cfg)

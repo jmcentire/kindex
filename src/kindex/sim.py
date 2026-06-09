@@ -152,7 +152,61 @@ def _overlap(a: list[str], b: list[str]) -> float:
 
 # ── prompt ──────────────────────────────────────────────────────────────────
 
-def build_supervisor_prompt(window: str, max_chars: int, guidance: str = "") -> str:
+def build_sim_grounding(store: "Store", window: str, config: Config) -> str:
+    """Retrieve captured knowledge relevant to the window so Sim reviews WITH the
+    graph's context instead of blind: top related concepts/decisions plus active
+    constraints and watches. Char-capped by sim.grounding_chars (0 = disabled).
+    Fail-safe — returns '' when disabled, empty, or retrieval errors (never raises),
+    so it can run on the daemon drain without risk.
+    """
+    budget = getattr(config.sim, "grounding_chars", 0)
+    if budget <= 0 or not (window or "").strip():
+        return ""
+    parts: list[str] = []
+    used = 0
+    seen: set[str] = set()
+
+    def _add(line: str, key: str = "") -> bool:
+        nonlocal used
+        k = (key or line).strip().lower()
+        if not line or k in seen or used + len(line) + 1 > budget:
+            return False
+        seen.add(k)
+        parts.append(line)
+        used += len(line) + 1
+        return True
+
+    try:
+        from .retrieve import hybrid_search
+        for r in hybrid_search(store, (window or "")[-2000:], top_k=6):
+            ntype = r.get("type", "concept")
+            if ntype in ("constraint", "watch"):
+                continue  # surfaced with action/owner detail by operational_summary below
+            title = r.get("title") or r.get("id") or ""
+            content = (r.get("content") or "").strip().replace("\n", " ")[:140]
+            if not _add(f"- [{ntype}] {title}" + (f": {content}" if content else ""), key=title):
+                break
+    except Exception:
+        pass
+
+    try:
+        ops = store.operational_summary()
+    except Exception:
+        ops = {}
+    for c in (ops.get("constraints") or [])[:3]:
+        action = (c.get("extra") or {}).get("action", "warn")
+        title = c.get("title", "")
+        if not _add(f"- [constraint:{action}] {title}", key=title):
+            break
+    for w in (ops.get("watches") or [])[:3]:
+        title = w.get("title", "")
+        if not _add(f"- [watch] {title}", key=title):
+            break
+
+    return "\n".join(parts)
+
+
+def build_supervisor_prompt(window: str, max_chars: int, guidance: str = "", grounding: str = "") -> str:
     guidance_block = ""
     if guidance.strip():
         guidance_block = (
@@ -161,8 +215,17 @@ def build_supervisor_prompt(window: str, max_chars: int, guidance: str = "") -> 
             "do NOT lower the bar: still stay silent unless something would materially "
             f"change the direction of the work.\n  >>> {guidance.strip()}\n"
         )
+    grounding_block = ""
+    if grounding.strip():
+        grounding_block = (
+            "\nWHAT KINDEX ALREADY KNOWS about this work (captured concepts and decisions, "
+            "and especially active constraints/watches). Use it to catch a vital consideration "
+            "the session may be missing — a constraint being violated, a known watch, a prior "
+            "decision being contradicted — not to nitpick. Same bar: stay silent unless it "
+            f"would materially change the direction.\n{grounding.strip()}\n"
+        )
     return f"""You are glancing in as a supervisor on an IN-PROGRESS work session between an agent and a user. This is low-stakes: the work is unfinished and the people are competent. Your DEFAULT action is to say NOTHING — most windows deserve silence.
-{guidance_block}
+{guidance_block}{grounding_block}
 
 Speak ONLY if you notice something that would MATERIALLY CHANGE THE DIRECTION of the work:
   - a frame being locked in that shouldn't be,
@@ -212,6 +275,7 @@ def call_sim(
     *,
     client: Any | None = None,
     guidance: str = "",
+    grounding: str = "",
 ) -> tuple[_SimResult | None, dict]:
     """Run one supervisory review. Returns (result, accounting).
 
@@ -222,7 +286,7 @@ def call_sim(
     """
     sc = config.sim
     model = sc.model or config.llm.model
-    prompt = build_supervisor_prompt(window, sc.window_chars, guidance=guidance)
+    prompt = build_supervisor_prompt(window, sc.window_chars, guidance=guidance, grounding=grounding)
 
     if not ledger.can_spend():
         return None, {"status": "over_global_budget"}
@@ -391,8 +455,9 @@ def drain_sim_queue(
         window = job.get("window") or ""
         if not conv or not window.strip():
             continue  # nothing to grade — drop, don't wedge the queue
+        grounding = build_sim_grounding(store, window, config)
         result, acct = call_sim(config, ledger, window, conv, client=client,
-                                guidance=guidance)
+                                guidance=guidance, grounding=grounding)
         if acct.get("status") in (
             "over_global_budget", "llm_unavailable",
             "estimate_exceeds_review_budget", "estimate_exceeds_conversation_budget",

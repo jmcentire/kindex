@@ -136,6 +136,9 @@ class SimConfig(BaseModel):
     tick_interval: int = 6          # enqueue a review roughly every ~6 ticks
     threshold: float = 0.7          # self-rating at/above this injects (0.0-1.0)
     window_chars: int = 12000       # conversation-window size handed to Sim
+    grounding_chars: int = 1500     # budget for injected kindex knowledge (concepts +
+                                    # constraints/watches) so Sim reviews grounded, not
+                                    # blind; 0 disables grounding
     max_review_cost: float = 0.05   # cap per Sim review call
     max_conversation_cost: float = 0.50  # cumulative Sim spend cap per conversation
     max_output_tokens: int = 400
