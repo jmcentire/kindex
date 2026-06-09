@@ -445,7 +445,10 @@ class TestIngestCLI:
             cmd = [sys.executable, "-m", "kindex.cli", *args]
             if data_dir:
                 cmd.extend(["--data-dir", data_dir])
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # `ingest commits` loads the local embedding model and indexes every
+            # commit node, which can take well over 30s on a cold/loaded machine
+            # (and on CI). Give the subprocess generous headroom to avoid flakes.
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 
         run("init", data_dir=d)
         r = run("ingest", "commits", data_dir=d)
