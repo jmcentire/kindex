@@ -275,21 +275,25 @@ def prime_context(
     except Exception:
         pass  # Don't break priming if tasks module has issues
 
-    # -- Session directives (always included) --
-    lines.append("### Session directives")
-    lines.append("You MUST use kindex MCP tools proactively — this is the user's external memory.")
-    lines.append("**Capture as you go** — don't batch, don't wait until the end:")
-    lines.append("- `search` FIRST to see what's known, and before every `add` to avoid duplicates")
-    lines.append("- `add` discoveries, decisions (--type decision), questions (--type question)")
-    lines.append("- `watch_add` for things needing monitoring (flaky tests, unstable APIs, pending items)")
-    lines.append("- `watch_resolve` when a watched issue is fixed or no longer relevant")
-    lines.append("- `link` aggressively — the graph's value is in connections, not isolated nodes")
-    lines.append("- `learn` after reading long files/outputs to bulk-extract knowledge")
-    lines.append("- `task_add` for work items — ALWAYS use link_to to connect to related concepts")
-    lines.append("- `task_done` to complete tasks, `task_list` to see what's open")
-    lines.append("- `remind_create` for time-based triggers (with `action` or `instructions`)")
-    lines.append("- `tag_start`/`tag_update` to track session focus and progress")
-    lines.append("")
+    # -- Session directives (gated by reminders.remind_kindex_usage) --
+    if config is None or config.reminders.remind_kindex_usage:
+        lines.append("### Session directives")
+        lines.append("You MUST use kindex MCP tools proactively — this is the user's external memory.")
+        lines.append("**Capture as you go** — don't batch, don't wait until the end:")
+        lines.append("- `search` FIRST to see what's known, and before every `add` to avoid duplicates")
+        lines.append("- `add` discoveries, decisions (--type decision), questions (--type question)")
+        lines.append("- `watch_add` for things needing monitoring (flaky tests, unstable APIs, pending items)")
+        lines.append("- `watch_resolve` when a watched issue is fixed or no longer relevant")
+        lines.append("- `link` aggressively — the graph's value is in connections, not isolated nodes")
+        lines.append("- `learn` after reading long files/outputs to bulk-extract knowledge")
+        lines.append("- `task_add` for work items — ALWAYS use link_to to connect to related concepts")
+        lines.append("- `task_done` to complete tasks, `task_list` to see what's open")
+        lines.append("- `remind_create` for time-based triggers (with `action` or `instructions`)")
+        lines.append("- `tag_start`/`tag_update` to track session focus and progress")
+        lines.append("**Project graph (`.kin/`)** — keep it with the code:")
+        lines.append("- Look for a `.kin/` directory in the tree of the files you touch — not just your cwd root — and honor its config/index.")
+        lines.append("- When you `git add`/commit, stage the matching `.kin/` changes (config, index.json) alongside the code so the graph travels with the work.")
+        lines.append("")
 
     return "\n".join(lines) + "\n"
 
@@ -489,6 +493,10 @@ def generate_session_directive(store: Store) -> str:
         "- Use `learn` for bulk extraction from long text/files",
         "- Use `tag_start`/`tag_update` to track session context",
         "- Use `remind_create` with `action`/`instructions` for deferred tasks",
+        "",
+        "### Project graph (`.kin/`)",
+        "- Honor `.kin/` for the files you touch — look up the directory tree, not just the repo root.",
+        "- Stage and commit `.kin/` changes (config, index.json) together with the related code.",
         "",
     ]
 

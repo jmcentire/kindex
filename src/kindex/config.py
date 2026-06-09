@@ -243,6 +243,11 @@ _DEFAULT_TIERS = [
 
 class ReminderConfig(BaseModel):
     enabled: bool = True
+    # Inject the "use kindex" session directive at prime time (SessionStart hook).
+    # On by default so kindex owns this reminder itself (rather than relying on an
+    # external session-start injector). Set false per-project in .kin/config
+    # [reminders] to suppress the nudge for repos that don't want it.
+    remind_kindex_usage: bool = True
     check_interval: int = 300
     default_channels: list[str] = Field(default_factory=lambda: ["system"])
     snooze_duration: int = 900

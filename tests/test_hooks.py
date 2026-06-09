@@ -222,3 +222,45 @@ class TestGenerateSessionDirective:
         output = generate_session_directive(store)
 
         assert "suggest" in output.lower()
+
+
+class TestRemindKindexUsage:
+    def test_directive_injected_by_default(self, store):
+        """With no config (or default config), the use-kindex directive is injected."""
+        from kindex.hooks import prime_context
+
+        output = prime_context(store, topic="anything")
+        assert "Session directives" in output
+        assert "use kindex MCP tools" in output
+
+    def test_directive_includes_kin_discovery_and_commit_guidance(self, store):
+        from kindex.hooks import prime_context
+
+        output = prime_context(store, topic="anything")
+        # Discover .kin for touched files (not just cwd root) and commit it with the code
+        assert ".kin/" in output
+        assert "cwd root" in output
+        assert "git add" in output
+
+    def test_directive_can_be_disabled_via_config(self, store, config):
+        from kindex.hooks import prime_context
+
+        config.reminders.remind_kindex_usage = False
+        output = prime_context(store, topic="anything", config=config)
+        assert "Session directives" not in output
+        assert "You MUST use kindex MCP tools" not in output
+
+    def test_directive_enabled_via_config(self, store, config):
+        from kindex.hooks import prime_context
+
+        config.reminders.remind_kindex_usage = True
+        output = prime_context(store, topic="anything", config=config)
+        assert "Session directives" in output
+        assert ".kin/" in output
+
+    def test_generate_session_directive_includes_kin_guidance(self, store):
+        from kindex.hooks import generate_session_directive
+
+        output = generate_session_directive(store)
+        assert ".kin/" in output
+        assert "repo root" in output
