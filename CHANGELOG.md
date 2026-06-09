@@ -2,6 +2,18 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.22.0] - 2026-06-08
+
+### Added
+- **Codex SessionStart parity** — `kin setup-codex-hooks` now installs a SessionStart hook so Codex sessions begin with the same auto-primed context and "use kindex" directive as Claude Code. `kin prime` gained `--adapter {plain,claude,codex}`; `--adapter codex` emits the `hookSpecificOutput.additionalContext` envelope Codex ingests.
+- **`reminders.remind_kindex_usage`** (default `true`) — toggle the injected "use kindex" session directive; set `false` per-project in `.kin/config [reminders]` to suppress the nudge.
+- **Project-graph (`.kin/`) guidance** in the session directive — agents are told to discover the `.kin/` directory for the files they touch (not just the cwd root) and to stage/commit `.kin/` changes alongside the related code.
+- **Stigmergic pheromone ranking and session-end reinforcement** — injection trails (deposit / reinforce / decay) feed an auto-ramping ranking signal, and an opt-in session-end grader reinforces the injections the agent actually used (`attention.pheromone_*`, `attention.reinforce_*`).
+- **Sim supervisory check-in** (opt-in) — an async supervisor that periodically reviews the conversation window and surfaces guidance through the attention channel (`kin sim`, `[sim]` config).
+
+### Fixed
+- Test suite is now hermetic: provider API keys no longer leak from the ambient environment into tests, fixing a flaky extraction-dedup test and preventing accidental live-API calls (and spend) during `pytest`.
+
 ## [0.21.3] - 2026-05-30
 
 ### Changed

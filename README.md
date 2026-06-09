@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.21.3](https://img.shields.io/badge/version-0.21.3-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.22.0](https://img.shields.io/badge/version-0.22.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1084%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1122%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -83,6 +83,8 @@ kin setup-codex-hooks
 kin setup-agents-md --install --global
 kin ingest codex-sessions   # optional: backfill saved Codex sessions
 ```
+
+`setup-codex-hooks` installs a **SessionStart** hook (alongside the prompt/tool attention hooks), so Codex begins each session with the same auto-primed context and "use kindex" / `.kin` directive as Claude Code.
 
 Or hand-edit `~/.codex/config.toml`:
 ```toml
