@@ -6,19 +6,24 @@ import pytest
 
 from kindex.config import Config
 from kindex.vault import Vault
+from kindex.vectors import PROVIDER_DEFAULTS as _EMBED_PROVIDER_DEFAULTS
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_DATA = FIXTURES / "sample-vault"
 
 # Provider API keys that, if inherited from the developer's real environment,
-# would make extraction/summarization hit live APIs — turning deterministic
-# keyword-fallback tests into non-deterministic ones (and spending money).
-_PROVIDER_KEY_ENVS = (
-    "ANTHROPIC_API_KEY",
+# would make extraction/summarization OR EMBEDDING hit live APIs — turning
+# deterministic tests non-deterministic (and spending money). The embedding-
+# provider keys are derived from vectors.PROVIDER_DEFAULTS so a new or default
+# provider (e.g. Voyage, the default embedder, whose VOYAGE_API_KEY was
+# previously missed) is covered automatically instead of silently drifting out.
+_PROVIDER_KEY_ENVS = tuple(sorted({
+    "ANTHROPIC_API_KEY",  # LLM: extraction / summarization / attention / sim
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
-)
+    *(d["api_key_env"] for d in _EMBED_PROVIDER_DEFAULTS.values() if d.get("api_key_env")),
+}))
 
 
 @pytest.fixture(autouse=True)
