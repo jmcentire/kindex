@@ -2,6 +2,14 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.23.0] - 2026-06-09
+
+### Added
+- **Grounded Sim** — the supervisory check-in now reviews WITH relevant graph context instead of blind. `build_sim_grounding` injects top related concepts/decisions (hybrid search) plus active constraints/watches into the supervisor prompt, deduped and char-capped by `sim.grounding_chars` (default `1500`; `0` disables). Sim can now flag a constraint being violated, a known watch, or a decision being contradicted that the conversation window alone wouldn't reveal. (Outcome of a Sim-vs-multi-lens review experiment: grounding the single persona beat building a panel.)
+
+### Fixed
+- Hermetic test fixture now covers the default embedding provider (Voyage): provider keys are derived from `vectors.PROVIDER_DEFAULTS`, so `VOYAGE_API_KEY` (and future providers) can't leak in from the environment and trigger live embedding calls during tests.
+
 ## [0.22.0] - 2026-06-08
 
 ### Added
