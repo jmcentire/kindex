@@ -1413,9 +1413,20 @@ def cmd_prime(args):
         except Exception:
             pass
         body = notice + block
-        # Quiet mode: feed the context to the model but ask the client not to
-        # render the SessionStart block. Needs the JSON adapter for suppressOutput.
-        if str(getattr(cfg.attention, "display", "full")).lower() == "quiet":
+        adapter = str(getattr(args, "adapter", "claude") or "claude").lower()
+        quiet = str(getattr(cfg.attention, "display", "full")).lower() == "quiet"
+        if adapter == "codex":
+            # Codex SessionStart ingests context from the additionalContext JSON
+            # envelope (Claude-style hook parity), so always render the envelope;
+            # suppressOutput in quiet mode (feed the model, hide the block).
+            rendered = _hook_context_output(
+                body, adapter="codex", event="SessionStart", suppress=quiet,
+            )
+            if rendered:
+                print(rendered, end="")
+        elif quiet:
+            # Quiet mode: feed the context to the model but ask the client not to
+            # render the SessionStart block. Needs the JSON adapter for suppressOutput.
             rendered = _hook_context_output(
                 body, adapter="claude", event="SessionStart", suppress=True,
             )
@@ -4804,6 +4815,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--codebook", action="store_true",
                    help="Regenerate the LLM prompt cache codebook")
     s.add_argument("--conversation-id", help="Conversation/session id for scoped reminders")
+    s.add_argument("--adapter", default="claude", choices=["plain", "claude", "codex"],
+                   help="Hook output adapter: codex emits the additionalContext JSON envelope")
     _common(s)
     s.set_defaults(func=cmd_prime)
 

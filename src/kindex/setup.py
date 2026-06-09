@@ -245,8 +245,40 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         data = {}
     hooks = data.setdefault("hooks", {})
-    prompt_submit = hooks.setdefault("UserPromptSubmit", [])
     kin_path = _find_kin_path()
+
+    # SessionStart hook — inject the Kindex prime block (auto-primed context +
+    # the "use kindex"/.kin directive) so Codex sessions start with the same
+    # context as Claude. Codex SessionStart supports additionalContext injection
+    # (fires on startup/resume/clear); prime --adapter codex emits that envelope.
+    session_start = hooks.setdefault("SessionStart", [])
+    session_entry = {
+        "matcher": "*",
+        "hooks": [{
+            "type": "command",
+            "command": _kin_hook_command(kin_path, ["prime", "--for", "hook", "--adapter", "codex"]),
+            "timeout": 5000,
+            "statusMessage": "Loading Kindex context",
+        }]
+    }
+    existing_idx = next(
+        (i for i, h in enumerate(session_start)
+         if "kin prime" in str(h) or "kindex" in str(h).lower()),
+        None,
+    )
+    if existing_idx is None:
+        session_start.append(session_entry)
+        actions.append("Added Codex SessionStart hook: kin prime --for hook")
+    elif (
+        _hook_needs_profile(session_start[existing_idx])
+        or "--adapter" not in str(session_start[existing_idx])
+    ):
+        session_start[existing_idx] = session_entry
+        actions.append("Updated Codex SessionStart hook")
+    else:
+        actions.append("Codex SessionStart hook already installed")
+
+    prompt_submit = hooks.setdefault("UserPromptSubmit", [])
     entry = {
         "hooks": [{
             "type": "command",
@@ -313,16 +345,25 @@ def uninstall_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     hooks = data.get("hooks", {})
     prompt_submit = hooks.get("UserPromptSubmit", [])
     post_tool = hooks.get("PostToolUse", [])
+    session_start = hooks.get("SessionStart", [])
     kept = [
         h for h in prompt_submit
         if "prompt-check" not in str(h) and "attention-hook" not in str(h)
     ]
     kept_post = [h for h in post_tool if "attention-hook" not in str(h)]
-    if len(kept) == len(prompt_submit) and len(kept_post) == len(post_tool):
-        return ["No Kindex Codex UserPromptSubmit hook found"]
+    kept_session = [
+        h for h in session_start
+        if "kin prime" not in str(h) and "kindex" not in str(h).lower()
+    ]
+    if (
+        len(kept) == len(prompt_submit)
+        and len(kept_post) == len(post_tool)
+        and len(kept_session) == len(session_start)
+    ):
+        return ["No Kindex Codex hooks found"]
 
     if dry_run:
-        return [f"Would remove Codex UserPromptSubmit hook from {hooks_path}"]
+        return [f"Would remove Codex Kindex hooks from {hooks_path}"]
 
     if kept:
         hooks["UserPromptSubmit"] = kept
@@ -332,12 +373,16 @@ def uninstall_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         hooks["PostToolUse"] = kept_post
     else:
         hooks.pop("PostToolUse", None)
+    if kept_session:
+        hooks["SessionStart"] = kept_session
+    else:
+        hooks.pop("SessionStart", None)
     if hooks:
         data["hooks"] = hooks
     else:
         data.pop("hooks", None)
     hooks_path.write_text(json.dumps(data, indent=2) + "\n")
-    return [f"Removed Codex UserPromptSubmit hook from {hooks_path}"]
+    return [f"Removed Codex Kindex hooks from {hooks_path}"]
 
 
 def install_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
