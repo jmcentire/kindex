@@ -476,11 +476,15 @@ def _expire_nodes(store: "Store", verbose: bool = False) -> dict:
             continue
         if not node_expired(n):
             continue
-        extra = dict(n.get("extra") or {})
-        extra["expired_at"] = now_iso
-        store.update_node(n["id"], status="archived", extra=extra)
+        # atomic_archive_expired re-checks node_expired on the fresh extra
+        # inside BEGIN IMMEDIATE: an expiry extended (kin edit --expires)
+        # between the nodes_with_expiry snapshot and this write is honored
+        # — the node stays active and the new expires survives.
+        if not store.atomic_archive_expired(n["id"], now_iso):
+            continue
         results["archived"] += 1
         if verbose:
+            extra = n.get("extra") or {}
             print(f"  Expired node: {n.get('title', n['id'])} "
                   f"(was due {extra.get('expires')})")
 

@@ -127,40 +127,41 @@ def update_tag(
     append_remaining: list[str] | None = None,
     remove_remaining: list[str] | None = None,
 ) -> None:
-    """Update the current state of a session tag."""
+    """Update the current state of a session tag.
+
+    The shared tag node is mutated by every agent in a project, so the
+    extra changes go through Store.atomic_extra_update (fresh read inside
+    BEGIN IMMEDIATE — no lost updates from stale snapshots).
+    """
     tag = get_tag(store, name)
     if not tag:
         raise ValueError(f"Tag not found: {name}")
 
-    extra = dict(tag.get("extra") or {})
+    def _mutate(extra: dict) -> None:
+        if focus is not None:
+            extra["current_focus"] = focus
+            # Also update the current open segment's focus
+            segments = extra.get("segments", [])
+            if segments:
+                current = [s for s in segments if not s.get("ended_at")]
+                if current:
+                    current[-1]["focus"] = focus
 
-    if focus is not None:
-        extra["current_focus"] = focus
-        # Also update the current open segment's focus
-        segments = extra.get("segments", [])
-        if segments:
-            current = [s for s in segments if not s.get("ended_at")]
-            if current:
-                current[-1]["focus"] = focus
+        if remaining is not None:
+            extra["remaining"] = remaining
 
-    if remaining is not None:
-        extra["remaining"] = remaining
+        if append_remaining:
+            extra["remaining"] = extra.get("remaining", []) + append_remaining
 
-    if append_remaining:
-        current_remaining = extra.get("remaining", [])
-        extra["remaining"] = current_remaining + append_remaining
+        if remove_remaining:
+            extra["remaining"] = [
+                r for r in extra.get("remaining", [])
+                if r not in remove_remaining
+            ]
 
-    if remove_remaining:
-        current_remaining = extra.get("remaining", [])
-        extra["remaining"] = [
-            r for r in current_remaining if r not in remove_remaining
-        ]
-
-    updates: dict = {"extra": extra}
+    store.atomic_extra_update(tag["id"], _mutate)
     if description is not None:
-        updates["content"] = description
-
-    store.update_node(tag["id"], **updates)
+        store.update_node(tag["id"], content=description)
 
 
 def add_segment(
@@ -171,63 +172,71 @@ def add_segment(
     summary: str = "",
     decisions: list[str] | None = None,
 ) -> None:
-    """Close the current segment and start a new one."""
+    """Close the current segment and start a new one.
+
+    Runs inside Store.atomic_extra_update: a node linked (or a focus set)
+    by another agent between this caller's read and write must survive.
+    """
     tag = get_tag(store, name)
     if not tag:
         raise ValueError(f"Tag not found: {name}")
 
-    extra = dict(tag.get("extra") or {})
-    segments = extra.get("segments", [])
     now = _now()
 
-    # Close the current open segment
-    for seg in segments:
-        if not seg.get("ended_at"):
-            seg["ended_at"] = now
-            if summary:
-                seg["summary"] = summary
-            if decisions:
-                seg["decisions"] = seg.get("decisions", []) + decisions
+    def _mutate(extra: dict) -> None:
+        segments = extra.setdefault("segments", [])
 
-    # Start new segment
-    segments.append(
-        {
-            "focus": new_focus,
-            "started_at": now,
-            "ended_at": None,
-            "summary": "",
-            "decisions": [],
-            "artifacts": [],
-        }
-    )
+        # Close the current open segment
+        for seg in segments:
+            if not seg.get("ended_at"):
+                seg["ended_at"] = now
+                if summary:
+                    seg["summary"] = summary
+                if decisions:
+                    seg["decisions"] = seg.get("decisions", []) + decisions
 
-    extra["segments"] = segments
-    extra["current_focus"] = new_focus
-    store.update_node(tag["id"], extra=extra)
+        # Start new segment
+        segments.append(
+            {
+                "focus": new_focus,
+                "started_at": now,
+                "ended_at": None,
+                "summary": "",
+                "decisions": [],
+                "artifacts": [],
+            }
+        )
+
+        extra["current_focus"] = new_focus
+
+    store.atomic_extra_update(tag["id"], _mutate)
 
 
 def link_node_to_tag(store: Store, tag_name: str, node_id: str) -> None:
-    """Associate a knowledge node with a session tag."""
+    """Associate a knowledge node with a session tag.
+
+    Hooks auto-link every captured node to the project's active tag, so
+    multiple agents race on this node: the mutation runs inside
+    Store.atomic_extra_update to avoid losing concurrent links/segments.
+    """
     tag = get_tag(store, tag_name)
     if not tag:
         return
 
-    extra = dict(tag.get("extra") or {})
-    linked = extra.get("linked_nodes", [])
-    if node_id not in linked:
+    def _mutate(extra: dict) -> None:
+        linked = extra.setdefault("linked_nodes", [])
+        if node_id in linked:
+            return
         linked.append(node_id)
-        extra["linked_nodes"] = linked
 
         # Also update current segment's artifacts
-        segments = extra.get("segments", [])
-        for seg in segments:
+        for seg in extra.get("segments", []):
             if not seg.get("ended_at"):
-                artifacts = seg.get("artifacts", [])
+                artifacts = seg.setdefault("artifacts", [])
                 if node_id not in artifacts:
                     artifacts.append(node_id)
-                    seg["artifacts"] = artifacts
 
-        store.update_node(tag["id"], extra=extra)
+    store.atomic_extra_update(tag["id"], _mutate)
 
     # Create a context_of edge from the node to the session tag
     try:
@@ -242,17 +251,17 @@ def pause_tag(store: Store, name: str, *, summary: str = "") -> None:
     if not tag:
         raise ValueError(f"Tag not found: {name}")
 
-    extra = dict(tag.get("extra") or {})
-    extra["session_status"] = "paused"
-    extra["paused_at"] = _now()
+    def _mutate(extra: dict) -> None:
+        extra["session_status"] = "paused"
+        extra["paused_at"] = _now()
 
-    if summary:
-        # Update current segment summary
-        for seg in extra.get("segments", []):
-            if not seg.get("ended_at"):
-                seg["summary"] = summary
+        if summary:
+            # Update current segment summary
+            for seg in extra.get("segments", []):
+                if not seg.get("ended_at"):
+                    seg["summary"] = summary
 
-    store.update_node(tag["id"], extra=extra)
+    store.atomic_extra_update(tag["id"], _mutate)
 
 
 def complete_tag(store: Store, name: str, *, summary: str = "") -> None:
@@ -261,19 +270,20 @@ def complete_tag(store: Store, name: str, *, summary: str = "") -> None:
     if not tag:
         raise ValueError(f"Tag not found: {name}")
 
-    extra = dict(tag.get("extra") or {})
     now = _now()
-    extra["session_status"] = "completed"
-    extra["completed_at"] = now
 
-    # Close any open segments
-    for seg in extra.get("segments", []):
-        if not seg.get("ended_at"):
-            seg["ended_at"] = now
-            if summary:
-                seg["summary"] = summary
+    def _mutate(extra: dict) -> None:
+        extra["session_status"] = "completed"
+        extra["completed_at"] = now
 
-    store.update_node(tag["id"], extra=extra)
+        # Close any open segments
+        for seg in extra.get("segments", []):
+            if not seg.get("ended_at"):
+                seg["ended_at"] = now
+                if summary:
+                    seg["summary"] = summary
+
+    store.atomic_extra_update(tag["id"], _mutate)
 
 
 def format_resume_context(

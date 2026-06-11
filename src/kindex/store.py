@@ -865,20 +865,32 @@ class Store:
                 updates["domains"] = new_domains
                 diffs["tags"] = {"old": _trunc(old_domains), "new": _trunc(new_domains)}
 
+        exp_diff: dict[str, Any] = {}
         if expires is not None:
-            extra = dict(node.get("extra") or {})
-            old_expires = extra.get("expires")
-            if expires != old_expires:
-                # Merge into a copy of the existing extra so reserved keys
-                # (RESERVED_EXTRA_KEYS) pass through untouched.
-                extra["expires"] = expires
-                updates["extra"] = extra
-                diffs["expires"] = {"old": old_expires, "new": expires}
+            # The expires merge must not write the extra column from the
+            # pre-check snapshot: a lock (or any extra key) committed by a
+            # concurrent agent between get_node above and the write would be
+            # silently erased. Route it through atomic_extra_update and
+            # re-check the lock against the fresh in-transaction state —
+            # LockHeldError raised here propagates and rolls back.
+            def _set_expires(fresh: dict) -> None:
+                self._check_lock({"id": node_id, "extra": fresh}, actor, force)
+                old_expires = fresh.get("expires")
+                if expires != old_expires:
+                    fresh["expires"] = expires
+                    exp_diff["old"] = old_expires
+                    exp_diff["new"] = expires
+
+            self.atomic_extra_update(node_id, _set_expires)
+            if exp_diff:
+                diffs["expires"] = {"old": exp_diff["old"],
+                                    "new": exp_diff["new"]}
 
         if updates:
             # _log_activity=False: edit_node writes its own (richer) entry
             # below — without it every edit appears twice in the changelog.
             self.update_node(node_id, _log_activity=False, **updates)
+        if updates or exp_diff:
             self._log("edit_node", node_id, updates.get("title", old_title),
                       actor or "", {"diffs": diffs, "type": node_type})
             if "title" in updates or "content" in updates:
@@ -971,6 +983,11 @@ class Store:
                 raise EditPolicyError(
                     f"Node {node_id} is archived — pass force to modify it"
                 )
+            # Re-check the lock against the fresh in-transaction extra: a
+            # lock acquired between the pre-flight snapshot and BEGIN
+            # IMMEDIATE must still block the supersede (LockHeldError
+            # propagates to the rollback handler below).
+            self._check_lock({"id": node_id, "extra": cur_extra}, actor, force)
             old_extra = dict(cur_extra)
             old_extra["superseded_by"] = new_id
             conn.execute(
@@ -1067,6 +1084,44 @@ class Store:
             conn.rollback()
             raise
         return final
+
+    def atomic_archive_expired(self, node_id: str, expired_at: str) -> bool:
+        """Archive a node iff its fresh extra['expires'] is still past.
+
+        BEGIN IMMEDIATE re-reads the row, so an expiry extended (or removed)
+        after the caller's snapshot wins: the node is left untouched and
+        False is returned. Only active nodes are archived; the
+        extra['expired_at'] stamp and the status flip land in the same
+        UPDATE. Returns True when the node was archived.
+        """
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT status, extra FROM nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            fresh_extra: dict | None = None
+            if row is not None and (row["status"] or "active") == "active":
+                try:
+                    parsed = json.loads(row["extra"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    parsed = {}
+                if isinstance(parsed, dict) and node_expired({"extra": parsed}):
+                    fresh_extra = parsed
+            if fresh_extra is None:
+                conn.rollback()
+                return False
+            fresh_extra["expired_at"] = expired_at
+            conn.execute(
+                "UPDATE nodes SET status = 'archived', extra = ?, "
+                "updated_at = ? WHERE id = ?",
+                (_jdumps(fresh_extra), _now(), node_id),
+            )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return True
 
     # ── Edge operations ────────────────────────────────────────────────
 
@@ -1576,14 +1631,21 @@ class Store:
     # ── Directive mutable state ─────────────────────────────────────────
 
     def update_directive_state(self, node_id: str, state: dict) -> None:
-        """Update the current_state of a directive/operational node."""
+        """Update the current_state of a directive/operational node.
+
+        Routed through atomic_extra_update so a concurrent extra writer
+        (a lock, an expires edit, another set-state) is never clobbered
+        by a stale-snapshot write.
+        """
         node = self.get_node(node_id)
         if not node:
             return
-        extra = node.get("extra") or {}
-        extra["current_state"] = state
-        extra["state_updated_at"] = _now()
-        self.update_node(node_id, extra=extra)
+
+        def _mutate(extra: dict) -> None:
+            extra["current_state"] = state
+            extra["state_updated_at"] = _now()
+
+        self.atomic_extra_update(node_id, _mutate)
         self._log("update_state", node_id, node.get("title", ""),
                   details={"state": state})
 

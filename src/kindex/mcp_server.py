@@ -1708,10 +1708,14 @@ def watch_resolve(id: str, reason: str = "") -> str:
     if not node or node.get("type") != "watch":
         return f"Watch not found: {id}"
 
-    extra = node.get("extra") or {}
-    extra["resolved_reason"] = reason
-    extra["watch_status"] = "resolved"
-    store.update_node(id, status="archived", extra=extra, weight=0.01)
+    def _mutate(extra: dict) -> None:
+        extra["resolved_reason"] = reason
+        extra["watch_status"] = "resolved"
+
+    # Atomic extra mutation first, then the status/weight flip without
+    # passing extra — a concurrent extra writer is never clobbered.
+    store.atomic_extra_update(id, _mutate)
+    store.update_node(id, status="archived", weight=0.01)
     return f"Resolved watch: {node['title']} ({id})"
 
 
