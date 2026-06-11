@@ -264,3 +264,304 @@ class TestRemindKindexUsage:
         output = generate_session_directive(store)
         assert ".kin/" in output
         assert "repo root" in output
+
+
+# ── Active collabs (Stage 5: collab injection) ──────────────────────
+
+
+AGENT = "alice@test"
+
+
+@pytest.fixture
+def collab_config(tmp_path, monkeypatch):
+    """Config with a pinned agent identity (env override stripped)."""
+    monkeypatch.delenv("KIN_AGENT_ID", raising=False)
+    return Config(data_dir=str(tmp_path), agent_id=AGENT)
+
+
+def _make_collab(store, name="ship-it", agent=AGENT):
+    """Create a conversation with `agent` as a member; returns the conv id."""
+    from kindex import coordination as coord
+    return coord.create_conversation(store, name, created_by=agent)
+
+
+class TestPrimeCollabs:
+    def test_collab_section_present_for_member(self, store, collab_config):
+        from kindex import coordination as coord
+        from kindex.hooks import prime_context
+        from kindex.locks import lock_node
+
+        _make_collab(store)
+        coord.post_message(store, "ship-it", "bob@test", "broadcast hello")
+        coord.set_inject_message(store, "ship-it", "Use the staging DB only",
+                                 "bob@test")
+        store.add_node("Deploy Plan", node_type="document", node_id="plan-1")
+        coord.attach_resource(store, "ship-it", "plan-1")
+        lock_node(store, "plan-1", "bob@test")
+
+        output = prime_context(store, topic="anything", config=collab_config)
+
+        assert "### Active collabs" in output
+        assert "**ship-it**" in output
+        assert "1 unread" in output
+        assert "COLLAB MSG: Use the staging DB only (from bob@test)" in output
+        assert "Locked: Deploy Plan (held by bob@test)" in output
+        assert "Check the collab: coord_read ship-it" in output
+
+    def test_check_line_unconditional_even_when_quiet_collab(self, store, collab_config):
+        """A member collab with no unread/injects still gets the check line."""
+        from kindex.hooks import prime_context
+
+        _make_collab(store, name="idle-room")
+        output = prime_context(store, topic="anything", config=collab_config)
+        assert "### Active collabs" in output
+        assert "Check the collab: coord_read idle-room" in output
+
+    def test_collab_section_absent_for_non_member(self, store, collab_config):
+        from kindex.hooks import prime_context
+
+        _make_collab(store, agent="someone-else@host")
+        output = prime_context(store, topic="anything", config=collab_config)
+        assert "### Active collabs" not in output
+
+    def test_collab_section_absent_when_disabled(self, store, collab_config):
+        from kindex.hooks import prime_context
+
+        _make_collab(store)
+        collab_config.collab.enabled = False
+        output = prime_context(store, topic="anything", config=collab_config)
+        assert "### Active collabs" not in output
+
+    def test_collab_section_suppressed_when_quiet(self, store, collab_config):
+        from kindex.hooks import prime_context
+
+        _make_collab(store)
+        collab_config.collab.display = "quiet"
+        output = prime_context(store, topic="anything", config=collab_config)
+        assert "### Active collabs" not in output
+
+    def test_collab_minimal_one_line_per_collab(self, store, collab_config):
+        from kindex import coordination as coord
+        from kindex.hooks import prime_context
+
+        _make_collab(store)
+        coord.post_message(store, "ship-it", "bob@test", "hi there")
+        coord.set_inject_message(store, "ship-it", "standing order", "bob@test")
+        collab_config.collab.display = "minimal"
+
+        output = prime_context(store, topic="anything", config=collab_config)
+
+        assert "### Active collabs" in output
+        line = next(l for l in output.splitlines() if l.startswith("- ship-it:"))
+        assert "1 unread" in line
+        assert "coord_read ship-it" in line
+        # Minimal mode compresses everything onto the one line
+        assert "COLLAB MSG" not in output
+        assert "Check the collab:" not in output
+
+    def test_collab_cap_three_plus_more(self, store, collab_config):
+        from kindex.hooks import prime_context
+
+        for i in range(5):
+            _make_collab(store, name=f"room-{i}")
+        output = prime_context(store, topic="anything", config=collab_config)
+
+        shown = [l for l in output.splitlines() if l.startswith("- **room-")]
+        assert len(shown) == 3
+        assert "- +2 more" in output
+
+    def test_collab_inject_truncated_to_200_chars(self, store, collab_config):
+        from kindex import coordination as coord
+        from kindex.hooks import prime_context
+
+        _make_collab(store)
+        long_text = "x" * 500
+        coord.set_inject_message(store, "ship-it", long_text, "bob@test")
+        output = prime_context(store, topic="anything", config=collab_config)
+
+        assert "x" * 200 in output
+        assert "x" * 201 not in output
+
+
+class TestPromptCheckCollabLines:
+    """In-process tests of the _collab_prompt_lines helper."""
+
+    def _seed(self, store):
+        from kindex import coordination as coord
+        _make_collab(store)
+        coord.post_message(store, "ship-it", "bob@test", "broadcast note")
+        coord.post_message(store, "ship-it", "bob@test", "for alice only",
+                           to=AGENT)
+        coord.post_message(store, "ship-it", "bob@test", "for carol only",
+                           to="carol@test")
+        coord.set_inject_message(store, "ship-it", "standing instruction",
+                                 "bob@test")
+
+    def test_lines_carry_new_messages_and_injects(self, store, collab_config):
+        from kindex.cli import _collab_prompt_lines
+
+        self._seed(store)
+        lines = _collab_prompt_lines(store, collab_config, "conv-1")
+        joined = "\n".join(lines)
+
+        assert "COLLAB UPDATES" in joined
+        assert "broadcast note" in joined
+        assert "for alice only" in joined
+        assert "(to you)" in joined
+        assert "for carol only" not in joined  # targeted at someone else
+        assert "COLLAB MSG: standing instruction (from bob@test)" in joined
+        assert "Check the collab: coord_read ship-it" in joined
+
+    def test_cooldown_suppresses_then_expires(self, store, collab_config):
+        from kindex.cli import _collab_prompt_lines
+
+        self._seed(store)
+        assert _collab_prompt_lines(store, collab_config, "conv-1")
+        # Within the cooldown window: suppressed for the same conversation
+        assert _collab_prompt_lines(store, collab_config, "conv-1") == []
+        # ...but an unrelated conversation has its own cooldown key
+        assert _collab_prompt_lines(store, collab_config, "conv-2")
+
+        # Age the stamp past the window: lines flow again
+        cooldown = collab_config.collab.prompt_cooldown_minutes
+        old = (datetime.datetime.now()
+               - datetime.timedelta(minutes=cooldown + 1)
+               ).isoformat(timespec="seconds")
+        store.set_meta("collab.prompt_last_injected.conv-1", old)
+        assert _collab_prompt_lines(store, collab_config, "conv-1")
+
+    def test_zero_cooldown_never_suppresses(self, store, collab_config):
+        from kindex.cli import _collab_prompt_lines
+
+        self._seed(store)
+        collab_config.collab.prompt_cooldown_minutes = 0
+        assert _collab_prompt_lines(store, collab_config, "conv-1")
+        assert _collab_prompt_lines(store, collab_config, "conv-1")
+
+    def test_respects_collab_enabled(self, store, collab_config):
+        from kindex.cli import _collab_prompt_lines
+
+        self._seed(store)
+        collab_config.collab.enabled = False
+        assert _collab_prompt_lines(store, collab_config, "conv-1") == []
+
+    def test_silent_when_not_member(self, store, collab_config):
+        from kindex.cli import _collab_prompt_lines
+
+        _make_collab(store, agent="someone-else@host")
+        assert _collab_prompt_lines(store, collab_config, "conv-1") == []
+
+    def test_silent_when_nothing_new(self, store, collab_config):
+        from kindex import coordination as coord
+        from kindex.cli import _collab_prompt_lines
+
+        self._seed(store)
+        # Reading the room advances the cursor and clears unread...
+        coord.read_messages(store, "ship-it", agent=AGENT)
+        coord.clear_inject_messages(store, "ship-it")
+        # ...so with no unread and no injects there is nothing to say
+        assert _collab_prompt_lines(store, collab_config, "conv-1") == []
+
+    def test_bodies_truncated_to_200_chars(self, store, collab_config):
+        from kindex import coordination as coord
+        from kindex.cli import _collab_prompt_lines
+
+        _make_collab(store)
+        coord.post_message(store, "ship-it", "bob@test", "y" * 500)
+        lines = _collab_prompt_lines(store, collab_config, "conv-1")
+        joined = "\n".join(lines)
+        assert "y" * 200 in joined
+        assert "y" * 201 not in joined
+
+    def test_cursor_not_advanced_by_prompt_check(self, store, collab_config):
+        from kindex import coordination as coord
+        from kindex.cli import _collab_prompt_lines
+
+        self._seed(store)
+        collab_config.collab.prompt_cooldown_minutes = 0
+        assert _collab_prompt_lines(store, collab_config, "conv-1")
+        # The unread messages are still unread (only coord_read marks them)
+        collabs = coord.active_collabs_for_agent(store, AGENT)
+        assert collabs[0]["unread_count"] > 0
+
+
+class TestPromptCheckCollabCLI:
+    """Subprocess tests: collab lines through the real hook entry points."""
+
+    def _env(self, tmp_path):
+        env = dict(os.environ)
+        env.pop("KIN_PROFILE", None)
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        env["HOME"] = str(home)
+        env["KIN_PROJECT"] = str(tmp_path)
+        env["KIN_AGENT_ID"] = AGENT
+        return env
+
+    def _run(self, tmp_path, *args, input_text=None):
+        import subprocess
+        cmd = [sys.executable, "-m", "kindex.cli", *args,
+               "--data-dir", str(tmp_path)]
+        return subprocess.run(cmd, input=input_text, capture_output=True,
+                              text=True, timeout=60, env=self._env(tmp_path),
+                              cwd=str(tmp_path))
+
+    def _seed(self, tmp_path):
+        from kindex import coordination as coord
+        cfg = Config(data_dir=str(tmp_path))
+        s = Store(cfg)
+        _make_collab(s)
+        coord.post_message(s, "ship-it", "bob@test", "broadcast note")
+        coord.set_inject_message(s, "ship-it", "standing instruction",
+                                 "bob@test")
+        s.close()
+
+    def test_prompt_check_emits_collab_lines(self, tmp_path):
+        import json
+        self._seed(tmp_path)
+        r = self._run(tmp_path, "prompt-check",
+                      input_text=json.dumps({"session_id": "chat-1",
+                                             "prompt": "status"}))
+        assert r.returncode == 0, r.stderr
+        assert "COLLAB UPDATES" in r.stdout
+        assert "broadcast note" in r.stdout
+        assert "COLLAB MSG: standing instruction" in r.stdout
+        assert "coord_read ship-it" in r.stdout
+
+    def test_prompt_check_codex_envelope_carries_collab_block(self, tmp_path):
+        import json
+        self._seed(tmp_path)
+        r = self._run(tmp_path, "prompt-check", "--adapter", "codex",
+                      input_text=json.dumps({"session_id": "chat-1",
+                                             "prompt": "status"}))
+        assert r.returncode == 0, r.stderr
+        payload = json.loads(r.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        assert "COLLAB UPDATES" in ctx
+        assert "broadcast note" in ctx
+        assert "coord_read ship-it" in ctx
+
+    def test_prompt_check_collab_disabled_is_silent(self, tmp_path):
+        import json
+        self._seed(tmp_path)
+        cfg_path = tmp_path / "kin.test.yaml"
+        cfg_path.write_text("collab:\n  enabled: false\n")
+        r = self._run(tmp_path, "prompt-check", "--config", str(cfg_path),
+                      input_text=json.dumps({"session_id": "chat-1",
+                                             "prompt": "status"}))
+        assert r.returncode == 0, r.stderr
+        assert "COLLAB" not in r.stdout
+        assert r.stdout.strip() == ""
+
+    def test_prime_codex_envelope_carries_collab_section(self, tmp_path):
+        import json
+        self._seed(tmp_path)
+        r = self._run(tmp_path, "prime", "--for", "hook",
+                      "--adapter", "codex", input_text="{}")
+        assert r.returncode == 0, r.stderr
+        payload = json.loads(r.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        assert "### Active collabs" in ctx
+        assert "Check the collab: coord_read ship-it" in ctx

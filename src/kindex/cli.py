@@ -3679,6 +3679,90 @@ def _hook_context_output(context: str, *, adapter: str, event: str,
     return _dumps(payload)
 
 
+def _collab_unread_messages(store, collab: dict, agent: str) -> list[dict]:
+    """New messages in a collab for an agent: id > their read cursor,
+    targeted to them or broadcast. Does NOT advance the cursor (only an
+    explicit coord_read marks messages as read)."""
+    node = store.get_node(collab.get("node_id", ""))
+    if not node:
+        return []
+    extra = node.get("extra") or {}
+    cursor = 0
+    for member in extra.get("members") or []:
+        if isinstance(member, dict) and member.get("agent") == agent:
+            cursor = int(member.get("last_read_id", 0) or 0)
+            break
+    out = []
+    for m in extra.get("messages") or []:
+        if not isinstance(m, dict) or int(m.get("id", 0)) <= cursor:
+            continue
+        to = (m.get("to") or "").strip()
+        if to and to != agent:
+            continue
+        out.append(m)
+    return out
+
+
+def _collab_prompt_lines(store, cfg, conversation_id: str) -> list[str]:
+    """Collab updates for the UserPromptSubmit hook.
+
+    New targeted/broadcast messages since the agent's read cursor plus standing
+    inject messages, rate-limited per conversation via the store meta key
+    'collab.prompt_last_injected.<conversation_id>' and
+    config.collab.prompt_cooldown_minutes. Bodies are truncated to ~200 chars;
+    read cursors are NOT advanced (only coord_read does that).
+    """
+    from .config import resolve_agent_id
+    from .coordination import active_collabs_for_agent
+
+    if not cfg.collab.enabled:
+        return []
+
+    agent = resolve_agent_id(cfg)
+    collabs = [
+        c for c in active_collabs_for_agent(store, agent)
+        if c.get("unread_count") or c.get("inject_messages")
+    ]
+    if not collabs:
+        return []
+
+    # Cooldown: at most one collab block per conversation per window.
+    key = f"collab.prompt_last_injected.{conversation_id or ''}"
+    cooldown_min = max(0, int(cfg.collab.prompt_cooldown_minutes or 0))
+    now = datetime.datetime.now()
+    last = store.get_meta(key)
+    if last and cooldown_min:
+        try:
+            elapsed = (now - datetime.datetime.fromisoformat(last)).total_seconds()
+            if elapsed < cooldown_min * 60:
+                return []
+        except ValueError:
+            pass
+
+    lines = ["COLLAB UPDATES"]
+    for c in collabs[:3]:
+        name = c.get("name", "")
+        unread = int(c.get("unread_count", 0) or 0)
+        if unread:
+            lines.append(f"  [{name}] {unread} new message(s):")
+            for m in _collab_unread_messages(store, c, agent)[-3:]:
+                body = " ".join(str(m.get("body", "")).split())[:200]
+                author = m.get("author", "")
+                target = " (to you)" if (m.get("to") or "").strip() == agent else ""
+                lines.append(f"    - {author}{target}: {body}")
+        for m in (c.get("inject_messages") or [])[:3]:
+            text = " ".join(str(m.get("text", "")).split())[:200]
+            set_by = (m.get("set_by") or "").strip()
+            who = f" (from {set_by})" if set_by else ""
+            lines.append(f"  [{name}] COLLAB MSG: {text}{who}")
+        lines.append(f"  Check the collab: coord_read {name}")
+    if len(collabs) > 3:
+        lines.append(f"  +{len(collabs) - 3} more collabs")
+
+    store.set_meta(key, now.isoformat(timespec="seconds"))
+    return lines
+
+
 def cmd_prompt_check(args):
     """UserPromptSubmit hook: inject due reminders into conversation context.
 
@@ -3783,6 +3867,14 @@ def cmd_prompt_check(args):
     except Exception:
         pass
 
+    # Collab updates: new targeted/broadcast messages since the agent's read
+    # cursor + standing inject messages, with a per-conversation cooldown.
+    collab_lines: list[str] = []
+    try:
+        collab_lines = _collab_prompt_lines(store, cfg, conversation_id)
+    except Exception:
+        collab_lines = []
+
     due = []
     if cfg.reminders.enabled:
         try:
@@ -3819,7 +3911,8 @@ def cmd_prompt_check(args):
     except Exception:
         pass
 
-    if not due and not attention_lines and not task_lines and not sim_lines:
+    if (not due and not attention_lines and not task_lines and not sim_lines
+            and not collab_lines):
         store.close()
         return
 
@@ -3862,6 +3955,11 @@ def cmd_prompt_check(args):
         if due or attention_lines:
             lines.append("")
         lines.extend(sim_lines)
+
+    if collab_lines:
+        if due or attention_lines or sim_lines:
+            lines.append("")
+        lines.extend(collab_lines)
 
     if task_lines:
         lines.append("")
