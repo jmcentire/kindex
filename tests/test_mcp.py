@@ -565,3 +565,139 @@ class TestMCPChangelogDiffs:
         assert "Stigmergy" in out
         assert "content:" in out
         assert "-> Changed content here" in out
+
+
+# ── Server instructions cover the new tools and doctrine (idx 21) ─────
+
+
+class TestMCPInstructions:
+    def test_instructions_name_every_new_tool(self):
+        import kindex.mcp_server as mcp_mod
+        text = mcp_mod.mcp.instructions or ""
+        for name in ("edit", "supersede", "coord_join", "coord_attach",
+                     "coord_inject", "lock_acquire", "lock_release"):
+            assert name in text, f"instructions omit `{name}`"
+
+    def test_instructions_teach_edit_dont_readd(self):
+        import kindex.mcp_server as mcp_mod
+        text = mcp_mod.mcp.instructions or ""
+        assert "edit, don't re-add" in text
+        # search line steers toward edit/supersede when a node exists
+        assert "prefer `edit`/`supersede` over `add`" in text
+        # lock semantics: edit refuses foreign locks, TTL expiry never blocks
+        assert "refuses foreign" in text
+        assert "never blocks" in text
+
+
+# ── graph_merge policy/lock/extra/pheromone (idx 27) ──────────────────
+
+
+class TestMCPGraphMergePolicy:
+    def test_refuses_managed_types_and_preserves_collab_state(
+            self, patch_store, agent_env):
+        """Repro: merging two coordination nodes wiped members/messages."""
+        from kindex.coordination import create_conversation, get_conversation
+        from kindex.mcp_server import graph_merge
+
+        store, _ = patch_store
+        a = create_conversation(store, "sprint-14-planning", created_by="agent-a")
+        b = create_conversation(store, "sprint-15-planning", created_by="agent-b")
+
+        result = graph_merge(a, b)
+        assert result.startswith("Error")
+        assert "managed" in result
+        for name in ("sprint-14-planning", "sprint-15-planning"):
+            conv = get_conversation(store, name)
+            assert conv is not None
+            assert conv["extra"]["coord_status"] == "active"
+            assert "members" in conv["extra"]
+
+    def test_refuses_additive_without_force(self, patch_store, agent_env):
+        from kindex.mcp_server import graph_merge
+        store, _ = patch_store
+        a = store.add_node("Rule alpha one", node_type="decision", content="A")
+        b = store.add_node("Rule alpha two", node_type="decision", content="B")
+
+        result = graph_merge(a, b)
+        assert result.startswith("Error")
+        assert "supersede" in result
+        assert store.get_node(a)["status"] == "active"
+
+        forced = graph_merge(a, b, force=True)
+        assert "Merged" in forced
+        assert store.get_node(a)["status"] == "archived"
+
+    def test_refuses_foreign_lock_without_force(self, patch_store, agent_env):
+        from kindex.locks import lock_node
+        from kindex.mcp_server import graph_merge
+
+        store, _ = patch_store
+        a = store.add_node("Lockmerge source", node_type="concept", content="S")
+        b = store.add_node("Lockmerge target", node_type="concept", content="T")
+        lock_node(store, a, "alice@elsewhere", ttl_minutes=60)
+
+        result = graph_merge(a, b)
+        assert result.startswith("Error")
+        assert "alice@elsewhere" in result
+        assert store.get_node(a)["status"] == "active"
+        assert store.get_node(a)["extra"]["lock"]["agent"] == "alice@elsewhere"
+
+        forced = graph_merge(a, b, force=True)
+        assert "Merged" in forced
+
+    def test_merge_preserves_source_extra_and_migrates_pheromone(
+            self, patch_store, agent_env):
+        from kindex.mcp_server import graph_merge
+
+        store, _ = patch_store
+        a = store.add_node("Phero source xx", node_type="concept", content="S",
+                           extra={"custom_key": "keepme"})
+        b = store.add_node("Phero target xx", node_type="concept", content="T")
+        store.deposit_pheromone(a, amount=2.0)
+
+        result = graph_merge(a, b)
+        assert "Merged" in result
+
+        extra = store.get_node(a)["extra"]
+        assert extra["custom_key"] == "keepme"  # not wholesale-replaced
+        assert extra["merged_into"] == b
+
+        rows = store.conn.execute(
+            "SELECT node_id FROM injection_pheromone WHERE node_id IN (?, ?)",
+            (a, b)).fetchall()
+        assert [r["node_id"] for r in rows] == [b]  # trail followed the merge
+
+
+# ── supersede lock error names a remedy that exists (idx 19) ──────────
+
+
+class TestMCPSupersedeLockMessage:
+    def test_locked_supersede_does_not_advertise_force(self, patch_store, agent_env):
+        from kindex.locks import lock_node
+        from kindex.mcp_server import supersede
+
+        store, _ = patch_store
+        nid = store.add_node("Locked decision xyz", node_type="decision",
+                             content="original")
+        lock_node(store, nid, "other@host", ttl_minutes=60)
+
+        result = supersede(nid, "replacement text")
+        assert result.startswith("Error")
+        assert "other@host" in result
+        assert "pass force to override" not in result  # surface has no force
+        assert "release the lock first" in result
+        assert "lock_release" in result
+
+    def test_locked_edit_still_advertises_force(self, patch_store, agent_env):
+        """edit DOES expose force on both surfaces — its hint is unchanged."""
+        from kindex.locks import lock_node
+        from kindex.mcp_server import edit
+
+        store, _ = patch_store
+        nid = store.add_node("Locked concept xyz", node_type="concept",
+                             content="original")
+        lock_node(store, nid, "other@host", ttl_minutes=60)
+
+        result = edit(nid, content="new content")
+        assert result.startswith("Error")
+        assert "pass force to override" in result

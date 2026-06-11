@@ -209,3 +209,122 @@ class TestNodeExpiredSemantics:
         assert not node_expired({"extra": {"expires": FUTURE}})
         assert not node_expired({"extra": {}})
         assert not node_expired({})
+
+
+# ── retrieval surfaces filter expired nodes (idx 20) ──────────────────
+# Repro: edit(node, expires=<yesterday>) — pre-fix, MCP search/context/ask,
+# the prime prompt, and CLI search/context kept surfacing the node until the
+# daemon's cron pass archived it (days away, or never without cron).
+
+
+class TestHybridSearchExpiry:
+    def test_hybrid_search_filters_expired_by_default(self, store):
+        from kindex.retrieve import hybrid_search
+
+        store.add_node("Falcon live fact", content="conference wifi is falcon42")
+        store.add_node("Falcon stale fact", content="conference wifi was falcon41",
+                       extra={"expires": PAST})
+
+        titles = {r["title"] for r in hybrid_search(store, "falcon conference wifi")}
+        assert "Falcon live fact" in titles
+        assert "Falcon stale fact" not in titles
+
+    def test_include_expired_opts_in(self, store):
+        from kindex.retrieve import hybrid_search
+
+        store.add_node("Falcon stale fact", content="conference wifi was falcon41",
+                       extra={"expires": PAST})
+
+        titles = {r["title"] for r in hybrid_search(
+            store, "falcon conference wifi", include_expired=True)}
+        assert "Falcon stale fact" in titles
+
+    def test_expiring_today_still_lives(self, store):
+        from kindex.retrieve import hybrid_search
+
+        store.add_node("Falcon today fact", content="wifi falcon42 today",
+                       extra={"expires": TODAY})
+        titles = {r["title"] for r in hybrid_search(store, "falcon wifi")}
+        assert "Falcon today fact" in titles
+
+
+class TestMCPSurfacesExpiry:
+    @pytest.fixture
+    def mcp_patched(self, store, monkeypatch):
+        pytest.importorskip("mcp", reason="mcp not installed")
+        import kindex.mcp_server as mcp_mod
+        monkeypatch.setattr(mcp_mod, "_store", store)
+        monkeypatch.setattr(mcp_mod, "_config", store.config)
+        store.add_node("Quantum live concept", content="quantum entanglement basics")
+        store.add_node("Quantum stale concept", content="quantum decoherence notes",
+                       extra={"expires": PAST})
+        return store
+
+    def test_mcp_search_filters_expired(self, mcp_patched):
+        from kindex.mcp_server import search
+        out = search("quantum")
+        assert "Quantum live concept" in out
+        assert "Quantum stale concept" not in out
+
+    def test_mcp_context_filters_expired(self, mcp_patched):
+        from kindex.mcp_server import context
+        out = context(topic="quantum")
+        assert "Quantum stale concept" not in out
+
+    def test_mcp_context_recent_fallback_filters_expired(self, mcp_patched):
+        from kindex.mcp_server import context
+        out = context()  # no topic -> recent_nodes fallback
+        assert "Quantum stale concept" not in out
+
+    def test_mcp_ask_filters_expired(self, mcp_patched):
+        from kindex.mcp_server import ask
+        out = ask("what is quantum decoherence?")
+        assert "Quantum stale concept" not in out
+
+    def test_mcp_prime_prompt_filters_expired(self, mcp_patched):
+        from kindex.mcp_server import prime
+        assert "Quantum stale concept" not in prime(topic="quantum")
+        assert "Quantum stale concept" not in prime()  # recent fallback
+
+    def test_mcp_show_still_displays_expired(self, mcp_patched):
+        """Direct lookup stays an opt-in window into expired knowledge."""
+        from kindex.mcp_server import show
+        out = show("Quantum stale concept")
+        assert "Quantum stale concept" in out
+
+
+class TestCLISurfacesExpiry:
+    def test_kin_search_and_context_filter_expired(self, tmp_path):
+        import os
+        import subprocess
+        import sys
+
+        home = tmp_path / "home"
+        (home / ".config" / "kindex").mkdir(parents=True)
+        data = tmp_path / "data"
+        data.mkdir()
+        s = Store(Config(data_dir=str(data)))
+        s.add_node("Quantum live concept", content="quantum entanglement basics")
+        s.add_node("Quantum stale concept", content="quantum decoherence notes",
+                   extra={"expires": PAST})
+        s.close()
+
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env.pop("KIN_PROFILE", None)
+
+        def run(args):
+            return subprocess.run(
+                [sys.executable, "-m", "kindex.cli", *args,
+                 "--data-dir", str(data)],
+                capture_output=True, text=True, timeout=60, env=env,
+                cwd=str(home))
+
+        r = run(["search", "quantum"])
+        assert r.returncode == 0, r.stderr
+        assert "Quantum live concept" in r.stdout
+        assert "Quantum stale concept" not in r.stdout
+
+        r = run(["context", "--topic", "quantum"])
+        assert r.returncode == 0, r.stderr
+        assert "Quantum stale concept" not in r.stdout

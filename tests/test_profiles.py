@@ -678,3 +678,44 @@ class TestWriteKinIndexAudience:
         # Repo scoping wins: only the repo's code nodes, no global head
         assert data["repo"] == slug
         assert [n["id"] for n in data["nodes"]] == [mod_id]
+
+
+# ── profile create honors --config as the write target (idx 23) ───────
+
+
+class TestProfileCreateExplicitConfig:
+    def test_create_writes_to_explicit_config_not_global(self, cli_home, tmp_path):
+        """Repro: pre-fix, `profile create ... --config <file>` silently
+        ignored the flag and mutated the user's real global kin.yaml."""
+        home, project = cli_home
+        gpath = home / ".config" / "kindex" / "kin.yaml"
+        gpath.write_text(yaml.dump({"custom_unknown_key": "keepme"}))
+        target = tmp_path / "sandbox" / "test-kin.yaml"
+        env = _cli_env(home, project)
+
+        r = _run_cli(["profile", "create", "scratch",
+                      "--data-dir", str(tmp_path / "scratch-data"),
+                      "--config", str(target),
+                      "--default"], env, project)
+        assert r.returncode == 0, r.stderr
+        assert str(target) in r.stdout
+
+        # The explicit target received the profile (parents auto-created)...
+        data = yaml.safe_load(target.read_text())
+        assert data["profiles"]["scratch"]["data_dir"] == str(tmp_path / "scratch-data")
+        assert data["default_profile"] == "scratch"
+
+        # ...and the real global config was not touched.
+        gdata = yaml.safe_load(gpath.read_text())
+        assert gdata == {"custom_unknown_key": "keepme"}
+
+    def test_create_without_config_still_writes_global(self, cli_home, tmp_path):
+        home, project = cli_home
+        gpath = home / ".config" / "kindex" / "kin.yaml"
+        env = _cli_env(home, project)
+
+        r = _run_cli(["profile", "create", "work",
+                      "--data-dir", str(tmp_path / "wd")], env, project)
+        assert r.returncode == 0, r.stderr
+        data = yaml.safe_load(gpath.read_text())
+        assert "work" in data["profiles"]

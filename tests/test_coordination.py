@@ -375,3 +375,84 @@ def test_active_collabs_skips_expired_conversation(store):
 
     create_conversation(store, "Stale", ttl_minutes=-1, created_by="agent-a")
     assert active_collabs_for_agent(store, "agent-a") == []
+
+
+# ── Member reads paginate from the cursor — nothing skipped (idx 2) ──
+
+
+def test_member_read_with_backlog_over_limit_skips_nothing(store):
+    """Repro: 60 unread, limit 50. Pre-fix the newest-window slice returned
+    #11-#60 and jumped the cursor to 60, silently marking #1-#10 read."""
+    from kindex.coordination import (
+        active_collabs_for_agent,
+        create_conversation,
+        get_conversation,
+        join_conversation,
+        post_message,
+        read_messages,
+    )
+
+    create_conversation(store, "Crew", created_by="agent-a")
+    join_conversation(store, "crew", "agent-b")
+    for i in range(60):
+        post_message(store, "crew", "agent-a", f"msg {i + 1}")
+
+    first = read_messages(store, "crew", agent="agent-b", limit=50)
+    ids = [m["id"] for m in first["messages"]]
+    assert ids == list(range(1, 51))  # oldest-first, contiguous from cursor
+    assert first["total"] == 60
+    assert first["remaining"] == 10
+    assert first["remaining_kind"] == "newer"
+
+    members = get_conversation(store, "crew")["extra"]["members"]
+    cursor = {m["agent"]: m["last_read_id"] for m in members}
+    assert cursor["agent-b"] == 50  # only past what was delivered
+
+    # The undelivered suffix still counts as unread.
+    collab = active_collabs_for_agent(store, "agent-b")[0]
+    assert collab["unread_count"] == 10
+
+    # Second read naturally paginates to the rest; third read is empty.
+    second = read_messages(store, "crew", agent="agent-b", limit=50)
+    assert [m["id"] for m in second["messages"]] == list(range(51, 61))
+    assert second["remaining"] == 0
+    third = read_messages(store, "crew", agent="agent-b", limit=50)
+    assert third["messages"] == []
+    assert active_collabs_for_agent(store, "agent-b")[0]["unread_count"] == 0
+
+
+def test_agentless_read_keeps_newest_window(store):
+    from kindex.coordination import create_conversation, post_message, read_messages
+
+    create_conversation(store, "Crew")
+    for i in range(60):
+        post_message(store, "crew", "agent-a", f"msg {i + 1}")
+
+    payload = read_messages(store, "crew", limit=50)
+    assert [m["id"] for m in payload["messages"]] == list(range(11, 61))
+    assert payload["total"] == 60
+    assert payload["remaining"] == 10
+    assert payload["remaining_kind"] == "older"
+
+
+def test_format_messages_notes_truncation(store):
+    from kindex.coordination import (
+        create_conversation,
+        format_messages,
+        join_conversation,
+        post_message,
+        read_messages,
+    )
+
+    create_conversation(store, "Crew", created_by="agent-a")
+    join_conversation(store, "crew", "agent-b")
+    for i in range(5):
+        post_message(store, "crew", "agent-a", f"msg {i + 1}")
+
+    out = format_messages(read_messages(store, "crew", agent="agent-b", limit=3))
+    assert "showing 3 of 5" in out
+    assert "newer" in out
+
+    # No truncation -> no note.
+    out2 = format_messages(read_messages(store, "crew", agent="agent-b", limit=10))
+    assert "not shown" not in out2

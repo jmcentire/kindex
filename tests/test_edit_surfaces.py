@@ -266,3 +266,31 @@ class TestChangelogDiffCLI:
         diffs = edited[0]["details"]["diffs"]
         assert diffs["title"]["old"] == "Widget pattern"
         assert diffs["title"]["new"] == "Widget pattern v2"
+
+
+# ── locked supersede: the error names a remedy the surface has (idx 19) ──
+
+
+class TestSupersedeLockedCLI:
+    def test_locked_supersede_error_does_not_advertise_force(self, cli_graph):
+        """Repro: pre-fix the LockHeldError said 'pass force to override',
+        but `kin supersede` has no --force (argparse exit 2) — a dead end."""
+        home, data, ids = cli_graph
+        store = _reopen(data)
+        from kindex.locks import lock_node
+        lock_node(store, ids["decision"], "other@host", ttl_minutes=60)
+        store.close()
+
+        r = _run_cli(["supersede", ids["decision"], "replacement"], data, home)
+        assert r.returncode == 1
+        assert "locked" in r.stderr
+        assert "other@host" in r.stderr
+        assert "pass force to override" not in r.stderr
+        assert "release the lock first" in r.stderr
+        assert "kin unlock" in r.stderr
+
+        # The advertised dead end stays dead: --force is not a valid flag.
+        r2 = _run_cli(["supersede", ids["decision"], "replacement", "--force"],
+                      data, home)
+        assert r2.returncode == 2
+        assert "--force" in r2.stderr

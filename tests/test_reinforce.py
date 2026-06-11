@@ -247,3 +247,35 @@ def test_drain_reads_bounded_transcript_tail(tmp_path, monkeypatch):
     assert "TAILMARKER" in captured["prompt"]      # tail read
     assert "HEADMARKER" not in captured["prompt"]  # head dropped
     store.close()
+
+
+def test_reinforce_after_supersede_lands_on_successor(tmp_path, monkeypatch):
+    """Repro (idx 31): grading is deferred to the cron drain — when the
+    injected node was superseded in the meantime, the reinforcement deposit
+    must follow extra['superseded_by'] instead of re-creating a trail under
+    the dead id (which would boost the stale node above its replacement)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    nid = store.add_node("Use SQLite for storage", node_type="concept",
+                         content="sqlite is enough")
+    _save_state(store, "conv-1", {
+        "conversation_id": "conv-1", "ticks": 1,
+        "injected": {f"node:{nid}": "2026-06-11T00:00:00"},
+        "pheromone_deposits": {f"node:{nid}": {"at": "x", "context": ""}},
+    })
+    # Between injection and the deferred grading, the node is superseded.
+    succ = store.supersede_node(nid, "Use Postgres for storage")["id"]
+
+    client = _Client({"observed": [
+        {"id": nid, "category": "used", "confidence": 0.9,
+         "evidence": "agent relied on the storage guidance"}
+    ], "missed": []})
+    res = reinforce_session(store, cfg, "conv-1", "trace…", client=client)
+    assert res["status"] == "ok"
+
+    assert _phero(store, nid) is None  # nothing strands on the dead id
+    row = _phero(store, succ)
+    assert row is not None
+    assert row["reinforcements"] == 1
+    store.close()

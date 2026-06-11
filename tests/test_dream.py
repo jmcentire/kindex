@@ -471,3 +471,77 @@ class TestDomainEdges:
 
         created = strengthen_domain_edges(store)
         assert created == 0
+
+
+# ── Protected types: managed/additive state survives dream (idx 25) ──
+
+
+class TestDreamProtectsManagedState:
+    def test_protected_types_derive_from_edit_policy(self):
+        """PROTECTED_TYPES is the schema EDIT_POLICY additive+managed union."""
+        from kindex.dream import PROTECTED_TYPES
+        from kindex.schema import EDIT_POLICY
+
+        expected = frozenset(EDIT_POLICY["additive"]) | frozenset(
+            EDIT_POLICY["managed"])
+        assert PROTECTED_TYPES == expected
+        # The managed class — the original gap — is explicitly covered.
+        assert {"coordination", "task", "session"} <= PROTECTED_TYPES
+
+    def test_near_identical_coordination_slugs_survive_dream(self, config, store):
+        """Repro: 'sprint-14-planning' vs 'sprint-15-planning' share identical
+        content, so pre-fix dream_lightweight auto-merged one mid-collab,
+        destroying members/cursors/messages and breaking get_conversation."""
+        from kindex.coordination import (
+            create_conversation,
+            get_conversation,
+            join_conversation,
+            post_message,
+        )
+        from kindex.dream import dream_lightweight
+
+        create_conversation(store, "sprint-14-planning", created_by="agent-a")
+        create_conversation(store, "sprint-15-planning", created_by="agent-b")
+        join_conversation(store, "sprint-14-planning", "agent-b")
+        post_message(store, "sprint-14-planning", "agent-a", "claimed parser")
+
+        results = dream_lightweight(config, store)
+        assert results["merged"] == 0
+
+        for name in ("sprint-14-planning", "sprint-15-planning"):
+            conv = get_conversation(store, name)
+            assert conv is not None, f"{name} no longer resolvable"
+            assert conv["status"] == "active"
+            assert conv["extra"]["coord_status"] == "active"
+        extra = get_conversation(store, "sprint-14-planning")["extra"]
+        assert [m["agent"] for m in extra["members"]] == ["agent-a", "agent-b"]
+        assert len(extra["messages"]) == 1
+
+    def test_merge_nodes_refuses_protected_types(self, store):
+        """Defense in depth: merge_nodes itself refuses protected types."""
+        from kindex.dream import merge_nodes
+
+        a = store.add_node("Task one alpha", node_type="task",
+                           extra={"task_status": "open"})
+        b = store.add_node("Task one alpha2", node_type="task",
+                           extra={"task_status": "open"})
+        c = store.add_node("Plain concept", node_type="concept")
+
+        assert merge_nodes(store, a, b) is False
+        assert merge_nodes(store, c, a) is False  # protected target too
+        assert store.get_node(a)["status"] == "active"
+        assert store.get_node(a)["extra"]["task_status"] == "open"
+
+    def test_merge_preserves_source_extra(self, store):
+        """Archiving a merged source annotates extra instead of replacing it."""
+        from kindex.dream import merge_nodes
+
+        a = store.add_node("Source w extra", content="S",
+                           extra={"custom_key": "keepme"})
+        b = store.add_node("Target node x", content="T")
+
+        assert merge_nodes(store, a, b) is True
+        extra = store.get_node(a)["extra"]
+        assert extra["custom_key"] == "keepme"
+        assert extra["merged_into"] == b
+        assert extra["merged_by"] == "dream-cycle"
