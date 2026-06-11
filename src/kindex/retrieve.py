@@ -250,6 +250,8 @@ def hybrid_search(
     expand_graph: bool = True,
     graph_hops: int = 1,
     ranking: str = "ensemble",
+    *,
+    include_expired: bool = False,
 ) -> list[dict]:
     """Hybrid search combining FTS5 + graph expansion + vector search.
 
@@ -260,6 +262,10 @@ def hybrid_search(
 
     Args:
         ranking: 'ensemble' (weighted, with confidence) or 'rrf' (legacy).
+        include_expired: When False (default), nodes whose extra['expires']
+            is in the past are filtered out — expired knowledge stops
+            surfacing in search/context/ask everywhere, matching the primed
+            session context. Daemon/maintenance callers may opt in.
 
     Returns list of node dicts with 'confidence' and 'rrf_score' keys.
     """
@@ -341,15 +347,36 @@ def hybrid_search(
             ranked_lists.append(vec_ranked)
         merged = _rrf_merge(*ranked_lists, k=cfg_rrf_k) if len(ranked_lists) > 1 else fts_ranked
 
-    # Fetch full nodes for top results
+    # Fetch full nodes for top results. Superseded nodes never surface —
+    # follow extra['superseded_by'] to the live replacement when it isn't
+    # already a candidate of its own, otherwise drop the stale entry.
+    from .store import node_expired
+
+    top = merged[:top_k]
+    top_ids = {nid for nid, _ in top}
     results = []
-    for nid, score in merged[:top_k]:
+    seen: set[str] = set()
+    for nid, score in top:
         node = store.get_node(nid)
-        if node:
-            node["confidence"] = round(score, 4)
-            node["rrf_score"] = round(score, 6)  # backward compat
-            node["edges_out"] = store.edges_from(nid)[:5]
-            results.append(node)
+        hops = 0
+        while node is not None and node.get("status") == "superseded":
+            successor = (node.get("extra") or {}).get("superseded_by")
+            if not successor or successor in top_ids or hops >= 5:
+                node = None
+                break
+            node = store.get_node(successor)
+            hops += 1
+        if node is None or node.get("status") == "superseded":
+            continue
+        if not include_expired and node_expired(node):
+            continue
+        if node["id"] in seen:
+            continue
+        seen.add(node["id"])
+        node["confidence"] = round(score, 4)
+        node["rrf_score"] = round(score, 6)  # backward compat
+        node["edges_out"] = store.edges_from(node["id"])[:5]
+        results.append(node)
 
     return results
 

@@ -164,30 +164,34 @@ def update_task(store: Store, task_id: str, **fields) -> dict | None:
     if not node or node.get("type") != "task":
         return None
 
-    extra = node.get("extra") or {}
     node_updates = {}
 
-    if "priority" in fields:
-        extra["priority"] = _parse_priority(fields["priority"])
-    if "task_status" in fields and fields["task_status"] in VALID_STATUSES:
-        extra["task_status"] = fields["task_status"]
-        if fields["task_status"] == "done":
-            extra["completed_at"] = _now()
-            node_updates["status"] = "archived"
-    if "due" in fields:
-        extra["due"] = fields["due"]
-    if "effort" in fields:
-        extra["effort"] = fields["effort"]
-    if "scope" in fields and fields["scope"] in VALID_SCOPES:
-        extra["scope"] = fields["scope"]
+    def _mutate(extra: dict) -> None:
+        # Field changes apply to the fresh in-transaction extra so a claim
+        # (or any extra key) committed concurrently is never clobbered by
+        # this caller's stale snapshot.
+        if "priority" in fields:
+            extra["priority"] = _parse_priority(fields["priority"])
+        if "task_status" in fields and fields["task_status"] in VALID_STATUSES:
+            extra["task_status"] = fields["task_status"]
+            if fields["task_status"] == "done":
+                extra["completed_at"] = _now()
+                node_updates["status"] = "archived"
+        if "due" in fields:
+            extra["due"] = fields["due"]
+        if "effort" in fields:
+            extra["effort"] = fields["effort"]
+        if "scope" in fields and fields["scope"] in VALID_SCOPES:
+            extra["scope"] = fields["scope"]
 
-    # Recalculate weight
-    weight = compute_task_weight(extra.get("priority", 3), extra.get("due"))
-    if extra.get("task_status") in ("done", "cancelled"):
-        weight = 0.01
+        # Recalculate weight from the merged state
+        weight = compute_task_weight(extra.get("priority", 3), extra.get("due"))
+        if extra.get("task_status") in ("done", "cancelled"):
+            weight = 0.01
+        node_updates["weight"] = weight
 
-    node_updates["extra"] = extra
-    node_updates["weight"] = weight
+    store.atomic_extra_update(task_id, _mutate)
+    # Weight/status follow-up deliberately does not pass extra.
     store.update_node(task_id, **node_updates)
     return store.get_node(task_id)
 
@@ -208,20 +212,24 @@ def claim_task(
     if not agent.strip():
         raise ValueError("Agent is required")
 
-    extra = dict(node.get("extra") or {})
-    existing = extra.get("claim")
-    if existing and not _claim_expired(existing) and not force:
-        owner = existing.get("agent", "unknown")
-        raise ValueError(f"Task already claimed by {owner}")
+    def _mutate(extra: dict) -> None:
+        # The conflict check runs inside BEGIN IMMEDIATE on the fresh extra
+        # (mirrors locks.lock_node) so two agents cannot both acquire the
+        # claim from stale snapshots — the loser's ValueError propagates
+        # and rolls back.
+        existing = extra.get("claim")
+        if existing and not _claim_expired(existing) and not force:
+            owner = existing.get("agent", "unknown")
+            raise ValueError(f"Task already claimed by {owner}")
+        extra["task_status"] = "in_progress"
+        extra["claim"] = {
+            "agent": agent.strip(),
+            "claimed_at": _now(),
+            "expires_at": _claim_expires_at(ttl_minutes),
+            "note": note,
+        }
 
-    extra["task_status"] = "in_progress"
-    extra["claim"] = {
-        "agent": agent.strip(),
-        "claimed_at": _now(),
-        "expires_at": _claim_expires_at(ttl_minutes),
-        "note": note,
-    }
-    store.update_node(task_id, extra=extra)
+    store.atomic_extra_update(task_id, _mutate)
     return store.get_node(task_id)
 
 
@@ -231,29 +239,46 @@ def release_task_claim(store: Store, task_id: str, *, agent: str = "", force: bo
     if not node or node.get("type") != "task":
         return None
 
-    extra = dict(node.get("extra") or {})
-    claim = extra.get("claim")
-    if not claim:
-        return node
-    if agent and claim.get("agent") != agent and not force:
-        raise ValueError(f"Task claimed by {claim.get('agent', 'unknown')}")
+    def _mutate(extra: dict) -> None:
+        # Agent-match check on the fresh in-transaction claim: a claim
+        # re-acquired by another agent after this caller's snapshot must
+        # not be silently dropped.
+        claim = extra.get("claim")
+        if not claim:
+            return
+        if agent and claim.get("agent") != agent and not force:
+            raise ValueError(
+                f"Task claimed by {claim.get('agent', 'unknown')}")
+        extra.pop("claim", None)
+        if extra.get("task_status") == "in_progress":
+            extra["task_status"] = "open"
 
-    extra.pop("claim", None)
-    if extra.get("task_status") == "in_progress":
-        extra["task_status"] = "open"
-    store.update_node(task_id, extra=extra)
+    store.atomic_extra_update(task_id, _mutate)
     return store.get_node(task_id)
 
 
 def cleanup_expired_claims(store: Store) -> int:
-    """Release expired task claims and return the number cleaned up."""
+    """Release expired task claims and return the number cleaned up.
+
+    list_tasks is only a prefilter: each release re-checks expiry inside
+    the atomic update (mirrors locks.cleanup_expired_locks) so a claim
+    refreshed mid-sweep is not dropped.
+    """
     count = 0
     for task in list_tasks(store, status="in_progress", limit=500):
-        extra = dict(task.get("extra") or {})
-        if _claim_expired(extra.get("claim")):
-            extra.pop("claim", None)
-            extra["task_status"] = "open"
-            store.update_node(task["id"], extra=extra)
+        if not _claim_expired((task.get("extra") or {}).get("claim")):
+            continue
+
+        released = {"done": False}
+
+        def _mutate(extra: dict, _flag: dict = released) -> None:
+            if _claim_expired(extra.get("claim")):
+                extra.pop("claim", None)
+                extra["task_status"] = "open"
+                _flag["done"] = True
+
+        store.atomic_extra_update(task["id"], _mutate)
+        if released["done"]:
             count += 1
     return count
 

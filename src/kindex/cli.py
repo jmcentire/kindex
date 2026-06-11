@@ -30,11 +30,29 @@ def _dumps(obj, **kw):
 
 def _config(args):
     from .config import load_config
-    cfg = load_config(
-        getattr(args, "config", None),
-        project_path=getattr(args, "project_path", None),
-    )
+    try:
+        cfg = load_config(
+            getattr(args, "config", None),
+            project_path=getattr(args, "project_path", None),
+            profile=getattr(args, "profile", None),
+        )
+    except ValueError as e:
+        # Unknown profile (or otherwise invalid config) — fail clearly
+        # instead of dumping a traceback or falling through to legacy.
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
     if getattr(args, "data_dir", None):
+        if cfg.active_profile:
+            # Explicit --data-dir overriding a profile-resolved data_dir:
+            # never stamp an unstamped database with the active profile
+            # (an existing mismatched stamp still hard-refuses in Store).
+            try:
+                same = (Path(args.data_dir).expanduser().resolve()
+                        == Path(cfg.data_dir).expanduser().resolve())
+            except (OSError, ValueError):
+                same = False
+            if not same:
+                cfg._stamp_on_open = False
         cfg.data_dir = args.data_dir
     return cfg
 
@@ -584,9 +602,16 @@ def cmd_status(args):
     # Standard graph stats
     stats = store.stats()
 
+    cfg = _config(args)
     if args.json:
+        stats["profile"] = cfg.active_profile
+        stats["profile_source"] = cfg.profile_source if cfg.active_profile else None
         print(_dumps(stats, indent=2))
     else:
+        if cfg.active_profile:
+            print(f"Profile: {cfg.active_profile} (via {cfg.profile_source})")
+        else:
+            print("Profile: (none — legacy single-graph)")
         print(f"Nodes:     {stats['nodes']}")
         print(f"Edges:     {stats['edges']}")
         print(f"Orphans:   {stats['orphans']}")
@@ -989,6 +1014,95 @@ def cmd_set_state(args):
     current_state[args.key] = value
     store.update_directive_state(node["id"], current_state)
     print(f"Set state on {node['title']}: {args.key} = {value}")
+    store.close()
+
+
+# ── edit / supersede ──────────────────────────────────────────────────
+
+_EDIT_FIELD_FLAGS = ("--title, --content, --append, --add-tags, "
+                     "--remove-tags, --intent, --expires")
+
+
+def cmd_edit(args):
+    """Policy-aware in-place edit of a node (ID or title resolution)."""
+    from .config import resolve_agent_id
+    from .store import EditPolicyError, LockHeldError
+
+    add_tags = [t.strip() for t in (getattr(args, "add_tags", None) or "").split(",")
+                if t.strip()] or None
+    remove_tags = [t.strip() for t in (getattr(args, "remove_tags", None) or "").split(",")
+                   if t.strip()] or None
+    fields = {
+        "title": getattr(args, "title", None),
+        "content": getattr(args, "content", None),
+        "append": getattr(args, "append", None),
+        "add_tags": add_tags,
+        "remove_tags": remove_tags,
+        "intent": getattr(args, "intent", None),
+        "expires": getattr(args, "expires", None),
+    }
+    provided = {k: v for k, v in fields.items() if v is not None}
+    if not provided:
+        print(f"Error: kin edit requires at least one field ({_EDIT_FIELD_FLAGS}).",
+              file=sys.stderr)
+        sys.exit(2)
+
+    cfg = _config(args)
+    store = _store(args)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    try:
+        updated = store.edit_node(
+            node["id"],
+            actor=resolve_agent_id(cfg),
+            force=getattr(args, "force", False),
+            policy_overrides=cfg.edit_policy or None,
+            **provided,
+        )
+    except (EditPolicyError, LockHeldError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    print(f"Edited {updated.get('title', '')} ({updated['id']}) — "
+          f"fields: {', '.join(sorted(provided))}")
+    store.close()
+
+
+def cmd_supersede(args):
+    """Replace a node with a fresh one, preserving history (ID or title)."""
+    from .config import resolve_agent_id
+    from .store import LockHeldError
+
+    cfg = _config(args)
+    store = _store(args)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    text = " ".join(args.text)
+    try:
+        new = store.supersede_node(
+            node["id"], text,
+            actor=resolve_agent_id(cfg),
+            expires=getattr(args, "expires", None),
+            reason=getattr(args, "reason", None),
+            policy_overrides=cfg.edit_policy or None,
+        )
+    except (LockHeldError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    print(f"Superseded {node['title']} ({node['id']}) -> {new['id']}")
     store.close()
 
 
@@ -1599,6 +1713,15 @@ def cmd_log(args):
 
 # ── changelog ─────────────────────────────────────────────────────────
 
+def _diff_value(value, limit: int = 60) -> str:
+    """Compact a diff old/new value for one-line changelog rendering."""
+    if value is None or value == "":
+        return "(none)"
+    s = value if isinstance(value, str) else _dumps(value)
+    s = " ".join(s.split())  # collapse newlines/whitespace
+    return s if len(s) <= limit else s[:limit - 1] + "…"
+
+
 def cmd_changelog(args):
     """Show what changed in the graph since a date or over the last N days."""
     store = _store(args)
@@ -1637,6 +1760,8 @@ def cmd_changelog(args):
         "update_node": "Updated",
         "delete_node": "Deleted",
         "add_edge": "Linked",
+        "edit_node": "Edited",
+        "supersede_node": "Superseded",
     }
     groups: dict[str, list[dict]] = {}
     for e in entries:
@@ -1694,6 +1819,15 @@ def cmd_changelog(args):
                     ntype = details.get("type", "")
                     type_str = f"[{ntype}] " if ntype else ""
                     print(f"  {ts}  {type_str}{target_title}")
+
+                # Compact per-field diff lines for edits
+                diffs = details.get("diffs") if isinstance(details, dict) else None
+                if isinstance(diffs, dict):
+                    for field, change in diffs.items():
+                        if not isinstance(change, dict):
+                            continue
+                        print(f"      {field}: {_diff_value(change.get('old'))} "
+                              f"-> {_diff_value(change.get('new'))}")
             print()
 
     store.close()
@@ -1856,7 +1990,12 @@ def cmd_index(args):
     from .ingest import write_kin_index
 
     output_dir = Path(getattr(args, "output_dir", None) or os.getcwd())
-    path = write_kin_index(store, output_dir)
+    try:
+        path = write_kin_index(store, output_dir)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
     print(f"Wrote {path}")
     print(f"  ({path.stat().st_size} bytes)")
 
@@ -1973,8 +2112,167 @@ def cmd_alias(args):
 
 def cmd_whoami(args):
     """Show the current user identity used for --mine filtering."""
+    from .config import resolve_agent_id
     cfg = _config(args)
+    if getattr(args, "json", False):
+        print(_dumps({"user": cfg.current_user, "agent": resolve_agent_id(cfg)}))
+        return
     print(cfg.current_user)
+    print(f"Agent: {resolve_agent_id(cfg)}")
+
+
+# ── profile ───────────────────────────────────────────────────────────
+
+def cmd_profile(args):
+    """Manage named graph profiles (sequestered multi-profile storage).
+
+    kin profile list              — configured profiles + file-level stats
+    kin profile which             — resolved profile for this invocation
+    kin profile create <name> --data-dir DIR [--roots a,b] [--default]
+    """
+    action = getattr(args, "profile_action", "list")
+
+    if action == "create":
+        _profile_create(args)
+        return
+
+    cfg = _config(args)
+
+    if action == "which":
+        if args.json:
+            print(_dumps({
+                "profile": cfg.active_profile,
+                "source": cfg.profile_source if cfg.active_profile else None,
+            }))
+        elif cfg.active_profile:
+            print(f"{cfg.active_profile} (via {cfg.profile_source})")
+        else:
+            print("(none — legacy single-graph)")
+        return
+
+    # list (default) — file-level stats only; no cross-profile graph reads.
+    if not cfg.profiles:
+        if args.json:
+            print(_dumps({"profiles": {}, "default_profile": None}))
+        else:
+            print("No profiles configured (legacy single-graph).")
+            print("Create one: kin profile create <name> --data-dir <dir> [--roots <dirs>]")
+        return
+
+    if args.json:
+        print(_dumps({
+            "profiles": {n: e.model_dump() for n, e in cfg.profiles.items()},
+            "default_profile": cfg.default_profile,
+            "active_profile": cfg.active_profile,
+        }, indent=2))
+        return
+
+    for name, entry in cfg.profiles.items():
+        markers = []
+        if name == cfg.default_profile:
+            markers.append("default")
+        if name == cfg.active_profile:
+            markers.append("active")
+        suffix = f" ({', '.join(markers)})" if markers else ""
+        print(f"{name}{suffix}")
+        data_path = Path(entry.data_dir).expanduser()
+        db = data_path / "kindex.db"
+        if not db.exists() and (data_path / "conv.db").exists():
+            db = data_path / "conv.db"
+        if db.exists():
+            print(f"  data_dir: {entry.data_dir} ({db.name}, {db.stat().st_size} bytes)")
+        else:
+            print(f"  data_dir: {entry.data_dir} (no database yet)")
+        if entry.roots:
+            print(f"  roots:    {', '.join(entry.roots)}")
+
+
+def _profile_create(args):
+    """Create a profile in the GLOBAL kin.yaml (or an explicit --config file),
+    preserving existing content."""
+    name = getattr(args, "name", None)
+    if not name:
+        print("Error: kin profile create <name> --data-dir <dir>", file=sys.stderr)
+        sys.exit(2)
+    profile_data_dir = getattr(args, "data_dir", None)
+    if not profile_data_dir:
+        print("Error: --data-dir is required for profile create", file=sys.stderr)
+        sys.exit(2)
+
+    from .config import _GLOBAL_PATHS
+
+    # An explicit --config is the write target (mirrors `kin config set`);
+    # otherwise fall through to the global kin.yaml discovery.
+    explicit = getattr(args, "config", None)
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        path = None
+        for p in _GLOBAL_PATHS:
+            p = p.expanduser().resolve()
+            if p.is_file():
+                path = p
+                break
+        if path is None:
+            path = (Path.home() / ".config" / "kindex" / "kin.yaml").resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Round-trip the existing yaml: load, modify, dump — unknown keys survive.
+    data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    profiles = data.get("profiles") or {}
+    if name in profiles:
+        print(f"Error: profile '{name}' already exists in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    roots = [r.strip() for r in (getattr(args, "roots", None) or "").split(",")
+             if r.strip()]
+    profiles[name] = {"data_dir": profile_data_dir, "roots": roots}
+    data["profiles"] = profiles
+    if getattr(args, "set_default", False):
+        data["default_profile"] = name
+    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+    print(f"Created profile '{name}' in {path}")
+    print(f"  data_dir: {profile_data_dir}")
+    if roots:
+        print(f"  roots:    {', '.join(roots)}")
+    if getattr(args, "set_default", False):
+        print(f"  default_profile: {name}")
+
+    # Warn when the legacy graph would be orphaned or shadowed: an existing
+    # graph at the base data_dir that no profile registers stops receiving
+    # routed sessions once a default profile exists.
+    default_name = data.get("default_profile")
+    base_dir = Path(str(data.get("data_dir") or "~/.kindex")).expanduser()
+    try:
+        base_res = base_dir.resolve()
+    except OSError:
+        base_res = base_dir
+    registered = set()
+    for entry in profiles.values():
+        if isinstance(entry, dict) and entry.get("data_dir"):
+            try:
+                registered.add(Path(str(entry["data_dir"])).expanduser().resolve())
+            except OSError:
+                registered.add(Path(str(entry["data_dir"])).expanduser())
+    legacy_db_exists = ((base_dir / "kindex.db").exists()
+                        or (base_dir / "conv.db").exists())
+    if base_res not in registered:
+        if default_name and legacy_db_exists:
+            print(f"Warning: the existing legacy graph at {base_dir} is not "
+                  f"registered as a profile. With default_profile "
+                  f"'{default_name}', sessions outside all profile roots are "
+                  f"routed to '{default_name}' and the legacy graph no longer "
+                  f"receives cron maintenance.", file=sys.stderr)
+            print(f"  Register it first, e.g.: kin profile create personal "
+                  f"--data-dir {base_dir} --roots <dirs> --default",
+                  file=sys.stderr)
+        elif not default_name:
+            print(f"Note: no default_profile set — sessions outside all "
+                  f"profile roots stay in the legacy graph at {base_dir} "
+                  f"(cron services it in a legacy-remainder pass). Use "
+                  f"--default on one profile to change that.", file=sys.stderr)
 
 
 # ── embed ─────────────────────────────────────────────────────────────
@@ -2452,19 +2750,45 @@ def cmd_import_graph(args):
 # ── cron ──────────────────────────────────────────────────────────────
 
 def cmd_cron(args):
-    """Run one-shot maintenance cycle (designed for crontab)."""
-    store = _store(args)
+    """Run one-shot maintenance cycle (designed for crontab).
+
+    With profiles configured, runs one pass per profile (each on its own
+    data_dir), plus a legacy-remainder pass when no default_profile is set.
+    An explicit --data-dir or --profile pins a single pass; session routing
+    stays active whenever a profile resolves (the pinned pass only ingests
+    the sessions that profile owns). A bare --data-dir with no resolved
+    profile runs a legacy take-everything pass on exactly that directory.
+    """
     cfg = _config(args)
     verbose = getattr(args, "verbose", False)
 
-    from .daemon import cron_run
+    from .daemon import cron_run_all
 
-    results = cron_run(cfg, store, verbose=verbose)
+    if getattr(args, "data_dir", None) or getattr(args, "profile", None):
+        # Explicit targeting: single pass on exactly this data_dir/profile.
+        # Routing must survive the pin: build the session predicate from the
+        # FULL profiles dict before clearing it, so the pinned pass never
+        # ingests sessions owned by other profiles.
+        if cfg.profiles and cfg.active_profile:
+            from .routing import profile_session_filter
+            cfg._session_filter = profile_session_filter(
+                dict(cfg.profiles), cfg.active_profile, cfg.default_profile)
+        cfg.profiles = {}
+    passes = cron_run_all(cfg, verbose=verbose)
 
     if args.json:
-        print(_dumps(results, indent=2))
-    else:
-        print("Cron maintenance complete:")
+        if len(passes) == 1 and passes[0]["profile"] is None:
+            print(_dumps(passes[0]["results"], indent=2))  # legacy shape
+        else:
+            print(_dumps(passes, indent=2))
+        return
+
+    for p in passes:
+        results = p["results"]
+        if p["profile"]:
+            print(f"Cron maintenance complete (profile: {p['profile']}):")
+        else:
+            print("Cron maintenance complete:")
         print(f"  Projects scanned:  {results.get('projects', 0)}")
         print(f"  .kin/config updates: {results.get('kin_updates', 0)}")
         print(f"  Sessions ingested: {results.get('sessions', 0)}")
@@ -2496,8 +2820,6 @@ def cmd_cron(args):
                 print(f"  Cron interval: {repack.get('previous', '?')}s -> {interval}s (adaptive)")
             elif action == "disabled":
                 print(f"  Cron interval: disabled (no pending reminders)")
-
-    store.close()
 
 
 # ── dream ─────────────────────────────────────────────────────────────
@@ -2735,11 +3057,12 @@ def cmd_task(args):
             print(f"Task not found: {task_id}", file=sys.stderr)
 
     elif action == "claim":
+        from .config import resolve_agent_id
         from .tasks import claim_task
         task_id = getattr(args, "task_id", None)
-        agent = getattr(args, "agent", None)
-        if not task_id or not agent:
-            print("Usage: kin task claim --task-id <id> --agent <name>", file=sys.stderr)
+        agent = getattr(args, "agent", None) or resolve_agent_id(_config(args))
+        if not task_id:
+            print("Usage: kin task claim --task-id <id> [--agent <name>]", file=sys.stderr)
             store.close()
             return
         try:
@@ -2760,6 +3083,7 @@ def cmd_task(args):
             print(f"Error: {e}", file=sys.stderr)
 
     elif action == "release":
+        from .config import resolve_agent_id
         from .tasks import release_task_claim
         task_id = getattr(args, "task_id", None)
         if not task_id:
@@ -2770,7 +3094,7 @@ def cmd_task(args):
             result = release_task_claim(
                 store,
                 task_id,
-                agent=getattr(args, "agent", "") or "",
+                agent=getattr(args, "agent", "") or resolve_agent_id(_config(args)),
                 force=getattr(args, "force", False),
             )
             if result:
@@ -2863,8 +3187,11 @@ def cmd_task(args):
 
 def cmd_coord(args):
     """Short-lived coordination conversations for agents."""
+    from .config import resolve_agent_id
+    cfg = _config(args)
     store = _store(args)
     action = getattr(args, "coord_action", "list")
+    agent = getattr(args, "agent", "") or resolve_agent_id(cfg)
 
     if action == "start":
         from .coordination import create_conversation
@@ -2880,7 +3207,7 @@ def cmd_coord(args):
                 task_id=getattr(args, "task_id", None),
                 ttl_minutes=getattr(args, "ttl", 240) or 240,
                 project_path=os.getcwd(),
-                created_by=getattr(args, "agent", "") or "",
+                created_by=agent,
             )
             print(f"Started coordination conversation: {conv_id}")
         except ValueError as e:
@@ -2890,13 +3217,14 @@ def cmd_coord(args):
         from .coordination import post_message
         ref = getattr(args, "name", None)
         body = " ".join(getattr(args, "message_words", []) or [])
-        agent = getattr(args, "agent", "") or ""
-        if not ref or not body or not agent:
-            print("Usage: kin coord post <name-or-id> --agent <name> <message>", file=sys.stderr)
+        if not ref or not body:
+            print("Usage: kin coord post <name-or-id> <message> [--agent <name>] [--to <agent>]",
+                  file=sys.stderr)
             store.close()
             return
         try:
-            msg = post_message(store, ref, agent, body)
+            msg = post_message(store, ref, agent, body,
+                               to=getattr(args, "to", None))
             print(f"Posted message #{msg['id']}")
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -2914,8 +3242,77 @@ def cmd_coord(args):
                 ref,
                 since_id=getattr(args, "since_id", 0) or 0,
                 limit=getattr(args, "limit", 50) or 50,
+                agent=agent,
             )
             print(_dumps(payload) if getattr(args, "json", False) else format_messages(payload))
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "join":
+        from .coordination import join_conversation
+        ref = getattr(args, "name", None)
+        if not ref:
+            print("Usage: kin coord join <name-or-id> [--agent <name>]", file=sys.stderr)
+            store.close()
+            return
+        try:
+            member = join_conversation(store, ref, agent)
+            print(f"Joined {ref} as {member['agent']}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "attach":
+        from .coordination import attach_resource
+        ref = getattr(args, "name", None)
+        words = getattr(args, "message_words", []) or []
+        if not ref or not words:
+            print("Usage: kin coord attach <name-or-id> <node-id-or-title>", file=sys.stderr)
+            store.close()
+            return
+        target = " ".join(words)
+        node = store.get_node(target) or store.get_node_by_title(target)
+        try:
+            resources = attach_resource(store, ref, node["id"] if node else target)
+            print(f"Attached. Resources: {', '.join(resources)}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "inject":
+        from .coordination import (
+            clear_inject_messages,
+            list_inject_messages,
+            set_inject_message,
+        )
+        ref = getattr(args, "name", None)
+        words = getattr(args, "message_words", []) or []
+        sub = words[0] if words else "list"
+        if not ref or sub not in ("set", "clear", "list"):
+            print("Usage: kin coord inject <name-or-id> set <text> [--to <agent>] | "
+                  "clear [--id N] | list", file=sys.stderr)
+            store.close()
+            return
+        try:
+            if sub == "set":
+                text = " ".join(words[1:])
+                entry = set_inject_message(store, ref, text, agent,
+                                           to=getattr(args, "to", None))
+                print(f"Set inject message #{entry['id']}"
+                      + (f" -> {entry['to']}" if entry.get("to") else ""))
+            elif sub == "clear":
+                count = clear_inject_messages(
+                    store, ref, message_id=getattr(args, "id", None))
+                print(f"Cleared {count} inject message(s)")
+            else:
+                msgs = list_inject_messages(store, ref)
+                if getattr(args, "json", False):
+                    print(_dumps(msgs))
+                elif not msgs:
+                    print("No inject messages.")
+                else:
+                    for m in msgs:
+                        target = f" -> {m['to']}" if m.get("to") else ""
+                        print(f"  #{m.get('id')} {m.get('created_at')} "
+                              f"{m.get('set_by')}{target}: {m.get('text')}")
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
 
@@ -2948,6 +3345,67 @@ def cmd_coord(args):
         count = cleanup_expired_conversations(store)
         print(f"Cleaned expired conversations: {count}")
 
+    store.close()
+
+
+# ── locks ────────────────────────────────────────────────────────────
+
+
+def cmd_lock(args):
+    """Acquire an advisory lock on a node for the current agent."""
+    from .config import resolve_agent_id
+    from .locks import lock_node
+    from .store import LockHeldError
+    cfg = _config(args)
+    store = _store(args)
+    agent = getattr(args, "agent", "") or resolve_agent_id(cfg)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+    try:
+        lock = lock_node(
+            store, node["id"], agent,
+            ttl_minutes=getattr(args, "ttl", 60) or 60,
+            note=getattr(args, "note", "") or "",
+            force=getattr(args, "force", False),
+        )
+        print(f"Locked {node['title']} ({node['id']}) for {lock['agent']} "
+              f"until {lock['expires_at']}")
+    except (LockHeldError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+    store.close()
+
+
+def cmd_unlock(args):
+    """Release an advisory lock on a node."""
+    from .config import resolve_agent_id
+    from .locks import unlock_node
+    from .store import LockHeldError
+    cfg = _config(args)
+    store = _store(args)
+    agent = getattr(args, "agent", "") or resolve_agent_id(cfg)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+    try:
+        cleared = unlock_node(store, node["id"], agent,
+                              force=getattr(args, "force", False))
+        if cleared:
+            print(f"Unlocked {node['title']} ({node['id']})")
+        else:
+            print(f"No lock on {node['title']} ({node['id']})")
+    except LockHeldError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
     store.close()
 
 
@@ -3291,6 +3749,90 @@ def _hook_context_output(context: str, *, adapter: str, event: str,
     return _dumps(payload)
 
 
+def _collab_unread_messages(store, collab: dict, agent: str) -> list[dict]:
+    """New messages in a collab for an agent: id > their read cursor,
+    targeted to them or broadcast. Does NOT advance the cursor (only an
+    explicit coord_read marks messages as read)."""
+    node = store.get_node(collab.get("node_id", ""))
+    if not node:
+        return []
+    extra = node.get("extra") or {}
+    cursor = 0
+    for member in extra.get("members") or []:
+        if isinstance(member, dict) and member.get("agent") == agent:
+            cursor = int(member.get("last_read_id", 0) or 0)
+            break
+    out = []
+    for m in extra.get("messages") or []:
+        if not isinstance(m, dict) or int(m.get("id", 0)) <= cursor:
+            continue
+        to = (m.get("to") or "").strip()
+        if to and to != agent:
+            continue
+        out.append(m)
+    return out
+
+
+def _collab_prompt_lines(store, cfg, conversation_id: str) -> list[str]:
+    """Collab updates for the UserPromptSubmit hook.
+
+    New targeted/broadcast messages since the agent's read cursor plus standing
+    inject messages, rate-limited per conversation via the store meta key
+    'collab.prompt_last_injected.<conversation_id>' and
+    config.collab.prompt_cooldown_minutes. Bodies are truncated to ~200 chars;
+    read cursors are NOT advanced (only coord_read does that).
+    """
+    from .config import resolve_agent_id
+    from .coordination import active_collabs_for_agent
+
+    if not cfg.collab.enabled:
+        return []
+
+    agent = resolve_agent_id(cfg)
+    collabs = [
+        c for c in active_collabs_for_agent(store, agent)
+        if c.get("unread_count") or c.get("inject_messages")
+    ]
+    if not collabs:
+        return []
+
+    # Cooldown: at most one collab block per conversation per window.
+    key = f"collab.prompt_last_injected.{conversation_id or ''}"
+    cooldown_min = max(0, int(cfg.collab.prompt_cooldown_minutes or 0))
+    now = datetime.datetime.now()
+    last = store.get_meta(key)
+    if last and cooldown_min:
+        try:
+            elapsed = (now - datetime.datetime.fromisoformat(last)).total_seconds()
+            if elapsed < cooldown_min * 60:
+                return []
+        except ValueError:
+            pass
+
+    lines = ["COLLAB UPDATES"]
+    for c in collabs[:3]:
+        name = c.get("name", "")
+        unread = int(c.get("unread_count", 0) or 0)
+        if unread:
+            lines.append(f"  [{name}] {unread} new message(s):")
+            for m in _collab_unread_messages(store, c, agent)[-3:]:
+                body = " ".join(str(m.get("body", "")).split())[:200]
+                author = m.get("author", "")
+                target = " (to you)" if (m.get("to") or "").strip() == agent else ""
+                lines.append(f"    - {author}{target}: {body}")
+        for m in (c.get("inject_messages") or [])[:3]:
+            text = " ".join(str(m.get("text", "")).split())[:200]
+            set_by = (m.get("set_by") or "").strip()
+            who = f" (from {set_by})" if set_by else ""
+            lines.append(f"  [{name}] COLLAB MSG: {text}{who}")
+        lines.append(f"  Check the collab: coord_read {name}")
+    if len(collabs) > 3:
+        lines.append(f"  +{len(collabs) - 3} more collabs")
+
+    store.set_meta(key, now.isoformat(timespec="seconds"))
+    return lines
+
+
 def cmd_prompt_check(args):
     """UserPromptSubmit hook: inject due reminders into conversation context.
 
@@ -3395,6 +3937,14 @@ def cmd_prompt_check(args):
     except Exception:
         pass
 
+    # Collab updates: new targeted/broadcast messages since the agent's read
+    # cursor + standing inject messages, with a per-conversation cooldown.
+    collab_lines: list[str] = []
+    try:
+        collab_lines = _collab_prompt_lines(store, cfg, conversation_id)
+    except Exception:
+        collab_lines = []
+
     due = []
     if cfg.reminders.enabled:
         try:
@@ -3431,7 +3981,8 @@ def cmd_prompt_check(args):
     except Exception:
         pass
 
-    if not due and not attention_lines and not task_lines and not sim_lines:
+    if (not due and not attention_lines and not task_lines and not sim_lines
+            and not collab_lines):
         store.close()
         return
 
@@ -3474,6 +4025,11 @@ def cmd_prompt_check(args):
         if due or attention_lines:
             lines.append("")
         lines.extend(sim_lines)
+
+    if collab_lines:
+        if due or attention_lines or sim_lines:
+            lines.append("")
+        lines.extend(collab_lines)
 
     if task_lines:
         lines.append("")
@@ -4599,6 +5155,7 @@ def _config_write(key: str, value: str, config_path: str | None = None,
 def _common(p):
     p.add_argument("--config", help="Explicit config file (bypasses layering)")
     p.add_argument("--data-dir", help="Override data directory")
+    p.add_argument("--profile", help="Use a named kindex profile (overrides auto-resolution)")
     p.add_argument("--project-path", help="Project root/path for .kin config lookup")
     p.add_argument("--json", action="store_true", help="JSON output")
 
@@ -4742,6 +5299,29 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_set_state)
 
+    # edit
+    s = sub.add_parser("edit", help="Policy-aware in-place edit of a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("--title", help="Replace the title")
+    s.add_argument("--content", help="Replace the content")
+    s.add_argument("--append", help="Append a dated addendum to the content")
+    s.add_argument("--add-tags", dest="add_tags", help="Comma-separated tags to add")
+    s.add_argument("--remove-tags", dest="remove_tags", help="Comma-separated tags to remove")
+    s.add_argument("--intent", help="Replace the intent")
+    s.add_argument("--expires", help="Set expiry date (YYYY-MM-DD)")
+    s.add_argument("--force", action="store_true", help="Override a foreign lock")
+    _common(s)
+    s.set_defaults(func=cmd_edit)
+
+    # supersede
+    s = sub.add_parser("supersede", help="Replace a node with a new one, preserving history")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("text", nargs="+", help="Replacement text")
+    s.add_argument("--expires", help="Expiry date for the new node (YYYY-MM-DD)")
+    s.add_argument("--reason", help="Why the node is being replaced")
+    _common(s)
+    s.set_defaults(func=cmd_supersede)
+
     # export
     s = sub.add_parser("export", help="Export graph (audience-aware)")
     s.add_argument("export_kind", nargs="?", choices=["graph", "code-map"], default="graph",
@@ -4861,9 +5441,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_alias)
 
     # whoami
-    s = sub.add_parser("whoami", help="Show current user identity")
+    s = sub.add_parser("whoami", help="Show current user and agent identity")
     _common(s)
     s.set_defaults(func=cmd_whoami)
+
+    # profile
+    s = sub.add_parser("profile", help="Named graph profiles (list, which, create)")
+    s.add_argument("profile_action", nargs="?", default="list",
+                   choices=["list", "which", "create"])
+    s.add_argument("name", nargs="?", help="Profile name (for create)")
+    s.add_argument("--roots", help="Comma-separated roots routed to this profile (for create)")
+    s.add_argument("--default", dest="set_default", action="store_true",
+                   help="Set as default_profile (for create)")
+    _common(s)
+    s.set_defaults(func=cmd_profile)
 
     # embed
     s = sub.add_parser("embed", help="Index all nodes for vector search")
@@ -5137,10 +5728,13 @@ def build_parser() -> argparse.ArgumentParser:
     # coord
     s = sub.add_parser("coord", help="Short-lived agent coordination conversations")
     s.add_argument("coord_action", nargs="?", default="list",
-                   choices=["start", "post", "read", "list", "end", "cleanup"])
+                   choices=["start", "post", "read", "list", "end", "cleanup",
+                            "join", "attach", "inject"])
     s.add_argument("name", nargs="?", help="Conversation name or id")
-    s.add_argument("message_words", nargs="*", help="Message body for post")
-    s.add_argument("--agent", help="Agent name")
+    s.add_argument("message_words", nargs="*",
+                   help="Message body (post), node id (attach), or "
+                        "set/clear/list + text (inject)")
+    s.add_argument("--agent", help="Agent name (default: resolved agent id)")
     s.add_argument("--task-id", help="Related task id")
     s.add_argument("--ttl", type=int, default=240, help="Conversation TTL in minutes")
     s.add_argument("--since-id", type=int, default=0, help="Read messages after id")
@@ -5148,8 +5742,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", default="active", help="Filter: active, ended, all")
     s.add_argument("--project", action="store_true", help="Filter by current project")
     s.add_argument("--summary", help="End summary retained after clearing messages")
+    s.add_argument("--to", help="Target agent (post / inject set)")
+    s.add_argument("--id", type=int, help="Inject message id (inject clear)")
     _common(s)
     s.set_defaults(func=cmd_coord)
+
+    # lock / unlock
+    s = sub.add_parser("lock", help="Acquire an advisory lock on a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("--ttl", type=int, default=60, help="Lock TTL in minutes")
+    s.add_argument("--note", default="", help="Why the node is locked")
+    s.add_argument("--agent", help="Agent name (default: resolved agent id)")
+    s.add_argument("--force", action="store_true", help="Take over a foreign lock")
+    _common(s)
+    s.set_defaults(func=cmd_lock)
+
+    s = sub.add_parser("unlock", help="Release an advisory lock on a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("--agent", help="Agent name (default: resolved agent id)")
+    s.add_argument("--force", action="store_true", help="Clear a foreign lock")
+    _common(s)
+    s.set_defaults(func=cmd_unlock)
 
     # remind
     s = sub.add_parser("remind", help="Reminder management (create, list, snooze, done, cancel, check)")
@@ -5222,6 +5835,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    from .store import ProfileMismatchError
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -5234,7 +5849,13 @@ def main():
         return
 
     if hasattr(args, "func"):
-        args.func(args)
+        try:
+            args.func(args)
+        except ProfileMismatchError as e:
+            # Sequestration guard: never open a DB stamped for another
+            # profile — fail clearly instead of dumping a traceback.
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(2)
     else:
         parser.print_help()
 

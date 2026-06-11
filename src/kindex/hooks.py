@@ -37,6 +37,7 @@ def prime_context(
     Returns a string suitable for CLAUDE.md injection.
     """
     from .retrieve import detect_domain_from_path, hybrid_search
+    from .store import node_expired
 
     # Auto-detect topic from cwd if not provided
     if not topic:
@@ -48,8 +49,9 @@ def prime_context(
             # Use the directory name as a fallback search term
             topic = os.path.basename(cwd)
 
-    # Search for relevant nodes
-    results = hybrid_search(store, topic, top_k=8)
+    # Search for relevant nodes (expired nodes never surface)
+    results = [r for r in hybrid_search(store, topic, top_k=8)
+               if not node_expired(r)]
 
     lines: list[str] = []
     lines.append("## Kindex Context (auto-primed)")
@@ -82,8 +84,9 @@ def prime_context(
 
         lines.append("")
 
-    # -- Active operational nodes --
+    # -- Active operational nodes (expired ones are skipped in every section) --
     ops = store.operational_summary()
+    ops = {k: [n for n in v if not node_expired(n)] for k, v in ops.items()}
 
     if ops["constraints"]:
         lines.append("### Active constraints")
@@ -159,6 +162,8 @@ def prime_context(
         from .sessions import get_active_tag
 
         active_tag = get_active_tag(store, project_path=os.getcwd())
+        if active_tag and node_expired(active_tag):
+            active_tag = None
         if active_tag:
             extra = active_tag.get("extra") or {}
             tag_name = extra.get("tag", active_tag["title"])
@@ -180,6 +185,56 @@ def prime_context(
             lines.append("")
     except Exception:
         pass  # Don't break priming if sessions module has issues
+
+    # -- Active collabs (multi-agent coordination) --
+    try:
+        collab_cfg = config.collab if config else None
+        display = str(collab_cfg.display or "full").lower() if collab_cfg else "full"
+        if collab_cfg and collab_cfg.enabled and display != "quiet":
+            from .config import resolve_agent_id
+            from .coordination import active_collabs_for_agent
+
+            collabs = active_collabs_for_agent(store, resolve_agent_id(config))
+            if collabs:
+                lines.append("### Active collabs")
+                for c in collabs[:3]:
+                    name = c.get("name", "")
+                    unread = int(c.get("unread_count", 0) or 0)
+                    injects = c.get("inject_messages") or []
+                    locked = c.get("locked_resources") or []
+                    focus = (c.get("focus") or "")[:80]
+
+                    if display == "minimal":
+                        parts = [f"{unread} unread"]
+                        if injects:
+                            parts.append(f"{len(injects)} standing msg")
+                        if locked:
+                            parts.append(f"{len(locked)} locked")
+                        lines.append(
+                            f"- {name}: {', '.join(parts)} — coord_read {name}"
+                        )
+                        continue
+
+                    head = f"- **{name}** — {unread} unread"
+                    if focus:
+                        head += f" (focus: {focus})"
+                    lines.append(head)
+                    for m in injects[:3]:
+                        text = " ".join(str(m.get("text", "")).split())[:200]
+                        set_by = (m.get("set_by") or "").strip()
+                        who = f" (from {set_by})" if set_by else ""
+                        lines.append(f"  COLLAB MSG: {text}{who}")
+                    for r in locked[:3]:
+                        lines.append(
+                            f"  Locked: {r.get('title') or r.get('node_id', '')} "
+                            f"(held by {r.get('holder', '')})"
+                        )
+                    lines.append(f"  Check the collab: coord_read {name}")
+                if len(collabs) > 3:
+                    lines.append(f"- +{len(collabs) - 3} more")
+                lines.append("")
+    except Exception:
+        pass  # Don't break priming
 
     # -- Due/upcoming reminders --
     try:
@@ -255,6 +310,8 @@ def prime_context(
         for gt in global_tasks:
             if gt["id"] not in seen_ids:
                 context_tasks.append(gt)
+
+        context_tasks = [t for t in context_tasks if not node_expired(t)]
 
         if context_tasks:
             lines.append("### Tasks")

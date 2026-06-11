@@ -25,6 +25,20 @@ _LOCAL_PATHS = [
 _SEARCH_PATHS = _LOCAL_PATHS + _GLOBAL_PATHS
 
 
+class ProfileEntry(BaseModel):
+    """A named graph profile: its own data_dir plus the directory roots
+    whose sessions/work route to it."""
+    data_dir: str
+    roots: list[str] = Field(default_factory=list)
+
+
+class CollabConfig(BaseModel):
+    """Multi-agent collaboration surfaces (conversations, locks, injection)."""
+    enabled: bool = True
+    display: str = "full"            # full | minimal | quiet
+    prompt_cooldown_minutes: int = 10
+
+
 class EmbeddingConfig(BaseModel):
     provider: str = "voyage"     # "voyage", "openai", "gemini", "local"
     model: str = ""              # empty = provider default
@@ -92,6 +106,7 @@ class AttentionConfig(BaseModel):
     readonly_kin_subcommands: list[str] = Field(default_factory=lambda: [
         "search", "show", "status", "list", "context", "ask", "graph-stats",
         "changelog", "list-nodes", "prime", "policy",
+        "coord read", "coord list", "profile list", "profile which", "whoami",
     ])
     # Stigmergic injection pheromone (deposited when a node is injected,
     # reinforced when the agent actually used the injection, decayed over time).
@@ -289,6 +304,19 @@ class WorkPolicyConfig(BaseModel):
 
 class Config(BaseModel):
     _project_path: Path | None = PrivateAttr(default=None)
+    # Per-pass session routing predicate (set by daemon.cron_run_all and
+    # cli.cmd_cron); callable(jsonl_path) -> bool. Never loaded from yaml.
+    # When None, ingest builds one from profiles/active_profile (see
+    # routing.effective_session_filter).
+    _session_filter: Any = PrivateAttr(default=None)
+    # False when an explicit --data-dir overrides a profile-resolved
+    # data_dir: the store must NOT stamp an unstamped database with the
+    # active profile (it still hard-refuses an existing mismatched stamp).
+    _stamp_on_open: bool = PrivateAttr(default=True)
+    # The pre-activation data_dir, recorded by _activate_profile so the
+    # cron legacy-remainder pass can find the legacy graph even when this
+    # invocation resolved to a profile.
+    _legacy_data_dir: str | None = PrivateAttr(default=None)
 
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
@@ -307,6 +335,20 @@ class Config(BaseModel):
     ranking: RankingConfig = Field(default_factory=RankingConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)
     work_policy: WorkPolicyConfig = Field(default_factory=WorkPolicyConfig)
+    # Sequestered multi-profile storage. Profiles live in the GLOBAL kin.yaml:
+    #   profiles: {work: {data_dir: ~/.kindex-work, roots: [~/Work]}}
+    #   default_profile: personal
+    # No profiles configured => byte-identical legacy single-graph behavior.
+    profiles: dict[str, ProfileEntry] = Field(default_factory=dict)
+    default_profile: str | None = None
+    # Stable agent identity for collab/locks (KIN_AGENT_ID env overrides).
+    agent_id: str | None = None
+    # Per-node-type edit class overrides: {node_type: editable|additive|managed}.
+    edit_policy: dict[str, str] = Field(default_factory=dict)
+    collab: CollabConfig = Field(default_factory=CollabConfig)
+    # Runtime profile resolution result (set by load_config, not yaml input).
+    active_profile: str | None = None
+    profile_source: str = "legacy"   # flag | env | kin | roots | default | legacy
 
     @property
     def current_user(self) -> str:
@@ -409,6 +451,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def load_config(
     config_path: str | Path | None = None,
     project_path: str | Path | None = None,
+    profile: str | None = None,
 ) -> Config:
     """Load config with layered merging: code defaults → global → local.
 
@@ -417,6 +460,12 @@ def load_config(
     merges over it. Project resolution is explicit path, KIN_PROJECT, git
     worktree root, then cwd.
     An explicit config_path bypasses layering and loads only that file.
+
+    Profile resolution (only when profiles are configured OR an explicit
+    profile/env is given): explicit `profile` param > KIN_PROFILE env >
+    `profile:` key from the .kin chain > longest-prefix cwd match against
+    profile roots > default_profile > legacy (active_profile stays None and
+    data_dir is untouched).
     """
     project_root = resolve_project_root(project_path)
 
@@ -424,8 +473,11 @@ def load_config(
         p = Path(config_path).expanduser().resolve()
         if p.exists():
             data = yaml.safe_load(p.read_text()) or {}
-            return _attach_project_path(Config(**data), project_root)
-        return _attach_project_path(Config(), project_root)
+            kin_profile = data.pop("profile", None)
+            cfg = _resolve_profile(Config(**data), profile, kin_profile)
+            return _attach_project_path(cfg, project_root)
+        return _attach_project_path(_resolve_profile(Config(), profile, None),
+                                    project_root)
 
     # Layer 1: global config (user-level)
     merged: dict = {}
@@ -439,14 +491,94 @@ def load_config(
     project_layers = _project_config_paths(project_root)
 
     # Layer 2: local config (project-level) merges over global
+    kin_profile = merged.pop("profile", None)
     for p in project_layers:
         if p.is_file():
             data = _load_kin_config_with_inheritance(p)
+            if "profile" in data:
+                kin_profile = data.pop("profile")
             merged = _deep_merge(merged, data)
             break  # use first local found
 
     cfg = Config(**merged) if merged else Config()
+    cfg = _resolve_profile(cfg, profile, kin_profile)
     return _attach_project_path(cfg, project_root)
+
+
+def _resolve_profile(cfg: Config, explicit: str | None,
+                     kin_profile: str | None) -> Config:
+    """Resolve the active profile on a freshly loaded Config (in place).
+
+    No profiles configured AND no explicit/env request => legacy single-graph
+    passthrough: active_profile stays None, data_dir untouched.
+    Any explicit reference to an unknown profile raises ValueError.
+    """
+    env_profile = os.environ.get("KIN_PROFILE") or None
+    if not cfg.profiles and not explicit and not env_profile:
+        return cfg  # legacy: byte-identical to pre-profile behavior
+
+    # Explicit tiers: flag > env > .kin chain key
+    for name, source in ((explicit, "flag"), (env_profile, "env"),
+                         (kin_profile, "kin")):
+        if name:
+            return _activate_profile(cfg, str(name), source)
+
+    # Roots tier: longest-prefix match of cwd against any profile's roots
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        cwd = None
+    if cwd is not None:
+        best: tuple[int, str] | None = None
+        for name, entry in cfg.profiles.items():
+            for root in entry.roots:
+                rp = Path(root).expanduser()
+                try:
+                    rp = rp.resolve()
+                except OSError:
+                    continue
+                if cwd == rp or rp in cwd.parents:
+                    plen = len(str(rp))
+                    if best is None or plen > best[0]:
+                        best = (plen, name)
+        if best is not None:
+            return _activate_profile(cfg, best[1], "roots")
+
+    if cfg.default_profile:
+        return _activate_profile(cfg, cfg.default_profile, "default")
+
+    return cfg  # profiles exist but nothing matched -> legacy passthrough
+
+
+def _activate_profile(cfg: Config, name: str, source: str) -> Config:
+    if name not in cfg.profiles:
+        known = ", ".join(sorted(cfg.profiles)) or "(none)"
+        raise ValueError(
+            f"Unknown kindex profile '{name}' (from {source}); "
+            f"known profiles: {known}"
+        )
+    cfg._legacy_data_dir = cfg.data_dir
+    cfg.data_dir = str(Path(cfg.profiles[name].data_dir).expanduser())
+    cfg.active_profile = name
+    cfg.profile_source = source
+    return cfg
+
+
+def resolve_agent_id(config: Config) -> str:
+    """Stable agent identity for collab/locks/claims.
+
+    Precedence: KIN_AGENT_ID env > config.agent_id > user@shorthost.
+    """
+    import socket
+
+    env = os.environ.get("KIN_AGENT_ID")
+    if env:
+        return env
+    configured = getattr(config, "agent_id", None)
+    if configured:
+        return configured
+    host = socket.gethostname().split(".")[0]
+    return f"{config.current_user}@{host}"
 
 
 def resolve_project_root(project_path: str | Path | None = None) -> Path:

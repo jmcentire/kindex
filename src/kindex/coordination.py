@@ -64,6 +64,14 @@ def _is_expired(value: str | None) -> bool:
         return False
 
 
+def _member_entry(agent: str) -> dict:
+    return {"agent": agent, "joined_at": _now(), "last_read_id": 0}
+
+
+def _members_of(extra: dict) -> list[dict]:
+    return [m for m in (extra.get("members") or []) if isinstance(m, dict)]
+
+
 def create_conversation(
     store: Store,
     name: str,
@@ -89,6 +97,9 @@ def create_conversation(
         "ttl_minutes": ttl_minutes,
         "expires_at": _expires_at(ttl_minutes),
         "messages": [],
+        "members": [_member_entry(created_by)] if created_by else [],
+        "resources": [],
+        "inject_messages": [],
     }
     conv_id = store.add_node(
         conv_name,
@@ -150,6 +161,35 @@ def list_conversations(
     return result[:limit]
 
 
+def join_conversation(store: Store, conversation: str, agent: str) -> dict:
+    """Join a live conversation as a member. Idempotent; returns the member entry."""
+    agent = (agent or "").strip()
+    if not agent:
+        raise ValueError("Agent is required to join a conversation")
+    node = get_conversation(store, conversation)
+    if not node:
+        raise ValueError(f"Conversation not found: {conversation}")
+
+    joined: dict = {}
+
+    def _mutate(extra: dict) -> None:
+        if extra.get("coord_status") != "active":
+            raise ValueError(f"Conversation is not active: {conversation}")
+        members = _members_of(extra)
+        for member in members:
+            if member.get("agent") == agent:
+                joined["member"] = member
+                extra["members"] = members
+                return
+        entry = _member_entry(agent)
+        members.append(entry)
+        extra["members"] = members
+        joined["member"] = entry
+
+    store.atomic_extra_update(node["id"], _mutate)
+    return joined["member"]
+
+
 def post_message(
     store: Store,
     conversation: str,
@@ -157,8 +197,14 @@ def post_message(
     body: str,
     *,
     ttl_minutes: int | None = None,
+    to: str | None = None,
 ) -> dict:
-    """Append a message to a live coordination conversation."""
+    """Append a message to a live coordination conversation.
+
+    ``to`` targets a specific agent (broadcast when omitted); targeting is
+    advisory — everyone can read the room, but unread counts and injection
+    only deliver targeted messages to their addressee.
+    """
     if not author.strip():
         raise ValueError("Message author is required")
     if not body.strip():
@@ -167,53 +213,288 @@ def post_message(
     if not node:
         raise ValueError(f"Conversation not found: {conversation}")
 
-    extra = dict(node.get("extra") or {})
-    if extra.get("coord_status") != "active":
+    snapshot = node.get("extra") or {}
+    if snapshot.get("coord_status") != "active":
         raise ValueError(f"Conversation is not active: {conversation}")
-    if _is_expired(extra.get("expires_at")):
+    if _is_expired(snapshot.get("expires_at")):
         end_conversation(store, node["id"], summary="Expired before post")
         raise ValueError(f"Conversation expired: {conversation}")
 
-    messages = list(extra.get("messages") or [])
-    message = {
-        "id": len(messages) + 1,
-        "at": _now(),
-        "author": author.strip(),
-        "body": body.strip(),
-    }
-    messages.append(message)
-    extra["messages"] = messages
-    ttl = ttl_minutes if ttl_minutes is not None else _ttl_from_extra(extra)
-    extra["ttl_minutes"] = ttl
-    extra["expires_at"] = _expires_at(ttl)
-    store.update_node(node["id"], extra=extra)
-    return message
+    posted: dict = {}
+
+    def _mutate(extra: dict) -> None:
+        if extra.get("coord_status") != "active":
+            raise ValueError(f"Conversation is not active: {conversation}")
+        messages = list(extra.get("messages") or [])
+        message = {
+            "id": max(
+                (int(m.get("id", 0)) for m in messages if isinstance(m, dict)),
+                default=0,
+            ) + 1,
+            "at": _now(),
+            "author": author.strip(),
+            "body": body.strip(),
+        }
+        if to and to.strip():
+            message["to"] = to.strip()
+        messages.append(message)
+        extra["messages"] = messages
+        ttl = ttl_minutes if ttl_minutes is not None else _ttl_from_extra(extra)
+        extra["ttl_minutes"] = ttl
+        extra["expires_at"] = _expires_at(ttl)
+        posted["message"] = message
+
+    store.atomic_extra_update(node["id"], _mutate)
+    return posted["message"]
 
 
 def read_messages(
     store: Store,
     conversation: str,
     *,
-    since_id: int = 0,
+    since_id: int | None = 0,
     limit: int = 50,
+    agent: str | None = None,
 ) -> dict:
-    """Read messages from a coordination conversation."""
+    """Read messages from a coordination conversation.
+
+    When ``agent`` is given and is a member, delivery is contiguous from
+    their read cursor (oldest first, up to ``limit``), so a backlog larger
+    than ``limit`` is never skipped — repeated reads paginate forward and
+    the cursor (``last_read_id``) advances only past messages actually
+    returned. Agentless (or non-member) reads keep the newest window and
+    never touch cursors.
+    """
     node = get_conversation(store, conversation)
     if not node:
         raise ValueError(f"Conversation not found: {conversation}")
     extra = node.get("extra") or {}
+
+    agent = (agent or "").strip()
+    mine = None
+    if agent:
+        mine = next(
+            (m for m in _members_of(extra) if m.get("agent") == agent), None)
+
+    floor = int(since_id or 0)
+    if mine is not None:
+        floor = max(floor, int(mine.get("last_read_id", 0) or 0))
     messages = [
         m for m in extra.get("messages", [])
-        if int(m.get("id", 0)) > since_id
+        if int(m.get("id", 0)) > floor
     ]
+    total = len(messages)
+    if mine is not None:
+        # Member read: oldest-first slice from the cursor — contiguous.
+        returned = messages[:limit]
+    else:
+        # Agentless/legacy read: newest window, no cursor to maintain.
+        returned = messages[-limit:]
+
+    if mine is not None and returned:
+        max_seen = max(int(m.get("id", 0)) for m in returned)
+        if max_seen > int(mine.get("last_read_id", 0) or 0):
+
+            def _mutate(e: dict) -> None:
+                members = _members_of(e)
+                for member in members:
+                    if member.get("agent") == agent:
+                        if max_seen > int(member.get("last_read_id", 0) or 0):
+                            member["last_read_id"] = max_seen
+                            e["members"] = members
+                        return
+
+            store.atomic_extra_update(node["id"], _mutate)
+
     return {
         "id": node["id"],
         "name": extra.get("name", node["title"]),
         "status": extra.get("coord_status", "active"),
         "task_id": extra.get("task_id", ""),
         "expires_at": extra.get("expires_at", ""),
-        "messages": messages[-limit:],
+        "messages": returned,
+        "total": total,
+        "remaining": total - len(returned),
+        "remaining_kind": "newer" if mine is not None else "older",
     }
+
+
+def attach_resource(store: Store, conversation: str, node_id: str) -> list:
+    """Attach a graph node to a conversation as a shared resource.
+
+    Validates the node exists; idempotent. Returns the resource id list.
+    """
+    node = get_conversation(store, conversation)
+    if not node:
+        raise ValueError(f"Conversation not found: {conversation}")
+    resource = store.get_node(node_id)
+    if not resource:
+        raise ValueError(f"Node not found: {node_id}")
+    rid = resource["id"]
+
+    result: dict = {}
+
+    def _mutate(extra: dict) -> None:
+        resources = list(extra.get("resources") or [])
+        if rid not in resources:
+            resources.append(rid)
+        extra["resources"] = resources
+        result["resources"] = resources
+
+    store.atomic_extra_update(node["id"], _mutate)
+    return result["resources"]
+
+
+def set_inject_message(
+    store: Store,
+    conversation: str,
+    text: str,
+    set_by: str,
+    to: str | None = None,
+) -> dict:
+    """Set a standing inject message — surfaced into member sessions by hooks."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Inject message text is required")
+    node = get_conversation(store, conversation)
+    if not node:
+        raise ValueError(f"Conversation not found: {conversation}")
+
+    created: dict = {}
+
+    def _mutate(extra: dict) -> None:
+        msgs = [m for m in (extra.get("inject_messages") or [])
+                if isinstance(m, dict)]
+        entry = {
+            "id": max((int(m.get("id", 0)) for m in msgs), default=0) + 1,
+            "text": text,
+            "to": (to or "").strip(),
+            "set_by": (set_by or "").strip(),
+            "created_at": _now(),
+        }
+        msgs.append(entry)
+        extra["inject_messages"] = msgs
+        created["entry"] = entry
+
+    store.atomic_extra_update(node["id"], _mutate)
+    return created["entry"]
+
+
+def clear_inject_messages(
+    store: Store, conversation: str, message_id: int | None = None
+) -> int:
+    """Clear one (by id) or all standing inject messages. Returns count cleared."""
+    node = get_conversation(store, conversation)
+    if not node:
+        raise ValueError(f"Conversation not found: {conversation}")
+
+    cleared = {"count": 0}
+
+    def _mutate(extra: dict) -> None:
+        msgs = [m for m in (extra.get("inject_messages") or [])
+                if isinstance(m, dict)]
+        if message_id is None:
+            kept: list[dict] = []
+        else:
+            kept = [m for m in msgs if int(m.get("id", 0)) != int(message_id)]
+        cleared["count"] = len(msgs) - len(kept)
+        extra["inject_messages"] = kept
+
+    store.atomic_extra_update(node["id"], _mutate)
+    return cleared["count"]
+
+
+def list_inject_messages(store: Store, conversation: str) -> list:
+    """List standing inject messages for a conversation."""
+    node = get_conversation(store, conversation)
+    if not node:
+        raise ValueError(f"Conversation not found: {conversation}")
+    extra = node.get("extra") or {}
+    return [m for m in (extra.get("inject_messages") or []) if isinstance(m, dict)]
+
+
+def active_collabs_for_agent(store: Store, agent: str) -> list[dict]:
+    """Live collab summaries for an agent — feeds prime/prompt-check hooks.
+
+    One scan over active coordination nodes; each conversation is processed
+    inside its own try/except so a malformed one cannot break the hook path.
+    Returns, per conversation the agent is a member of:
+    {name, node_id, task_id, focus, unread_count, inject_messages,
+     locked_resources, members}.
+    """
+    from .store import active_lock
+
+    agent = (agent or "").strip()
+    if not agent:
+        return []
+
+    collabs = []
+    rows = store.all_nodes(node_type="coordination", status="active", limit=500)
+    for row in rows:
+        try:
+            extra = row.get("extra") or {}
+            if extra.get("coord_kind") != "conversation":
+                continue
+            if extra.get("coord_status") != "active":
+                continue
+            if _is_expired(extra.get("expires_at")):
+                continue
+            members = _members_of(extra)
+            me = next((m for m in members if m.get("agent") == agent), None)
+            if me is None:
+                continue
+
+            last_read = int(me.get("last_read_id", 0) or 0)
+            unread = 0
+            for msg in extra.get("messages") or []:
+                if not isinstance(msg, dict):
+                    continue
+                if int(msg.get("id", 0)) <= last_read:
+                    continue
+                to = (msg.get("to") or "").strip()
+                if to and to != agent:
+                    continue
+                unread += 1
+
+            injects = [
+                m for m in (extra.get("inject_messages") or [])
+                if isinstance(m, dict)
+                and (not (m.get("to") or "").strip() or m.get("to") == agent)
+            ]
+
+            locked_resources = []
+            for rid in extra.get("resources") or []:
+                resource = store.get_node(rid)
+                if not resource:
+                    continue
+                lock = active_lock(resource)
+                if lock:
+                    locked_resources.append({
+                        "node_id": rid,
+                        "title": resource.get("title", rid),
+                        "holder": lock.get("agent", ""),
+                    })
+
+            task_id = extra.get("task_id") or ""
+            focus = ""
+            if task_id:
+                task = store.get_node(task_id)
+                focus = task["title"] if task else task_id
+
+            collabs.append({
+                "name": extra.get("name", row.get("title", "")),
+                "node_id": row["id"],
+                "task_id": task_id,
+                "focus": focus,
+                "unread_count": unread,
+                "inject_messages": injects,
+                "locked_resources": locked_resources,
+                "members": [m.get("agent", "") for m in members],
+            })
+        except Exception:
+            continue  # malformed conversation — never break the hook path
+    collabs.sort(key=lambda c: c["name"])
+    return collabs
 
 
 def end_conversation(store: Store, conversation: str, *, summary: str = "") -> dict | None:
@@ -267,7 +548,17 @@ def format_messages(payload: dict) -> str:
         f"Expires: {payload.get('expires_at', '')}",
     ]
     for msg in messages:
+        target = f" -> {msg['to']}" if msg.get("to") else ""
         lines.append(
-            f"  #{msg.get('id')} {msg.get('at')} {msg.get('author')}: {msg.get('body')}"
+            f"  #{msg.get('id')} {msg.get('at')} {msg.get('author')}{target}: {msg.get('body')}"
+        )
+    remaining = int(payload.get("remaining") or 0)
+    if remaining > 0:
+        kind = payload.get("remaining_kind") or "more"
+        hint = ("read again to continue" if kind == "newer"
+                else "pass since_id or a larger limit to see them")
+        lines.append(
+            f"  (showing {len(messages)} of {payload.get('total', len(messages))}"
+            f" — {remaining} {kind} message(s) not shown; {hint})"
         )
     return "\n".join(lines)

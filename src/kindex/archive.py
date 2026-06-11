@@ -245,7 +245,8 @@ def find_archivable_nodes(
     """Find nodes eligible for archival to slow graph.
 
     Criteria:
-    - Status is 'archived' (already marked by graph hygiene)
+    - Status is 'archived' (marked by graph hygiene) or 'superseded'
+      (replaced via supersede_node — terminal, weight decays naturally)
     - Weight below threshold
     - Not updated in min_age_days
     - Not a lifecycle type (task, session, etc. handled separately)
@@ -256,7 +257,7 @@ def find_archivable_nodes(
 
     rows = store.conn.execute(
         """SELECT id, type FROM nodes
-           WHERE status = 'archived'
+           WHERE status IN ('archived', 'superseded')
              AND weight <= ?
              AND updated_at < ?
            ORDER BY weight ASC, updated_at ASC

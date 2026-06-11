@@ -26,6 +26,10 @@ summarize the session with a tag update.
 5. Segment: when changing topics, call `tag_update` with `action=segment`.
 6. End: call `tag_update` with `action=end` and a concise summary.
 
+`tag_update` is a native MCP tool (segment, pause, end, and focus updates all
+go through it). Earlier releases required a CLI fallback for tag updates; that
+is no longer the case.
+
 ## Project `.kin/` Contract
 
 Kindex projects may ship a `.kin/` directory in git. Treat it as part of the
@@ -92,6 +96,31 @@ Use `link` when two nodes relate. Prefer explicit relationship types:
 The graph becomes useful through links. Add them whenever a relationship matters
 for future work.
 
+### Edit and Supersede
+
+Use `edit` to correct or extend an existing node instead of adding a near
+duplicate. Edits are policy-aware by node type:
+
+- editable (concept, document, artifact, skill, person, project, question):
+  full in-place edit — title, content, append, add/remove tags, intent, expires
+- additive (decision, constraint, directive, checkpoint, watch): history
+  matters — only `append` (dated addendum) and `expires` are allowed
+- managed (task, session, coordination): refused — use the dedicated
+  task/tag/coord tools
+
+Use `supersede` when an additive node's content must actually change: it
+creates a fresh node, links it with a `supersedes` edge, and marks the old
+node superseded. Pass `reason` so the provenance survives.
+
+Both accept a node ID or exact title. Both are refused while another agent
+holds an advisory lock on the node. `edit` accepts `force=True` to override
+(only when you are sure); `supersede` has no force flag — release the lock
+first (`lock_release` with `force=True`) before superseding a locked node.
+Every edit logs per-field old/new diffs, visible via `changelog`.
+
+Use `expires` (YYYY-MM-DD) on time-bound knowledge — expired nodes stop
+surfacing in context and are archived by the daemon.
+
 ### Learn From Large Text
 
 Use `learn` after reading long files, logs, design docs, transcripts, or command
@@ -113,6 +142,30 @@ Use `coord_start`, `coord_post`, `coord_read`, and `coord_end` for short-lived
 agent coordination. Coordination messages are operational state; promote only
 durable discoveries, decisions, or tasks into the graph with normal capture
 tools.
+
+### Collaborate With Other Agents
+
+When several agents share work, use the collab tools on top of basic
+coordination:
+
+- `coord_join`: become a member of a conversation. Members get a read cursor
+  (unread tracking) and receive the conversation's standing messages in their
+  session context. `coord_read` advances your cursor.
+- `coord_post` with `to=<agent>`: targeted message — counts as unread only
+  for that agent (broadcast when omitted).
+- `coord_attach`: attach a graph node as a shared resource so members see who
+  holds what when it is locked.
+- `coord_inject`: set, clear, or list standing messages that are pushed into
+  member agents' context by the session hooks until cleared. Use for
+  "don't touch X until Y lands" style coordination.
+- `lock_acquire` / `lock_release`: advisory locks on nodes. A lock signals
+  "I am working on this" — `edit` refuses foreign locks, and locked attached
+  resources surface to collab members. Locks expire by TTL; an expired lock
+  never blocks anyone.
+
+Your agent identity resolves automatically (`KIN_AGENT_ID` env, then the
+`agent_id` config key, then `user@shorthost`), so these tools work without
+explicit agent parameters.
 
 ### Add Watches
 

@@ -309,11 +309,12 @@ class TestKinIndex:
     def test_write_kin_index_output(self, store_and_config, tmp_path):
         store, cfg = store_and_config
 
-        # Add a couple of nodes
+        # Add a couple of nodes (team audience: the non-repo fallback only
+        # includes public/team nodes since the index is meant to be committed)
         store.add_node("Alpha concept", node_type="concept",
-                       domains=["eng"], weight=0.8)
+                       domains=["eng"], weight=0.8, audience="team")
         store.add_node("Beta concept", node_type="decision",
-                       domains=["design"], weight=0.6)
+                       domains=["design"], weight=0.6, audience="team")
 
         from kindex.ingest import write_kin_index
 
@@ -351,12 +352,14 @@ class TestKinIndex:
             node_id="z-node",
             domains=["zeta", "alpha"],
             weight=1.0,
+            audience="team",
         )
         store.add_node(
             "Alpha concept",
             node_id="a-node",
             domains=["beta"],
             weight=0.1,
+            audience="public",
         )
 
         from kindex.ingest import write_kin_index

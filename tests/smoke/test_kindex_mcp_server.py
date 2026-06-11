@@ -296,6 +296,62 @@ def test_remind_exec_is_callable():
     assert fn is not None, "'remind_exec' not found in kindex.mcp_server"
     assert callable(fn)
 
+def test_edit_is_callable():
+    """Function edit exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "edit", None)
+    assert fn is not None, "'edit' not found in kindex.mcp_server"
+    assert callable(fn)
+
+def test_supersede_is_callable():
+    """Function supersede exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "supersede", None)
+    assert fn is not None, "'supersede' not found in kindex.mcp_server"
+    assert callable(fn)
+
+def test_coord_join_is_callable():
+    """Function coord_join exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "coord_join", None)
+    assert fn is not None, "'coord_join' not found in kindex.mcp_server"
+    assert callable(fn)
+
+def test_coord_attach_is_callable():
+    """Function coord_attach exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "coord_attach", None)
+    assert fn is not None, "'coord_attach' not found in kindex.mcp_server"
+    assert callable(fn)
+
+def test_coord_inject_is_callable():
+    """Function coord_inject exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "coord_inject", None)
+    assert fn is not None, "'coord_inject' not found in kindex.mcp_server"
+    assert callable(fn)
+
+def test_lock_acquire_is_callable():
+    """Function lock_acquire exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "lock_acquire", None)
+    assert fn is not None, "'lock_acquire' not found in kindex.mcp_server"
+    assert callable(fn)
+
+def test_lock_release_is_callable():
+    """Function lock_release exists and is callable."""
+    import importlib
+    mod = importlib.import_module("kindex.mcp_server")
+    fn = getattr(mod, "lock_release", None)
+    assert fn is not None, "'lock_release' not found in kindex.mcp_server"
+    assert callable(fn)
+
 def test_main_is_callable():
     """Function main exists and is callable."""
     import importlib

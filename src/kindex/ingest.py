@@ -195,7 +195,17 @@ def scan_sessions(
         reverse=True,
     )[:limit]
 
+    # Per-profile session routing: an explicit per-pass predicate (set by
+    # daemon.cron_run_all / kin cron) wins; otherwise one is built from the
+    # configured profiles so EVERY ingest path routes (kin ingest sessions,
+    # MCP ingest, ...). None => no profiles: legacy, take everything.
+    from .routing import effective_session_filter
+
+    session_filter = effective_session_filter(config)
+
     for jsonl_path in jsonl_files:
+        if session_filter is not None and not session_filter(jsonl_path):
+            continue
         session_id = jsonl_path.stem[:12]
         session_slug = f"session-{session_id}"
 
@@ -278,6 +288,12 @@ def scan_codex_sessions(
     count = 0
     from .extract import keyword_extract
 
+    # Per-profile routing by the cwd recorded in the rollout meta (Codex has
+    # no Claude-style encoded dir names). None => no profiles configured.
+    from .routing import effective_cwd_router
+
+    cwd_router = effective_cwd_router(config)
+
     jsonl_files = sorted(
         sessions_dir.rglob("*.jsonl"),
         key=lambda f: f.stat().st_mtime,
@@ -287,6 +303,9 @@ def scan_codex_sessions(
     for jsonl_path in jsonl_files:
         meta, text = _extract_codex_session(jsonl_path, max_chars=8000)
         if not text or len(text) < 50:
+            continue
+
+        if cwd_router is not None and not cwd_router(str(meta.get("cwd") or "")):
             continue
 
         raw_session_id = meta.get("id") or jsonl_path.stem
@@ -932,9 +951,32 @@ def _kin_index_node(node: dict) -> dict:
     }
 
 
+def _git_ancestor_exists(path: Path) -> bool:
+    """True if path or any ancestor contains a .git entry (dir or file)."""
+    try:
+        p = path.resolve()
+    except OSError:
+        p = path
+    for candidate in (p, *p.parents):
+        try:
+            if (candidate / ".git").exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _detect_repo_for_index(output_dir: Path) -> str | None:
-    """Detect git repo slug from output_dir for repo-scoped indexing."""
+    """Detect git repo slug from output_dir for repo-scoped indexing.
+
+    Returns None only when output_dir is genuinely outside any git repo.
+    When git itself fails (binary missing, timeout, dubious-ownership
+    refusal — routine in CI/containers) but a .git entry exists in
+    output_dir or an ancestor, raises RuntimeError: a failed detection
+    inside a real repo must never downgrade to the global graph head.
+    """
     import subprocess
+    failure: str
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -944,9 +986,29 @@ def _detect_repo_for_index(output_dir: Path) -> str | None:
         if r.returncode == 0:
             root = Path(r.stdout.strip())
             return root.name.lower().replace(" ", "-")
-    except Exception:
-        pass
+        failure = (r.stderr or "").strip() or f"git exited {r.returncode}"
+    except Exception as e:
+        failure = str(e) or type(e).__name__
+    if _git_ancestor_exists(output_dir):
+        raise RuntimeError(
+            f"git repo detection failed inside a git repo ({failure}); "
+            f"refusing to write a global-graph index into {output_dir}"
+        )
     return None
+
+
+def _kin_declared_audience(output_dir: Path) -> str:
+    """Audience declared by the project's own .kin config ('' if none)."""
+    import yaml
+
+    config_file = output_dir / ".kin" / "config"
+    try:
+        if config_file.is_file():
+            data = yaml.safe_load(config_file.read_text()) or {}
+            return str(data.get("audience", "") or "")
+    except (OSError, yaml.YAMLError):
+        pass
+    return ""
 
 
 def write_kin_index(store: "Store", output_dir: Path) -> Path:
@@ -955,7 +1017,15 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
     The .kin/ directory is the standard location for all kindex project
     artifacts.  This file is meant to be git-tracked, giving other tools
     a snapshot of what Kindex knows about this project.  When run inside
-    a git repo, the index is scoped to code nodes belonging to that repo only.
+    a git repo, the index is scoped to code nodes belonging to that repo only
+    (repo-scoped selection is always preferred over the global fallback).
+    The non-repo fallback is a global head — since the file is meant to be
+    committed and shared, it only includes public/team-audience nodes unless
+    the repo's own .kin config declares ``audience: private``.
+
+    Raises RuntimeError (from _detect_repo_for_index) when git detection
+    fails inside what is visibly a git repo — the global fallback head must
+    never be committed into a real repo by accident.
     """
     repo_slug = _detect_repo_for_index(output_dir)
 
@@ -968,10 +1038,28 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
             "ORDER BY id ASC",
             (f"{mod_prefix}%", f"{sym_prefix}%"),
         ).fetchall()
+        # Post-filter to the exact id shape the code adapter emits
+        # (code-{mod|sym}-{slug}-{12 hex chars}). The LIKE prefix has no
+        # terminator and slugs contain hyphens, so 'code-mod-api-%' would
+        # otherwise also match another repo's 'code-mod-api-server-…' ids
+        # — leaking that repo's (private-by-default) module/symbol names
+        # into this repo's git-tracked index.
+        id_shape = re.compile(
+            rf"^code-(mod|sym)-{re.escape(repo_slug)}-[0-9a-f]{{12}}$"
+        )
+        nodes = [n for n in (store._row_to_dict(r) for r in rows)
+                 if id_shape.match(n["id"])]
+    elif _kin_declared_audience(output_dir) == "private":
+        # Explicitly private index: the repo owner opted in to a full snapshot.
+        rows = store.conn.execute(
+            "SELECT * FROM nodes ORDER BY id ASC LIMIT ?",
+            (500,),
+        ).fetchall()
         nodes = [store._row_to_dict(r) for r in rows]
     else:
         rows = store.conn.execute(
-            "SELECT * FROM nodes ORDER BY id ASC LIMIT ?",
+            "SELECT * FROM nodes WHERE audience IN ('public', 'team') "
+            "ORDER BY id ASC LIMIT ?",
             (500,),
         ).fetchall()
         nodes = [store._row_to_dict(r) for r in rows]

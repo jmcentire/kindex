@@ -288,6 +288,23 @@ def upsert_embedding(store: Store, node_id: str, text: str) -> bool:
         return False
 
 
+def delete_embedding(store: Store, node_id: str) -> bool:
+    """Remove a node's stored embedding (best-effort).
+
+    Used when a node is deleted or superseded so vector search stops
+    surfacing its stale text. Returns True if a row was deleted; False
+    when no row existed or the vector table is unavailable.
+    """
+    try:
+        cur = store.conn.execute(
+            "DELETE FROM node_vectors WHERE node_id = ?", (node_id,)
+        )
+        store.conn.commit()
+        return cur.rowcount > 0
+    except Exception:
+        return False
+
+
 def vector_search(store: Store, query: str, top_k: int = 10) -> list[dict]:
     """Search for similar nodes using vector similarity."""
     if not _check_vec():
@@ -310,7 +327,9 @@ def vector_search(store: Store, query: str, top_k: int = 10) -> list[dict]:
         results = []
         for row in rows:
             node = store.get_node(row[0])
-            if node:
+            # Skip superseded nodes — their embeddings are deleted on
+            # supersede now, but rows from older DBs may linger.
+            if node and node.get("status") != "superseded":
                 node["vec_distance"] = row[1]
                 results.append(node)
         return results

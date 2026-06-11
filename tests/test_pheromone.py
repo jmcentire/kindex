@@ -164,3 +164,62 @@ def test_autoramp_ramps_back_down_when_trails_cool(tmp_path):
     ramp = auto_ramp_pheromone_weight(store, cfg)
     assert ramp["weight"] == 0.0  # self-disables, no manual bit-flip
     store.close()
+
+
+# ── deposits redirect through supersession chains (idx 31) ────────────
+# Repro: supersede migrates trails exactly once; a deposit landing later
+# (deferred session-end reinforcement) re-created rows under the dead id,
+# boosting the stale node above its successor in ranking.
+
+
+def test_deposit_on_superseded_node_lands_on_successor(store):
+    old = store.add_node("Old decision text", node_type="concept")
+    store.deposit_pheromone(old, amount=1.0)
+
+    new = store.supersede_node(old, "New decision text")["id"]
+    # Migration moved the existing trail.
+    assert store.conn.execute(
+        "SELECT COUNT(*) c FROM injection_pheromone WHERE node_id = ?",
+        (old,)).fetchone()["c"] == 0
+
+    # A late deposit against the OLD id must follow the chain.
+    store.deposit_pheromone(old, amount=3.0, reinforce=True)
+    assert store.conn.execute(
+        "SELECT COUNT(*) c FROM injection_pheromone WHERE node_id = ?",
+        (old,)).fetchone()["c"] == 0
+    row = store.conn.execute(
+        "SELECT strength, reinforcements FROM injection_pheromone "
+        "WHERE node_id = ? AND context = ''", (new,)).fetchone()
+    assert row is not None
+    assert row["reinforcements"] == 1
+    assert row["strength"] == pytest.approx(4.0, abs=0.01)
+
+
+def test_deposit_follows_multi_hop_chain(store):
+    a = store.add_node("Chain start node")
+    b = store.supersede_node(a, "Chain middle node")["id"]
+    c = store.supersede_node(b, "Chain end node")["id"]
+
+    store.deposit_pheromone(a, amount=1.0)
+    rows = store.conn.execute(
+        "SELECT node_id FROM injection_pheromone").fetchall()
+    assert [r["node_id"] for r in rows] == [c]
+
+
+def test_deposit_redirect_is_cycle_safe(store):
+    a = store.add_node("Cycle node a")
+    b = store.add_node("Cycle node b")
+    # Malformed graph: a <-> b supersession cycle (hand-crafted).
+    store.update_node(a, extra={"superseded_by": b})
+    store.update_node(b, extra={"superseded_by": a})
+
+    # Must terminate and deposit somewhere on the chain without hanging.
+    strength = store.deposit_pheromone(a, amount=1.0)
+    assert strength == pytest.approx(1.0)
+
+
+def test_deposit_on_live_node_unchanged(store):
+    nid = store.add_node("Live node plain")
+    assert store.deposit_pheromone(nid, amount=1.0) == 1.0
+    assert store.conn.execute(
+        "SELECT node_id FROM injection_pheromone").fetchone()["node_id"] == nid

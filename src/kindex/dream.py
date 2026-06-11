@@ -29,10 +29,17 @@ if TYPE_CHECKING:
     from .config import Config
     from .store import Store
 
+from .schema import EDIT_POLICY
+
 logger = logging.getLogger(__name__)
 
-# Node types that dream must never touch (CD008)
-PROTECTED_TYPES = frozenset({"constraint", "directive", "checkpoint"})
+# Node types that dream must never touch (CD008). Derived from the schema
+# edit policy as the single source of truth: additive types (history matters
+# — a merge rewrites content the edit policy forbids) plus managed types
+# (task/session/coordination — subsystem-owned state lives in extra and a
+# merge would destroy members/cursors/messages/locks).
+PROTECTED_TYPES = (frozenset(EDIT_POLICY["additive"])
+                   | frozenset(EDIT_POLICY["managed"]))
 
 # Similarity thresholds (CD002)
 DEFAULT_MERGE_THRESHOLD = 0.95
@@ -229,6 +236,11 @@ def merge_nodes(store: Store, source_id: str, target_id: str) -> bool:
     target = store.get_node(target_id)
     if not source or not target:
         return False
+    # Defense in depth: never merge protected types even if a caller bypasses
+    # find_duplicates' filter — subsystem-owned/history-bearing nodes survive.
+    if (source.get("type", "concept") in PROTECTED_TYPES
+            or target.get("type", "concept") in PROTECTED_TYPES):
+        return False
 
     # Move edges from source to target
     for edge in store.edges_from(source_id):
@@ -260,10 +272,13 @@ def merge_nodes(store: Store, source_id: str, target_id: str) -> bool:
     tw = target.get("weight", 0.5) or 0.5
     store.update_node(target_id, weight=min(1.0, max(tw, sw)))
 
-    # Archive source (CD001: never delete, only archive)
+    # Archive source (CD001: never delete, only archive). Preserve the
+    # existing extra (locks, claims, expiry, ...) — only annotate the merge.
+    merged_extra = dict(source.get("extra") or {})
+    merged_extra.update({"merged_into": target_id, "merged_by": "dream-cycle"})
     store.update_node(
         source_id, status="archived", weight=0.01,
-        extra={"merged_into": target_id, "merged_by": "dream-cycle"},
+        extra=merged_extra,
     )
     return True
 

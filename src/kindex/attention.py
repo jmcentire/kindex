@@ -255,7 +255,11 @@ def _bash_segment_is_readonly(segment: str, config: Config) -> bool:
     if cmd == "git":
         return sub in config.attention.readonly_git_subcommands
     if cmd == "kin":
-        return sub in config.attention.readonly_kin_subcommands
+        subs = config.attention.readonly_kin_subcommands
+        # Entries may be two-word ("coord read", "profile list"): a parent
+        # subcommand whose read-only-ness depends on its action argument.
+        two = f"{sub} {tokens[2]}" if len(tokens) > 2 else ""
+        return sub in subs or (bool(two) and two in subs)
     return cmd in config.attention.readonly_bash_commands
 
 
@@ -554,12 +558,15 @@ def select_candidates(
 
     from .reminders import reminder_matches_conversation
     from .scoping import item_matches_conversation
+    from .store import node_expired
 
     by_id: dict[str, AttentionCandidate] = {}
     include_legacy_scoped_items = conversation_id is None
 
     for node in store.fts_search(snippet, limit=max(12, config.attention.max_candidates * 3)):
         if node.get("type") not in {"constraint", "directive", "checkpoint", "watch", "task"}:
+            continue
+        if node_expired(node):
             continue
         if node.get("type") == "task" and not item_matches_conversation(
             node,
@@ -574,6 +581,8 @@ def select_candidates(
 
     for node_type in ("constraint", "directive", "checkpoint", "task"):
         for node in store.all_nodes(node_type=node_type, status="active", limit=100):
+            if node_expired(node):
+                continue
             if node_type == "task" and not item_matches_conversation(
                 node,
                 conversation_id,
@@ -588,6 +597,8 @@ def select_candidates(
                 by_id[candidate.id] = candidate
 
     for node in store.active_watches()[:100]:
+        if node_expired(node):  # active_watches already filters; keep the invariant local
+            continue
         candidate = _node_to_candidate(node, snippet, config)
         if candidate and (
             candidate.id not in by_id or candidate.score > by_id[candidate.id].score
