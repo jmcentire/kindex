@@ -255,7 +255,11 @@ def _bash_segment_is_readonly(segment: str, config: Config) -> bool:
     if cmd == "git":
         return sub in config.attention.readonly_git_subcommands
     if cmd == "kin":
-        return sub in config.attention.readonly_kin_subcommands
+        subs = config.attention.readonly_kin_subcommands
+        # Entries may be two-word ("coord read", "profile list"): a parent
+        # subcommand whose read-only-ness depends on its action argument.
+        two = f"{sub} {tokens[2]}" if len(tokens) > 2 else ""
+        return sub in subs or (bool(two) and two in subs)
     return cmd in config.attention.readonly_bash_commands
 
 

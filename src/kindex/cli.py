@@ -30,10 +30,17 @@ def _dumps(obj, **kw):
 
 def _config(args):
     from .config import load_config
-    cfg = load_config(
-        getattr(args, "config", None),
-        project_path=getattr(args, "project_path", None),
-    )
+    try:
+        cfg = load_config(
+            getattr(args, "config", None),
+            project_path=getattr(args, "project_path", None),
+            profile=getattr(args, "profile", None),
+        )
+    except ValueError as e:
+        # Unknown profile (or otherwise invalid config) — fail clearly
+        # instead of dumping a traceback or falling through to legacy.
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
     if getattr(args, "data_dir", None):
         cfg.data_dir = args.data_dir
     return cfg
@@ -584,9 +591,16 @@ def cmd_status(args):
     # Standard graph stats
     stats = store.stats()
 
+    cfg = _config(args)
     if args.json:
+        stats["profile"] = cfg.active_profile
+        stats["profile_source"] = cfg.profile_source if cfg.active_profile else None
         print(_dumps(stats, indent=2))
     else:
+        if cfg.active_profile:
+            print(f"Profile: {cfg.active_profile} (via {cfg.profile_source})")
+        else:
+            print("Profile: (none — legacy single-graph)")
         print(f"Nodes:     {stats['nodes']}")
         print(f"Edges:     {stats['edges']}")
         print(f"Orphans:   {stats['orphans']}")
@@ -1973,8 +1987,125 @@ def cmd_alias(args):
 
 def cmd_whoami(args):
     """Show the current user identity used for --mine filtering."""
+    from .config import resolve_agent_id
     cfg = _config(args)
+    if getattr(args, "json", False):
+        print(_dumps({"user": cfg.current_user, "agent": resolve_agent_id(cfg)}))
+        return
     print(cfg.current_user)
+    print(f"Agent: {resolve_agent_id(cfg)}")
+
+
+# ── profile ───────────────────────────────────────────────────────────
+
+def cmd_profile(args):
+    """Manage named graph profiles (sequestered multi-profile storage).
+
+    kin profile list              — configured profiles + file-level stats
+    kin profile which             — resolved profile for this invocation
+    kin profile create <name> --data-dir DIR [--roots a,b] [--default]
+    """
+    action = getattr(args, "profile_action", "list")
+
+    if action == "create":
+        _profile_create(args)
+        return
+
+    cfg = _config(args)
+
+    if action == "which":
+        if args.json:
+            print(_dumps({
+                "profile": cfg.active_profile,
+                "source": cfg.profile_source if cfg.active_profile else None,
+            }))
+        elif cfg.active_profile:
+            print(f"{cfg.active_profile} (via {cfg.profile_source})")
+        else:
+            print("(none — legacy single-graph)")
+        return
+
+    # list (default) — file-level stats only; no cross-profile graph reads.
+    if not cfg.profiles:
+        if args.json:
+            print(_dumps({"profiles": {}, "default_profile": None}))
+        else:
+            print("No profiles configured (legacy single-graph).")
+            print("Create one: kin profile create <name> --data-dir <dir> [--roots <dirs>]")
+        return
+
+    if args.json:
+        print(_dumps({
+            "profiles": {n: e.model_dump() for n, e in cfg.profiles.items()},
+            "default_profile": cfg.default_profile,
+            "active_profile": cfg.active_profile,
+        }, indent=2))
+        return
+
+    for name, entry in cfg.profiles.items():
+        markers = []
+        if name == cfg.default_profile:
+            markers.append("default")
+        if name == cfg.active_profile:
+            markers.append("active")
+        suffix = f" ({', '.join(markers)})" if markers else ""
+        print(f"{name}{suffix}")
+        data_path = Path(entry.data_dir).expanduser()
+        db = data_path / "kindex.db"
+        if not db.exists() and (data_path / "conv.db").exists():
+            db = data_path / "conv.db"
+        if db.exists():
+            print(f"  data_dir: {entry.data_dir} ({db.name}, {db.stat().st_size} bytes)")
+        else:
+            print(f"  data_dir: {entry.data_dir} (no database yet)")
+        if entry.roots:
+            print(f"  roots:    {', '.join(entry.roots)}")
+
+
+def _profile_create(args):
+    """Create a profile in the GLOBAL kin.yaml, preserving existing content."""
+    name = getattr(args, "name", None)
+    if not name:
+        print("Error: kin profile create <name> --data-dir <dir>", file=sys.stderr)
+        sys.exit(2)
+    profile_data_dir = getattr(args, "data_dir", None)
+    if not profile_data_dir:
+        print("Error: --data-dir is required for profile create", file=sys.stderr)
+        sys.exit(2)
+
+    from .config import _GLOBAL_PATHS
+
+    path = None
+    for p in _GLOBAL_PATHS:
+        p = p.expanduser().resolve()
+        if p.is_file():
+            path = p
+            break
+    if path is None:
+        path = (Path.home() / ".config" / "kindex" / "kin.yaml").resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Round-trip the existing yaml: load, modify, dump — unknown keys survive.
+    data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    profiles = data.get("profiles") or {}
+    if name in profiles:
+        print(f"Error: profile '{name}' already exists in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    roots = [r.strip() for r in (getattr(args, "roots", None) or "").split(",")
+             if r.strip()]
+    profiles[name] = {"data_dir": profile_data_dir, "roots": roots}
+    data["profiles"] = profiles
+    if getattr(args, "set_default", False):
+        data["default_profile"] = name
+    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+    print(f"Created profile '{name}' in {path}")
+    print(f"  data_dir: {profile_data_dir}")
+    if roots:
+        print(f"  roots:    {', '.join(roots)}")
+    if getattr(args, "set_default", False):
+        print(f"  default_profile: {name}")
 
 
 # ── embed ─────────────────────────────────────────────────────────────
@@ -2452,19 +2583,34 @@ def cmd_import_graph(args):
 # ── cron ──────────────────────────────────────────────────────────────
 
 def cmd_cron(args):
-    """Run one-shot maintenance cycle (designed for crontab)."""
-    store = _store(args)
+    """Run one-shot maintenance cycle (designed for crontab).
+
+    With profiles configured, runs one pass per profile (each on its own
+    data_dir). An explicit --data-dir or --profile pins a single pass.
+    """
     cfg = _config(args)
     verbose = getattr(args, "verbose", False)
 
-    from .daemon import cron_run
+    from .daemon import cron_run_all
 
-    results = cron_run(cfg, store, verbose=verbose)
+    if getattr(args, "data_dir", None) or getattr(args, "profile", None):
+        # Explicit targeting: single pass on exactly this data_dir/profile.
+        cfg.profiles = {}
+    passes = cron_run_all(cfg, verbose=verbose)
 
     if args.json:
-        print(_dumps(results, indent=2))
-    else:
-        print("Cron maintenance complete:")
+        if len(passes) == 1 and passes[0]["profile"] is None:
+            print(_dumps(passes[0]["results"], indent=2))  # legacy shape
+        else:
+            print(_dumps(passes, indent=2))
+        return
+
+    for p in passes:
+        results = p["results"]
+        if p["profile"]:
+            print(f"Cron maintenance complete (profile: {p['profile']}):")
+        else:
+            print("Cron maintenance complete:")
         print(f"  Projects scanned:  {results.get('projects', 0)}")
         print(f"  .kin/config updates: {results.get('kin_updates', 0)}")
         print(f"  Sessions ingested: {results.get('sessions', 0)}")
@@ -2496,8 +2642,6 @@ def cmd_cron(args):
                 print(f"  Cron interval: {repack.get('previous', '?')}s -> {interval}s (adaptive)")
             elif action == "disabled":
                 print(f"  Cron interval: disabled (no pending reminders)")
-
-    store.close()
 
 
 # ── dream ─────────────────────────────────────────────────────────────
@@ -4599,6 +4743,7 @@ def _config_write(key: str, value: str, config_path: str | None = None,
 def _common(p):
     p.add_argument("--config", help="Explicit config file (bypasses layering)")
     p.add_argument("--data-dir", help="Override data directory")
+    p.add_argument("--profile", help="Use a named kindex profile (overrides auto-resolution)")
     p.add_argument("--project-path", help="Project root/path for .kin config lookup")
     p.add_argument("--json", action="store_true", help="JSON output")
 
@@ -4861,9 +5006,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_alias)
 
     # whoami
-    s = sub.add_parser("whoami", help="Show current user identity")
+    s = sub.add_parser("whoami", help="Show current user and agent identity")
     _common(s)
     s.set_defaults(func=cmd_whoami)
+
+    # profile
+    s = sub.add_parser("profile", help="Named graph profiles (list, which, create)")
+    s.add_argument("profile_action", nargs="?", default="list",
+                   choices=["list", "which", "create"])
+    s.add_argument("name", nargs="?", help="Profile name (for create)")
+    s.add_argument("--roots", help="Comma-separated roots routed to this profile (for create)")
+    s.add_argument("--default", dest="set_default", action="store_true",
+                   help="Set as default_profile (for create)")
+    _common(s)
+    s.set_defaults(func=cmd_profile)
 
     # embed
     s = sub.add_parser("embed", help="Index all nodes for vector search")

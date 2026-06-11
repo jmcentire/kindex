@@ -195,7 +195,13 @@ def scan_sessions(
         reverse=True,
     )[:limit]
 
+    # Per-profile session routing (set by daemon.cron_run_all): only ingest
+    # sessions this pass's predicate accepts. None => legacy: take everything.
+    session_filter = getattr(config, "_session_filter", None)
+
     for jsonl_path in jsonl_files:
+        if session_filter is not None and not session_filter(jsonl_path):
+            continue
         session_id = jsonl_path.stem[:12]
         session_slug = f"session-{session_id}"
 
@@ -949,13 +955,31 @@ def _detect_repo_for_index(output_dir: Path) -> str | None:
     return None
 
 
+def _kin_declared_audience(output_dir: Path) -> str:
+    """Audience declared by the project's own .kin config ('' if none)."""
+    import yaml
+
+    config_file = output_dir / ".kin" / "config"
+    try:
+        if config_file.is_file():
+            data = yaml.safe_load(config_file.read_text()) or {}
+            return str(data.get("audience", "") or "")
+    except (OSError, yaml.YAMLError):
+        pass
+    return ""
+
+
 def write_kin_index(store: "Store", output_dir: Path) -> Path:
     """Write .kin/index.json summarizing the graph for this project.
 
     The .kin/ directory is the standard location for all kindex project
     artifacts.  This file is meant to be git-tracked, giving other tools
     a snapshot of what Kindex knows about this project.  When run inside
-    a git repo, the index is scoped to code nodes belonging to that repo only.
+    a git repo, the index is scoped to code nodes belonging to that repo only
+    (repo-scoped selection is always preferred over the global fallback).
+    The non-repo fallback is a global head — since the file is meant to be
+    committed and shared, it only includes public/team-audience nodes unless
+    the repo's own .kin config declares ``audience: private``.
     """
     repo_slug = _detect_repo_for_index(output_dir)
 
@@ -969,9 +993,17 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
             (f"{mod_prefix}%", f"{sym_prefix}%"),
         ).fetchall()
         nodes = [store._row_to_dict(r) for r in rows]
-    else:
+    elif _kin_declared_audience(output_dir) == "private":
+        # Explicitly private index: the repo owner opted in to a full snapshot.
         rows = store.conn.execute(
             "SELECT * FROM nodes ORDER BY id ASC LIMIT ?",
+            (500,),
+        ).fetchall()
+        nodes = [store._row_to_dict(r) for r in rows]
+    else:
+        rows = store.conn.execute(
+            "SELECT * FROM nodes WHERE audience IN ('public', 'team') "
+            "ORDER BY id ASC LIMIT ?",
             (500,),
         ).fetchall()
         nodes = [store._row_to_dict(r) for r in rows]

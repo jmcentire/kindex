@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime
+import json as _json
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .config import Config
@@ -149,6 +151,124 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
         pass  # don't let scheduling errors break cron
 
     return results
+
+
+def cron_run_all(base_config: "Config", verbose: bool = False) -> list[dict]:
+    """Run the cron maintenance cycle across all configured profiles.
+
+    No profiles configured -> a single legacy pass on base_config (byte-
+    identical to the pre-profile behavior). With profiles -> one pass per
+    profile, each on its own data_dir/Store. Claude session ingestion within
+    a pass only takes sessions whose cwd falls under that profile's roots;
+    the default profile additionally takes unmatched sessions.
+
+    Returns a list of {profile, source, results} dicts, one per pass.
+    """
+    from .store import Store
+
+    profiles = dict(getattr(base_config, "profiles", {}) or {})
+    if not profiles:
+        store = Store(base_config)
+        try:
+            results = cron_run(base_config, store, verbose=verbose)
+        finally:
+            store.close()
+        return [{
+            "profile": getattr(base_config, "active_profile", None),
+            "source": getattr(base_config, "profile_source", "legacy"),
+            "results": results,
+        }]
+
+    default_name = getattr(base_config, "default_profile", None)
+    passes: list[dict] = []
+    for name, entry in profiles.items():
+        cfg = base_config.model_copy(deep=True)
+        cfg.data_dir = str(Path(entry.data_dir).expanduser())
+        cfg.active_profile = name
+        cfg.profile_source = "cron"
+        cfg._session_filter = profile_session_filter(profiles, name, default_name)
+        if verbose:
+            print(f"== Profile pass: {name} ({cfg.data_dir}) ==")
+        store = Store(cfg)
+        try:
+            results = cron_run(cfg, store, verbose=verbose)
+        finally:
+            store.close()
+        passes.append({"profile": name, "source": "cron", "results": results})
+    return passes
+
+
+def profile_session_filter(
+    profiles: dict, name: str, default_name: str | None
+) -> "Callable[[Path], bool]":
+    """Predicate deciding whether a session JSONL belongs to profile `name`.
+
+    A session is owned by the profile whose roots contain its cwd (longest
+    prefix wins). Sessions matching no profile go to the default profile.
+    """
+    def _filter(jsonl_path: Path) -> bool:
+        owner = _session_profile_owner(jsonl_path, profiles)
+        if owner is None:
+            return name == default_name
+        return owner == name
+
+    return _filter
+
+
+def _encode_claude_project_dir(path: str) -> str:
+    """Encode a cwd the way Claude Code names its per-project session dirs.
+
+    Claude Code replaces every non-alphanumeric character of the absolute
+    path with '-': /Users/me/Code/my.repo -> -Users-me-Code-my-repo.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def _session_cwd(jsonl_path: Path, max_lines: int = 10) -> str:
+    """Best-effort cwd extraction from a session JSONL's leading entries."""
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= max_lines:
+                    break
+                try:
+                    entry = _json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(entry, dict) and entry.get("cwd"):
+                    return str(entry["cwd"])
+    except OSError:
+        pass
+    return ""
+
+
+def _session_profile_owner(jsonl_path: Path, profiles: dict) -> str | None:
+    """Which profile owns a session, by longest-prefix root match (or None).
+
+    Prefers the real cwd recorded inside the JSONL; falls back to matching
+    the Claude-encoded project directory name.
+    """
+    cwd = _session_cwd(jsonl_path)
+    enc_name = jsonl_path.parent.name
+    best: tuple[int, str] | None = None
+    for pname, entry in profiles.items():
+        for root in getattr(entry, "roots", None) or []:
+            rp = Path(root).expanduser()
+            matched = False
+            if cwd:
+                try:
+                    cp = Path(cwd)
+                    matched = cp == rp or rp in cp.parents
+                except (ValueError, OSError):
+                    matched = False
+            if not matched:
+                enc = _encode_claude_project_dir(str(rp))
+                matched = enc_name == enc or enc_name.startswith(enc + "-")
+            if matched:
+                plen = len(str(rp))
+                if best is None or plen > best[0]:
+                    best = (plen, pname)
+    return best[1] if best else None
 
 
 def _process_inbox(config: "Config", store: "Store", verbose: bool = False) -> int:
