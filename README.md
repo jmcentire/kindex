@@ -5,7 +5,7 @@
 [![v0.23.0](https://img.shields.io/badge/version-0.23.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1127%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1348%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -68,7 +68,7 @@ Or add `.mcp.json` to any repo for project-scope access:
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
 ```
 
-Claude Code now has 30+ native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `remind_*`, `mode_*`, and more.
+Claude Code now has 50+ native tools: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
 
 For coding agents, install both the MCP server and the instruction file. The
 instruction file tells the model how to use kindex: start a session tag, read
@@ -340,6 +340,125 @@ kin remind snooze --reminder-id <id> --duration 1h
 kin remind done --reminder-id <id>
 ```
 
+## Editing & Superseding
+
+Knowledge changes. Kindex edits are policy-aware: each node type has a mutability class that says how its content may change, so facts stay correctable while history-bearing records stay append-only.
+
+| Class | Node types | What's allowed |
+|-------|-----------|----------------|
+| `editable` | concept, document, artifact, skill, person, project, question | Full in-place edit: title, content, append, tags, intent, expires |
+| `additive` | decision, constraint, directive, checkpoint, watch | History matters — append and expires only; use `supersede` to replace |
+| `managed` | task, session, coordination | Refused — use the dedicated `task`/`tag`/`coord` commands |
+
+```bash
+# In-place edit (editable types) — accepts node id or exact title
+kin edit oauth-flow --title "OAuth2 + OIDC flow" --add-tags auth,oidc
+
+# Additive types only grow: append a dated addendum
+kin edit deploy-constraint --append "Clarified: applies to staging too"
+
+# Give any node an expiry — expired nodes stop surfacing and get archived
+kin edit conference-notes --expires 2026-09-01
+
+# Replace with history: new node + supersedes edge, old node marked superseded
+kin supersede old-decision "We now use OIDC trusted publishing" --reason "tokens deprecated"
+```
+
+Every edit logs per-field value diffs to the activity log, and `kin changelog` renders them:
+
+```
+## Edited (1)
+  2026-06-11  [concept] OAuth2 + OIDC flow
+      title: OAuth2 flow -> OAuth2 + OIDC flow
+```
+
+Edits re-embed the node for vector search, protect reserved operational state (locks, claims, coordination messages), and refuse to modify a node another agent has locked unless you pass `--force`. The per-type class can be overridden in config with `edit_policy: {document: additive}` if your team wants stricter history.
+
+## Profiles
+
+One machine, multiple sequestered graphs. Profiles map names to separate data directories so work and personal knowledge never mix — different DBs, different embeddings, different everything.
+
+```yaml
+# ~/.config/kindex/kin.yaml
+profiles:
+  work:
+    data_dir: ~/.kindex-work
+    roots: [~/Work]
+  personal:
+    data_dir: ~/.kindex
+    roots: [~/Code, ~/Personal]
+default_profile: personal
+```
+
+Resolution order (first match wins):
+
+1. `--profile <name>` flag
+2. `KIN_PROFILE` environment variable
+3. `profile:` key from the project's `.kin/config` chain
+4. Longest-prefix match of the current directory against profile `roots`
+5. `default_profile`
+6. Legacy single graph — no profiles configured means nothing changes
+
+```bash
+kin profile list                 # configured profiles + file-level stats
+kin profile which                # which profile this invocation resolves to
+kin profile create work --data-dir ~/.kindex-work --roots ~/Work --default
+kin status                       # shows: Profile: work (via roots)
+```
+
+**Stamp guard.** Each profile's database is stamped with its profile name on first open. Opening a stamped database under a different profile raises an error instead of silently mixing graphs — a wrong `--data-dir` can't cross-contaminate.
+
+**MCP note.** The MCP server binds its profile once at process start and keeps it for the process lifetime. To switch profiles for an agent, restart its MCP server (or run a second server with `KIN_PROFILE` set in its environment).
+
+`kin cron` runs one maintenance pass per profile and routes session ingestion by roots — sessions whose cwd falls under a profile's roots land in that profile's graph; the default profile takes the unmatched remainder.
+
+## Collab
+
+Multiple agents working the same graph can coordinate through conversations with members, read cursors, shared resources, advisory locks, and standing inject messages.
+
+```bash
+# Join a conversation as a member — members get unread tracking
+kin coord join payments-refactor
+
+# Attach a shared resource so members see who holds what
+kin coord attach payments-refactor invoice-schema
+
+# Advisory locks: signal "I'm working on this" — edits refuse foreign locks
+kin lock invoice-schema --ttl 60 --note "migrating columns"
+kin unlock invoice-schema
+
+# Targeted message — only alice sees it as unread-for-her
+kin coord post payments-refactor "schema branch is yours" --to alice@mbp
+
+# Standing inject message — pushed into members' context until cleared
+kin coord inject payments-refactor set "Don't touch the invoice schema until migration lands"
+kin coord inject payments-refactor clear
+```
+
+**Agent identity** resolves as `KIN_AGENT_ID` env > `agent_id` in config > `user@shorthost`. `kin whoami` shows both the user and the resolved agent id. Locks, claims, cursors, and message targeting all key off this identity.
+
+Members see their collabs in the session-start prime block:
+
+```
+### Active collabs
+- **payments-refactor** — 2 unread (focus: Extract billing service)
+  COLLAB MSG: Don't touch the invoice schema until migration lands (from alice@mbp)
+  Locked: invoice-schema (held by alice@mbp)
+  Check the collab: coord_read payments-refactor
+```
+
+New targeted/broadcast messages and standing injects also surface mid-session through the prompt hook (with a cooldown so they don't nag). Display is configurable:
+
+```yaml
+agent_id: jeremy-laptop        # optional; default user@shorthost
+collab:
+  enabled: true
+  display: full                # full | minimal (one line per collab) | quiet (no prime block)
+  prompt_cooldown_minutes: 10  # mid-session injection cooldown
+```
+
+Locks are advisory and expire — an expired lock never blocks anyone, and the cron pass sweeps stale locks, conversations, and task claims.
+
 ## .kin/ Directory & Inheritance
 
 Projects use `.kin/` directories that encode their communication style, engineering standards, and values. Teams inherit from orgs. Repos inherit from teams. The knowledge graph carries the voice forward.
@@ -455,7 +574,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
-## CLI Reference (49 commands)
+## CLI Reference (69 commands)
 
 ### Core
 | Command | Description |
@@ -472,6 +591,8 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 |---------|-------------|
 | `kin learn` | Extract knowledge from sessions and inbox |
 | `kin link <a> <b>` | Create weighted edge between nodes |
+| `kin edit <id>` | Policy-aware in-place edit (--title, --content, --append, --add-tags, --expires) |
+| `kin supersede <id> <text>` | Replace a node with a new one, preserving history (--reason) |
 | `kin alias <id> [add\|remove\|list]` | Manage AKA/synonyms for a node |
 | `kin register <id> <path>` | Associate a file path with a node |
 | `kin orphans` | Nodes with no connections |
@@ -499,6 +620,14 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin export` | Audience-aware graph export with PII stripping |
 | `kin import <file>` | Import nodes/edges from JSON/JSONL (--mode merge/replace) |
 | `kin sync-links` | Update node content with connection references |
+
+### Collab & Multi-Agent
+| Command | Description |
+|---------|-------------|
+| `kin coord [action]` | Agent coordination: start, post, read, list, end, join, attach, inject |
+| `kin lock <id>` | Acquire an advisory lock on a node (--ttl, --note, --force) |
+| `kin unlock <id>` | Release an advisory lock (--force for foreign locks) |
+| `kin profile [action]` | Named graph profiles: list, which, create |
 
 ### Ingestion & External Sources
 | Command | Description |
@@ -619,7 +748,7 @@ Use `kin attention estimate --messages 1000` to estimate cost over a fixed promp
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 980 tests
+make test         # run 1348 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```

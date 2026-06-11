@@ -31,6 +31,8 @@ pytest tests/ --cov=kindex --cov-report=term-missing
 | `src/kindex/extract.py` | Knowledge extraction from text and sessions |
 | `src/kindex/ingest.py` | Project and session ingestion pipeline |
 | `src/kindex/sessions.py` | Session tag lifecycle (start, update, segment, resume) |
+| `src/kindex/coordination.py` | Collab conversations (members, cursors, inject messages, resources) |
+| `src/kindex/locks.py` | Advisory node locks (acquire, release, expiry sweep) |
 | `src/kindex/hooks.py` | Claude Code hook handlers (prime, compact) |
 | `src/kindex/setup.py` | System setup (Claude hooks, launchd, crontab) |
 | `src/kindex/daemon.py` | Background daemon and cron cycle |
@@ -56,6 +58,9 @@ When working in this codebase, follow these practices:
 - **Record constraints**: Use `kin add "<rule>" --type constraint --trigger <event> --action <verify|warn|block>` for invariants.
 - **Flag attention items**: Use `kin add "<item>" --type watch --owner <person> --expires <date>` for things that need monitoring.
 - **Search before adding**: Use `kin search <term>` or `kin search <term> --tags <domain>` to check if knowledge already exists before duplicating.
+- **Edit, don't re-add**: Use `kin edit <id-or-title> --content "..."` to correct an existing node instead of creating a near duplicate. Additive types (decision, constraint, directive, checkpoint, watch) only accept `--append` and `--expires`; use `kin supersede <id> "<new text>" --reason "..."` to replace them with history. `kin changelog` shows per-field diffs.
+- **Coordinate multi-agent work**: Use `kin coord join <name>` to become a member (unread tracking), `kin coord attach <name> <node>` for shared resources, `kin coord inject <name> set "<msg>" [--to <agent>]` for standing messages, and `kin lock <id> --ttl <min> --note "<why>"` / `kin unlock <id>` for advisory locks before editing contested nodes.
+- **Profiles**: When `profiles:` are configured in `~/.config/kindex/kin.yaml`, the active graph resolves by `--profile` flag > `KIN_PROFILE` env > `.kin` chain `profile:` key > cwd roots match > `default_profile`. `kin profile which` shows the resolution; `kin whoami` shows the agent identity used for locks/claims/collabs.
 - **Filter by tags**: Use `kin list --tags <tag1>,<tag2>` to find nodes by tag (AND logic). Tags supplement auto-categorization.
 - **Check status**: Use `kin status` to see graph health and active operational nodes.
 - **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update --focus "..."` or `kin tag segment --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end --summary "..."`. See `kin tag list` for all tags.
@@ -94,5 +99,12 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
 - Context tiers: full (~4000 tokens), abridged (~1500), summarized (~750), executive (~200), index (~100) -- auto-selected by budget
 - Node types: concept, document, session, person, project, decision, question, artifact, skill, constraint, directive, checkpoint, watch
 - Edge types: relates_to, depends_on, derived_from, contradicts, etc. with weights and provenance
+- Node mutability classes (enforced by `kin edit` / MCP `edit`, overridable via config `edit_policy`):
+
+| Class | Node types | Allowed edits |
+|-------|-----------|---------------|
+| editable | concept, document, artifact, skill, person, project, question | Full in-place: title, content, append, tags, intent, expires |
+| additive | decision, constraint, directive, checkpoint, watch | append + expires only; replace via `kin supersede` |
+| managed | task, session, coordination | Refused — use `kin task` / `kin tag` / `kin coord` |
 - Audience: private / team / public scoping with export boundary enforcement
 - Weight decay: Nodes and edges naturally fade unless accessed, keeping the graph fresh

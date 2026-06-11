@@ -267,8 +267,8 @@
     <div class="badges">
       <span class="badge green">v0.23.0</span>
       <span class="badge orange">MCP Plugin</span>
-      <span class="badge blue">45 MCP Tools</span>
-      <span class="badge purple">63 CLI Commands</span>
+      <span class="badge blue">52 MCP Tools</span>
+      <span class="badge purple">69 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -315,6 +315,18 @@
       <div class="card">
         <h3>Adaptive Scheduling</h3>
         <p>The cron daemon dynamically adjusts its check interval based on the nearest pending reminder. Reminder in 3 days? Check daily. Day of? Hourly. Within the hour? Every 5 minutes. No reminders? Daemon sleeps. Zero wasted cycles.</p>
+      </div>
+      <div class="card">
+        <h3>Policy-Aware Editing</h3>
+        <p>Edit nodes in place without losing history. Concepts and documents edit freely; decisions and constraints only grow (append) or get superseded with a linked replacement. Every edit logs per-field value diffs. <code>kin edit</code> / <code>kin supersede</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Graph Profiles</h3>
+        <p>One machine, multiple sequestered graphs &mdash; work and personal knowledge never mix. Profiles resolve by flag, env, project config, or directory roots, and each database is stamped so a wrong path can't cross-contaminate. <code>kin profile create work --data-dir ~/.kindex-work</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Multi-Agent Collab</h3>
+        <p>Agents join shared conversations with unread tracking, targeted messages, standing inject messages pushed into members' context, and advisory locks on shared resources. <code>coord_join</code> / <code>coord_inject</code> / <code>lock_acquire</code>.</p>
       </div>
     </div>
   </div>
@@ -430,6 +442,8 @@
 <span class="output">  ask         &mdash; question classification + answer</span>
 <span class="output">  learn       &mdash; extract knowledge from text</span>
 <span class="output">  link        &mdash; create edges between nodes</span>
+<span class="output">  edit        &mdash; policy-aware in-place edit with value diffs</span>
+<span class="output">  supersede   &mdash; replace a node, preserving history</span>
 <span class="output">  list_nodes  &mdash; browse with filters</span>
 <span class="output">  status      &mdash; graph health + operational summary</span>
 <span class="output">  suggest     &mdash; bridge opportunity suggestions</span>
@@ -445,6 +459,11 @@
 <span class="output">  remind_done   &mdash; complete a reminder</span>
 <span class="output">  remind_check  &mdash; fire due reminders now</span>
 <span class="output">  remind_exec   &mdash; execute a reminder's action</span>
+<span class="output">  coord_join    &mdash; join a multi-agent collab conversation</span>
+<span class="output">  coord_attach  &mdash; attach a node as a shared resource</span>
+<span class="output">  coord_inject  &mdash; standing messages pushed to members' context</span>
+<span class="output">  lock_acquire  &mdash; advisory lock on a node (TTL, expiring)</span>
+<span class="output">  lock_release  &mdash; release an advisory lock</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
@@ -628,7 +647,7 @@ work_policy:
 <section>
   <div class="container">
     <h2>CLI Reference</h2>
-    <p style="color: var(--text-dim); margin-bottom: 24px;">47 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, and <code>--json</code> flags.</p>
+    <p style="color: var(--text-dim); margin-bottom: 24px;">69 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, <code>--profile</code>, and <code>--json</code> flags.</p>
 
     <div class="cmd-group">
       <h3>Core</h3>
@@ -647,6 +666,8 @@ work_policy:
       <table>
         <tr><td><code>kin learn</code></td><td>Extract knowledge from sessions and inbox</td></tr>
         <tr><td><code>kin link &lt;a&gt; &lt;b&gt;</code></td><td>Create weighted edge between nodes</td></tr>
+        <tr><td><code>kin edit &lt;id&gt;</code></td><td>Policy-aware in-place edit (--title, --content, --append, --expires)</td></tr>
+        <tr><td><code>kin supersede &lt;id&gt; &lt;text&gt;</code></td><td>Replace a node with a new one, preserving history</td></tr>
         <tr><td><code>kin alias &lt;id&gt;</code></td><td>Manage AKA/synonyms for a node</td></tr>
         <tr><td><code>kin register &lt;id&gt; &lt;path&gt;</code></td><td>Associate a file path with a node</td></tr>
         <tr><td><code>kin orphans</code></td><td>Nodes with no connections</td></tr>
@@ -677,6 +698,16 @@ work_policy:
         <tr><td><code>kin export</code></td><td>Audience-aware graph export with PII stripping</td></tr>
         <tr><td><code>kin import &lt;file&gt;</code></td><td>Import nodes/edges from JSON/JSONL</td></tr>
         <tr><td><code>kin sync-links</code></td><td>Update node content with connection references</td></tr>
+      </table>
+    </div>
+
+    <div class="cmd-group">
+      <h3>Collab &amp; Multi-Agent</h3>
+      <table>
+        <tr><td><code>kin coord [action]</code></td><td>Agent coordination: start, post, read, list, end, join, attach, inject</td></tr>
+        <tr><td><code>kin lock &lt;id&gt;</code></td><td>Acquire an advisory lock on a node (--ttl, --note, --force)</td></tr>
+        <tr><td><code>kin unlock &lt;id&gt;</code></td><td>Release an advisory lock (--force for foreign locks)</td></tr>
+        <tr><td><code>kin profile [action]</code></td><td>Named graph profiles: list, which, create</td></tr>
       </table>
     </div>
 
@@ -732,7 +763,7 @@ work_policy:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.23.0 &middot; MCP Plugin &middot; 45 MCP Tools &middot; 63 CLI Commands &middot; 1127 Tests</p>
+    <p style="margin-top: 8px;">v0.23.0 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 69 CLI Commands &middot; 1348 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;
