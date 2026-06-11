@@ -5765,6 +5765,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    from .store import ProfileMismatchError
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -5777,7 +5779,13 @@ def main():
         return
 
     if hasattr(args, "func"):
-        args.func(args)
+        try:
+            args.func(args)
+        except ProfileMismatchError as e:
+            # Sequestration guard: never open a DB stamped for another
+            # profile — fail clearly instead of dumping a traceback.
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(2)
     else:
         parser.print_help()
 

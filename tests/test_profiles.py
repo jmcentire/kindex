@@ -395,6 +395,29 @@ class TestProfileCLI:
         assert r2.returncode != 0
         assert "already exists" in r2.stderr
 
+    def test_stamp_mismatch_exits_cleanly(self, cli_home, tmp_path):
+        home, project = cli_home
+        gpath = home / ".config" / "kindex" / "kin.yaml"
+        gpath.write_text(yaml.dump({
+            "profiles": {
+                "work": {"data_dir": str(tmp_path / "work-data")},
+                "personal": {"data_dir": str(tmp_path / "personal-data")},
+            },
+        }))
+        env = _cli_env(home, project)
+
+        r = _run_cli(["add", "stamp me", "--profile", "work"], env, project)
+        assert r.returncode == 0, r.stderr
+
+        # Point the personal profile at work's stamped db: clean refusal,
+        # not a traceback.
+        r = _run_cli(["status", "--profile", "personal",
+                      "--data-dir", str(tmp_path / "work-data")], env, project)
+        assert r.returncode == 2
+        assert "Error:" in r.stderr
+        assert "stamped for profile 'work'" in r.stderr
+        assert "Traceback" not in r.stderr
+
     def test_create_requires_data_dir(self, cli_home):
         home, project = cli_home
         r = _run_cli(["profile", "create", "work"], _cli_env(home, project), project)
