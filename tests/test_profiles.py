@@ -665,10 +665,16 @@ class TestWriteKinIndexAudience:
         subprocess.run(["git", "init", "-q", str(out)], check=True,
                        capture_output=True)
         slug = out.name.lower()
-        store.add_node("Repo module", node_id=f"code-mod-{slug}-src-main",
-                       audience="public")
+        # Canonical adapter id shape: code-mod-{slug}-{12 hex} — the index
+        # post-filters to exactly this shape (slug-collision hardening).
+        mod_id = f"code-mod-{slug}-{'a' * 12}"
+        store.add_node("Repo module", node_id=mod_id, audience="public")
+        # A same-prefix id from another repo must NOT leak in
+        store.add_node("Other repo module",
+                       node_id=f"code-mod-{slug}-extra-{'b' * 12}",
+                       audience="private")
         path = write_kin_index(store, out)
         data = json.loads(path.read_text())
         # Repo scoping wins: only the repo's code nodes, no global head
         assert data["repo"] == slug
-        assert [n["id"] for n in data["nodes"]] == [f"code-mod-{slug}-src-main"]
+        assert [n["id"] for n in data["nodes"]] == [mod_id]

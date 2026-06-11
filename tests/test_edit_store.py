@@ -66,7 +66,9 @@ class TestEditPolicy:
         assert node["content"] == "New content"
         assert set(node["domains"]) == {"b", "c"}
         assert node["intent"] == "testing"
-        assert node["aka"] == ["nt"]
+        # Renames auto-preserve the old title as an alias (union with the
+        # explicit aka) so title-keyed dedup keeps matching the node.
+        assert node["aka"] == ["nt", "Old title"]
 
     def test_additive_refuses_replace(self, store):
         nid = store.add_node("We chose X", node_type="decision")

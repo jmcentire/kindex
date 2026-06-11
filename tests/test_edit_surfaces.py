@@ -190,6 +190,28 @@ class TestSupersedeCLI:
         assert r.returncode == 1
         assert "not found" in r.stderr
 
+    def test_supersede_managed_refused(self, cli_graph):
+        home, data, ids = cli_graph
+        r = _run_cli(["supersede", ids["task"], "replacement"], data, home)
+        assert r.returncode == 1
+        assert "managed" in r.stderr
+        store = _reopen(data)
+        assert store.get_node(ids["task"])["status"] == "active"
+        store.close()
+
+    def test_double_supersede_refused_names_successor(self, cli_graph):
+        home, data, ids = cli_graph
+        r = _run_cli(["supersede", ids["decision"], "Use Postgres"], data, home)
+        assert r.returncode == 0, r.stderr
+        new_id = r.stdout.strip().rsplit("-> ", 1)[1]
+
+        r2 = _run_cli(["supersede", ids["decision"], "Use MySQL"], data, home)
+        assert r2.returncode == 1
+        assert new_id in r2.stderr  # error names the successor
+        store = _reopen(data)
+        assert store.get_node(ids["decision"])["extra"]["superseded_by"] == new_id
+        store.close()
+
 
 # ── kin changelog: diff rendering ──────────────────────────────────────
 
@@ -215,6 +237,20 @@ class TestChangelogDiffCLI:
         r = _run_cli(["changelog", "--days", "1"], data, home)
         assert r.returncode == 0, r.stderr
         assert "## Superseded" in r.stdout
+
+    def test_changelog_single_entry_per_edit(self, cli_graph):
+        """One kin edit -> one changelog entry: under '## Edited' only, with
+        the README-documented header format and [type] prefix."""
+        home, data, ids = cli_graph
+        r = _run_cli(["edit", ids["concept"], "--content", "One entry only"],
+                     data, home)
+        assert r.returncode == 0, r.stderr
+
+        r = _run_cli(["changelog", "--days", "1"], data, home)
+        assert r.returncode == 0, r.stderr
+        assert "## Edited (1 nodes)" in r.stdout   # matches README example
+        assert "[concept] Widget pattern" in r.stdout  # type prefix renders
+        assert "## Updated" not in r.stdout  # no duplicate update_node entry
 
     def test_changelog_json_carries_diffs(self, cli_graph):
         import json as _json

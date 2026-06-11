@@ -509,6 +509,29 @@ class TestMCPSupersede:
         from kindex.mcp_server import supersede
         assert "Node not found" in supersede("no-such-node-xyz", "text")
 
+    def test_supersede_managed_refused(self, patch_store, agent_env):
+        from kindex.mcp_server import supersede
+        store, _ = patch_store
+        tid = store.add_node("A live task", node_type="task",
+                             extra={"task_status": "open"})
+        result = supersede(tid, "replacement text")
+        assert result.startswith("Error")
+        assert "managed" in result
+        assert store.get_node(tid)["status"] == "active"  # untouched
+
+    def test_double_supersede_names_successor(self, patch_store, agent_env):
+        from kindex.mcp_server import supersede
+        store, _ = patch_store
+        nid = store.add_node("Twice target", node_type="concept")
+        first = supersede(nid, "first replacement")
+        assert "Superseded" in first
+        new_id = first.rsplit(" ", 1)[1]
+
+        second = supersede(nid, "second replacement")
+        assert second.startswith("Error")
+        assert new_id in second  # error names the successor
+        assert store.get_node(nid)["extra"]["superseded_by"] == new_id
+
 
 class TestMCPToolRegistry:
     def test_tag_update_registered_reinforce_private(self):
