@@ -1095,6 +1095,7 @@ def cmd_supersede(args):
             actor=resolve_agent_id(cfg),
             expires=getattr(args, "expires", None),
             reason=getattr(args, "reason", None),
+            policy_overrides=cfg.edit_policy or None,
         )
     except (LockHeldError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1989,7 +1990,12 @@ def cmd_index(args):
     from .ingest import write_kin_index
 
     output_dir = Path(getattr(args, "output_dir", None) or os.getcwd())
-    path = write_kin_index(store, output_dir)
+    try:
+        path = write_kin_index(store, output_dir)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
     print(f"Wrote {path}")
     print(f"  ({path.stat().st_size} bytes)")
 

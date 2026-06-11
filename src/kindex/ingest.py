@@ -951,9 +951,32 @@ def _kin_index_node(node: dict) -> dict:
     }
 
 
+def _git_ancestor_exists(path: Path) -> bool:
+    """True if path or any ancestor contains a .git entry (dir or file)."""
+    try:
+        p = path.resolve()
+    except OSError:
+        p = path
+    for candidate in (p, *p.parents):
+        try:
+            if (candidate / ".git").exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _detect_repo_for_index(output_dir: Path) -> str | None:
-    """Detect git repo slug from output_dir for repo-scoped indexing."""
+    """Detect git repo slug from output_dir for repo-scoped indexing.
+
+    Returns None only when output_dir is genuinely outside any git repo.
+    When git itself fails (binary missing, timeout, dubious-ownership
+    refusal — routine in CI/containers) but a .git entry exists in
+    output_dir or an ancestor, raises RuntimeError: a failed detection
+    inside a real repo must never downgrade to the global graph head.
+    """
     import subprocess
+    failure: str
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -963,8 +986,14 @@ def _detect_repo_for_index(output_dir: Path) -> str | None:
         if r.returncode == 0:
             root = Path(r.stdout.strip())
             return root.name.lower().replace(" ", "-")
-    except Exception:
-        pass
+        failure = (r.stderr or "").strip() or f"git exited {r.returncode}"
+    except Exception as e:
+        failure = str(e) or type(e).__name__
+    if _git_ancestor_exists(output_dir):
+        raise RuntimeError(
+            f"git repo detection failed inside a git repo ({failure}); "
+            f"refusing to write a global-graph index into {output_dir}"
+        )
     return None
 
 
@@ -993,6 +1022,10 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
     The non-repo fallback is a global head — since the file is meant to be
     committed and shared, it only includes public/team-audience nodes unless
     the repo's own .kin config declares ``audience: private``.
+
+    Raises RuntimeError (from _detect_repo_for_index) when git detection
+    fails inside what is visibly a git repo — the global fallback head must
+    never be committed into a real repo by accident.
     """
     repo_slug = _detect_repo_for_index(output_dir)
 
@@ -1005,7 +1038,17 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
             "ORDER BY id ASC",
             (f"{mod_prefix}%", f"{sym_prefix}%"),
         ).fetchall()
-        nodes = [store._row_to_dict(r) for r in rows]
+        # Post-filter to the exact id shape the code adapter emits
+        # (code-{mod|sym}-{slug}-{12 hex chars}). The LIKE prefix has no
+        # terminator and slugs contain hyphens, so 'code-mod-api-%' would
+        # otherwise also match another repo's 'code-mod-api-server-…' ids
+        # — leaking that repo's (private-by-default) module/symbol names
+        # into this repo's git-tracked index.
+        id_shape = re.compile(
+            rf"^code-(mod|sym)-{re.escape(repo_slug)}-[0-9a-f]{{12}}$"
+        )
+        nodes = [n for n in (store._row_to_dict(r) for r in rows)
+                 if id_shape.match(n["id"])]
     elif _kin_declared_audience(output_dir) == "private":
         # Explicitly private index: the repo owner opted in to a full snapshot.
         rows = store.conn.execute(

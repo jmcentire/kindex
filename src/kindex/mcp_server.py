@@ -364,7 +364,7 @@ def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") 
         expires: Optional expiry date for the new node (YYYY-MM-DD).
         reason: Why the node is being replaced (kept as provenance).
     """
-    store, _ = _get_store()
+    store, config = _get_store()
     from .store import LockHeldError
 
     node = store.get_node(node_id) or store.get_node_by_title(node_id)
@@ -377,6 +377,7 @@ def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") 
             actor=_default_agent(),
             expires=expires or None,
             reason=reason or None,
+            policy_overrides=config.edit_policy or None,
         )
     except (LockHeldError, ValueError) as e:
         return f"Error: {e}"

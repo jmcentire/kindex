@@ -367,7 +367,7 @@ kin supersede old-decision "We now use OIDC trusted publishing" --reason "tokens
 Every edit logs per-field value diffs to the activity log, and `kin changelog` renders them:
 
 ```
-## Edited (1)
+## Edited (1 nodes)
   2026-06-11  [concept] OAuth2 + OIDC flow
       title: OAuth2 flow -> OAuth2 + OIDC flow
 ```
