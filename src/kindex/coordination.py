@@ -258,26 +258,42 @@ def read_messages(
 ) -> dict:
     """Read messages from a coordination conversation.
 
-    When ``agent`` is given and is a member, their read cursor
-    (``last_read_id``) advances to the highest message id returned.
+    When ``agent`` is given and is a member, delivery is contiguous from
+    their read cursor (oldest first, up to ``limit``), so a backlog larger
+    than ``limit`` is never skipped — repeated reads paginate forward and
+    the cursor (``last_read_id``) advances only past messages actually
+    returned. Agentless (or non-member) reads keep the newest window and
+    never touch cursors.
     """
     node = get_conversation(store, conversation)
     if not node:
         raise ValueError(f"Conversation not found: {conversation}")
     extra = node.get("extra") or {}
+
+    agent = (agent or "").strip()
+    mine = None
+    if agent:
+        mine = next(
+            (m for m in _members_of(extra) if m.get("agent") == agent), None)
+
     floor = int(since_id or 0)
+    if mine is not None:
+        floor = max(floor, int(mine.get("last_read_id", 0) or 0))
     messages = [
         m for m in extra.get("messages", [])
         if int(m.get("id", 0)) > floor
     ]
-    returned = messages[-limit:]
+    total = len(messages)
+    if mine is not None:
+        # Member read: oldest-first slice from the cursor — contiguous.
+        returned = messages[:limit]
+    else:
+        # Agentless/legacy read: newest window, no cursor to maintain.
+        returned = messages[-limit:]
 
-    agent = (agent or "").strip()
-    if agent and returned:
+    if mine is not None and returned:
         max_seen = max(int(m.get("id", 0)) for m in returned)
-        mine = next(
-            (m for m in _members_of(extra) if m.get("agent") == agent), None)
-        if mine is not None and max_seen > int(mine.get("last_read_id", 0) or 0):
+        if max_seen > int(mine.get("last_read_id", 0) or 0):
 
             def _mutate(e: dict) -> None:
                 members = _members_of(e)
@@ -297,6 +313,9 @@ def read_messages(
         "task_id": extra.get("task_id", ""),
         "expires_at": extra.get("expires_at", ""),
         "messages": returned,
+        "total": total,
+        "remaining": total - len(returned),
+        "remaining_kind": "newer" if mine is not None else "older",
     }
 
 
@@ -532,5 +551,14 @@ def format_messages(payload: dict) -> str:
         target = f" -> {msg['to']}" if msg.get("to") else ""
         lines.append(
             f"  #{msg.get('id')} {msg.get('at')} {msg.get('author')}{target}: {msg.get('body')}"
+        )
+    remaining = int(payload.get("remaining") or 0)
+    if remaining > 0:
+        kind = payload.get("remaining_kind") or "more"
+        hint = ("read again to continue" if kind == "newer"
+                else "pass since_id or a larger limit to see them")
+        lines.append(
+            f"  (showing {len(messages)} of {payload.get('total', len(messages))}"
+            f" — {remaining} {kind} message(s) not shown; {hint})"
         )
     return "\n".join(lines)

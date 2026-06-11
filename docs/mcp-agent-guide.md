@@ -112,8 +112,10 @@ Use `supersede` when an additive node's content must actually change: it
 creates a fresh node, links it with a `supersedes` edge, and marks the old
 node superseded. Pass `reason` so the provenance survives.
 
-Both accept a node ID or exact title. Edits are refused while another agent
-holds an advisory lock on the node (pass `force=True` only when you are sure).
+Both accept a node ID or exact title. Both are refused while another agent
+holds an advisory lock on the node. `edit` accepts `force=True` to override
+(only when you are sure); `supersede` has no force flag — release the lock
+first (`lock_release` with `force=True`) before superseding a locked node.
 Every edit logs per-field old/new diffs, visible via `changelog`.
 
 Use `expires` (YYYY-MM-DD) on time-bound knowledge — expired nodes stop

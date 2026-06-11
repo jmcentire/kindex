@@ -57,6 +57,14 @@ RESERVED_EXTRA_KEYS = frozenset({
 _EXPIRES_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DIFF_TRUNCATE = 500
 
+# Lock-error remedy for the supersede path: neither `kin supersede` nor the
+# MCP supersede tool exposes a force flag (per contract), so the message must
+# name the remedy that actually exists on those surfaces.
+_SUPERSEDE_LOCK_REMEDY = (
+    "release the lock first (kin unlock --force / lock_release force=True); "
+    "supersede does not take a force flag"
+)
+
 
 def _validate_expires(expires: str) -> None:
     """Accept YYYY-MM-DD only (zero-padded, real calendar date)."""
@@ -713,8 +721,14 @@ class Store:
 
     # ── Edit / supersede / atomic extra ─────────────────────────────────
 
-    def _check_lock(self, node: dict, actor: str | None, force: bool) -> None:
-        """Raise LockHeldError on a foreign unexpired lock unless force."""
+    def _check_lock(self, node: dict, actor: str | None, force: bool,
+                    *, remedy: str = "pass force to override") -> None:
+        """Raise LockHeldError on a foreign unexpired lock unless force.
+
+        `remedy` is the actionable hint appended to the error — callers
+        whose surface has no force flag (e.g. supersede) pass one that
+        names a remedy that actually exists on that surface.
+        """
         if force:
             return
         lock = active_lock(node)
@@ -726,7 +740,7 @@ class Store:
         until = f" until {lock['expires_at']}" if lock.get("expires_at") else ""
         raise LockHeldError(
             f"Node {node.get('id')} is locked by '{holder or 'unknown'}'{until} "
-            f"— pass force to override"
+            f"— {remedy}"
         )
 
     @staticmethod
@@ -938,7 +952,7 @@ class Store:
                 f"allowed; use the dedicated task/session/coordination tools"
             )
         self._check_mutable_status(node, force)
-        self._check_lock(node, actor, force)
+        self._check_lock(node, actor, force, remedy=_SUPERSEDE_LOCK_REMEDY)
         text = (new_text or "").strip()
         if not text:
             raise ValueError("supersede_node requires non-empty new_text")
@@ -987,7 +1001,8 @@ class Store:
             # lock acquired between the pre-flight snapshot and BEGIN
             # IMMEDIATE must still block the supersede (LockHeldError
             # propagates to the rollback handler below).
-            self._check_lock({"id": node_id, "extra": cur_extra}, actor, force)
+            self._check_lock({"id": node_id, "extra": cur_extra}, actor, force,
+                             remedy=_SUPERSEDE_LOCK_REMEDY)
             old_extra = dict(cur_extra)
             old_extra["superseded_by"] = new_id
             conn.execute(
@@ -1269,6 +1284,30 @@ class Store:
             return strength
         return strength * (0.5 ** (days / half_life_days))
 
+    def _live_node_id(self, node_id: str, max_hops: int = 10) -> str:
+        """Follow extra['superseded_by'] to the live successor (bounded, cycle-safe).
+
+        Returns the input id unchanged when the node is live, missing, or the
+        chain is malformed.
+        """
+        nid = node_id
+        seen = {nid}
+        for _ in range(max_hops):
+            row = self.conn.execute(
+                "SELECT extra FROM nodes WHERE id = ?", (nid,)).fetchone()
+            if row is None:
+                return nid
+            try:
+                extra = json.loads(row["extra"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                return nid
+            succ = extra.get("superseded_by") if isinstance(extra, dict) else None
+            if not succ or not isinstance(succ, str) or succ in seen:
+                return nid
+            seen.add(succ)
+            nid = succ
+        return nid
+
     def deposit_pheromone(self, node_id: str, context: str = "",
                           amount: float = 1.0, half_life_days: float = 14.0,
                           reinforce: bool = False, missed: bool = False) -> float:
@@ -1279,8 +1318,13 @@ class Store:
         - default: `deposits` (a node was injected)
         - reinforce=True: `reinforcements` (a confirmed-useful injection)
         - missed=True: `missed` (counterfactual — would have helped but wasn't injected)
+        Deposits on a superseded node are redirected to its live successor
+        (supersede_node migrates existing trails exactly once; late deposits —
+        e.g. deferred session-end reinforcement — must follow the same chain
+        or the signal strands on the dead node and boosts it in ranking).
         Returns the new stored strength.
         """
+        node_id = self._live_node_id(node_id)
         now = _now()
         d_inc = 0 if (reinforce or missed) else 1
         r_inc = 1 if reinforce else 0

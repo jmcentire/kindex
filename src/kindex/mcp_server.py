@@ -48,8 +48,14 @@ mcp = FastMCP(
         "- checkpoint: pre-flight checklists — things to verify before an event\n\n"
 
         "## When to use each tool\n"
-        "- `search`: ALWAYS before adding (avoid duplicates) and when starting work on a topic\n"
-        "- `add`: capture discoveries as they happen — don't batch, don't wait\n"
+        "- `search`: ALWAYS before adding — if a matching node already exists, "
+        "prefer `edit`/`supersede` over `add` (edit, don't re-add)\n"
+        "- `add`: capture NEW discoveries as they happen — don't batch, don't wait\n"
+        "- `edit`: correct or extend an EXISTING node instead of re-adding a near "
+        "duplicate (additive types — decision/constraint/directive/checkpoint/watch — "
+        "accept append/expires only)\n"
+        "- `supersede`: replace an additive node when its content must actually change — "
+        "creates a fresh node linked via a supersedes edge, history preserved\n"
         "- `link`: when you notice two concepts relate — specify the relationship type "
         "(relates_to, depends_on, implements, contradicts, blocks, context_of)\n"
         "- `learn`: after reading long files/outputs — bulk-extracts multiple concepts at once\n"
@@ -58,6 +64,14 @@ mcp = FastMCP(
         "- `task_done`/`task_list`: manage tasks — they surface contextually via graph proximity\n"
         "- `coord_start`/`coord_post`/`coord_read`/`coord_end`: short-lived agent coordination "
         "state; capture durable discoveries separately with `add` or `learn`\n"
+        "- `coord_join`: become a member of a conversation — members get a read cursor "
+        "(unread tracking) and receive standing messages in their session context\n"
+        "- `coord_attach`: share a graph node with a conversation as a resource — "
+        "members see who holds it when it is locked\n"
+        "- `coord_inject`: set/clear/list standing messages pushed into member sessions "
+        "until cleared (use for 'don't touch X until Y lands')\n"
+        "- `lock_acquire`/`lock_release`: advisory node locks — `edit` refuses foreign "
+        "locks; locks expire by TTL, so an expired lock never blocks anyone\n"
         "- `watch_add`: for ONGOING monitoring — flaky tests, unstable APIs, items to revisit. "
         "Set owner and expires. Watches surface in every session's context automatically.\n"
         "- `watch_resolve`: when a watched issue is fixed or no longer relevant\n"
@@ -400,12 +414,13 @@ def context(
     """
     store, _ = _get_store()
     from .retrieve import format_context_block, hybrid_search
+    from .store import node_expired
 
     if topic:
         results = hybrid_search(store, topic, top_k=15)
     else:
-        # Fall back to recent high-weight nodes
-        results = store.recent_nodes(n=15)
+        # Fall back to recent high-weight nodes (skip expired knowledge)
+        results = [r for r in store.recent_nodes(n=15) if not node_expired(r)]
 
     if not results:
         return "No relevant knowledge found."
@@ -788,18 +803,28 @@ def graph_heal() -> str:
 
 
 @mcp.tool()
-def graph_merge(source_id: str, target_id: str, keep: str = "target") -> str:
+def graph_merge(source_id: str, target_id: str, keep: str = "target",
+                force: bool = False) -> str:
     """Merge two nodes that represent the same concept.
 
     Moves all edges from the source node to the target node, then archives
     the source. Use when you find duplicate or near-duplicate nodes.
 
+    Policy-aware like `edit`: managed types (task, session, coordination)
+    are always refused — their tooling owns them. Additive types (decision,
+    constraint, directive, checkpoint, watch) are refused unless force=True
+    — prefer `supersede` so history survives. A foreign advisory lock on
+    either node blocks the merge unless force=True.
+
     Args:
         source_id: Node to merge FROM (will be archived).
         target_id: Node to merge INTO (will receive edges).
         keep: Which node to keep: 'target' (default) or 'source'.
+        force: Merge additive types / override a foreign lock.
     """
-    store, _ = _get_store()
+    store, config = _get_store()
+    from .schema import edit_class_for
+    from .store import LockHeldError
 
     if keep == "source":
         source_id, target_id = target_id, source_id
@@ -810,6 +835,28 @@ def graph_merge(source_id: str, target_id: str, keep: str = "target") -> str:
         return f"Source node not found: {source_id}"
     if not target:
         return f"Target node not found: {target_id}"
+
+    # Edit-policy chokepoint: graph_merge rewrites target content and
+    # archives the source, so it honors the same class policy as edit.
+    for node in (source, target):
+        ntype = node.get("type", "concept")
+        cls = edit_class_for(ntype, config.edit_policy or None)
+        if cls == "managed":
+            return (f"Error: node {node['id']} is type '{ntype}' (managed) — "
+                    f"merge is not allowed; use the dedicated "
+                    f"task/session/coordination tools")
+        if cls == "additive" and not force:
+            return (f"Error: node {node['id']} is type '{ntype}' (additive — "
+                    f"history matters); use supersede to replace it, or pass "
+                    f"force=True to merge anyway")
+
+    # Advisory locks on either node block the merge (force overrides).
+    actor = _default_agent()
+    try:
+        store._check_lock(source, actor, force)
+        store._check_lock(target, actor, force)
+    except LockHeldError as e:
+        return f"Error: {e}"
 
     # Move edges from source to target
     moved = 0
@@ -840,9 +887,21 @@ def graph_merge(source_id: str, target_id: str, keep: str = "target") -> str:
     target_weight = target.get("weight", 0.5)
     store.update_node(target_id, weight=min(1.0, max(target_weight, source_weight)))
 
-    # Archive source
+    # Archive source — preserve its extra (lock, claim, expiry, ...) and
+    # only annotate the merge, mirroring supersede_node.
+    source_extra = dict(source.get("extra") or {})
+    source_extra["merged_into"] = target_id
     store.update_node(source_id, status="archived", weight=0.01,
-                      extra={"merged_into": target_id})
+                      extra=source_extra)
+
+    # Migrate retrieval pheromone so learned trails follow the merge
+    # (same statement as supersede_node).
+    store.conn.execute(
+        "UPDATE OR REPLACE injection_pheromone SET node_id = ? "
+        "WHERE node_id = ?",
+        (target_id, source_id),
+    )
+    store.conn.commit()
 
     return (f"Merged '{source['title']}' into '{target['title']}': "
             f"{moved} edges moved, source archived.")
@@ -1023,11 +1082,12 @@ def prime(topic: str = "") -> str:
     """
     store, _ = _get_store()
     from .retrieve import format_context_block, hybrid_search
+    from .store import node_expired
 
     if topic:
         results = hybrid_search(store, topic, top_k=15)
     else:
-        results = store.recent_nodes(n=15)
+        results = [r for r in store.recent_nodes(n=15) if not node_expired(r)]
 
     if not results:
         return "No knowledge available for priming."

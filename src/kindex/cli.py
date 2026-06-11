@@ -2188,7 +2188,8 @@ def cmd_profile(args):
 
 
 def _profile_create(args):
-    """Create a profile in the GLOBAL kin.yaml, preserving existing content."""
+    """Create a profile in the GLOBAL kin.yaml (or an explicit --config file),
+    preserving existing content."""
     name = getattr(args, "name", None)
     if not name:
         print("Error: kin profile create <name> --data-dir <dir>", file=sys.stderr)
@@ -2200,15 +2201,22 @@ def _profile_create(args):
 
     from .config import _GLOBAL_PATHS
 
-    path = None
-    for p in _GLOBAL_PATHS:
-        p = p.expanduser().resolve()
-        if p.is_file():
-            path = p
-            break
-    if path is None:
-        path = (Path.home() / ".config" / "kindex" / "kin.yaml").resolve()
+    # An explicit --config is the write target (mirrors `kin config set`);
+    # otherwise fall through to the global kin.yaml discovery.
+    explicit = getattr(args, "config", None)
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        path = None
+        for p in _GLOBAL_PATHS:
+            p = p.expanduser().resolve()
+            if p.is_file():
+                path = p
+                break
+        if path is None:
+            path = (Path.home() / ".config" / "kindex" / "kin.yaml").resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
 
     # Round-trip the existing yaml: load, modify, dump — unknown keys survive.
     data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
