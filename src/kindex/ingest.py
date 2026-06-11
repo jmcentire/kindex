@@ -195,9 +195,13 @@ def scan_sessions(
         reverse=True,
     )[:limit]
 
-    # Per-profile session routing (set by daemon.cron_run_all): only ingest
-    # sessions this pass's predicate accepts. None => legacy: take everything.
-    session_filter = getattr(config, "_session_filter", None)
+    # Per-profile session routing: an explicit per-pass predicate (set by
+    # daemon.cron_run_all / kin cron) wins; otherwise one is built from the
+    # configured profiles so EVERY ingest path routes (kin ingest sessions,
+    # MCP ingest, ...). None => no profiles: legacy, take everything.
+    from .routing import effective_session_filter
+
+    session_filter = effective_session_filter(config)
 
     for jsonl_path in jsonl_files:
         if session_filter is not None and not session_filter(jsonl_path):
@@ -284,6 +288,12 @@ def scan_codex_sessions(
     count = 0
     from .extract import keyword_extract
 
+    # Per-profile routing by the cwd recorded in the rollout meta (Codex has
+    # no Claude-style encoded dir names). None => no profiles configured.
+    from .routing import effective_cwd_router
+
+    cwd_router = effective_cwd_router(config)
+
     jsonl_files = sorted(
         sessions_dir.rglob("*.jsonl"),
         key=lambda f: f.stat().st_mtime,
@@ -293,6 +303,9 @@ def scan_codex_sessions(
     for jsonl_path in jsonl_files:
         meta, text = _extract_codex_session(jsonl_path, max_chars=8000)
         if not text or len(text) < 50:
+            continue
+
+        if cwd_router is not None and not cwd_router(str(meta.get("cwd") or "")):
             continue
 
         raw_session_id = meta.get("id") or jsonl_path.stem

@@ -146,7 +146,10 @@ class Store:
         """Enforce the per-database profile stamp (meta key 'kin_profile').
 
         No active profile -> no stamping, no check (legacy single-graph).
-        Active profile + unstamped db -> stamp it.
+        Active profile + unstamped db -> stamp it, unless the config marks
+        this open as a --data-dir override (_stamp_on_open False): an
+        explicit override must never bind a foreign database to the active
+        profile. An existing mismatched stamp still hard-refuses.
         Active profile != stamp -> close the connection and raise.
         """
         expected = self._expected_profile
@@ -156,6 +159,8 @@ class Store:
             "SELECT value FROM meta WHERE key = 'kin_profile'"
         ).fetchone()
         if row is None:
+            if not getattr(self.config, "_stamp_on_open", True):
+                return
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('kin_profile', ?)",
                 (expected,),

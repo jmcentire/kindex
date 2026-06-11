@@ -304,9 +304,19 @@ class WorkPolicyConfig(BaseModel):
 
 class Config(BaseModel):
     _project_path: Path | None = PrivateAttr(default=None)
-    # Per-pass session routing predicate (set by daemon.cron_run_all only);
-    # callable(jsonl_path) -> bool. Never loaded from yaml.
+    # Per-pass session routing predicate (set by daemon.cron_run_all and
+    # cli.cmd_cron); callable(jsonl_path) -> bool. Never loaded from yaml.
+    # When None, ingest builds one from profiles/active_profile (see
+    # routing.effective_session_filter).
     _session_filter: Any = PrivateAttr(default=None)
+    # False when an explicit --data-dir overrides a profile-resolved
+    # data_dir: the store must NOT stamp an unstamped database with the
+    # active profile (it still hard-refuses an existing mismatched stamp).
+    _stamp_on_open: bool = PrivateAttr(default=True)
+    # The pre-activation data_dir, recorded by _activate_profile so the
+    # cron legacy-remainder pass can find the legacy graph even when this
+    # invocation resolved to a profile.
+    _legacy_data_dir: str | None = PrivateAttr(default=None)
 
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
@@ -547,6 +557,7 @@ def _activate_profile(cfg: Config, name: str, source: str) -> Config:
             f"Unknown kindex profile '{name}' (from {source}); "
             f"known profiles: {known}"
         )
+    cfg._legacy_data_dir = cfg.data_dir
     cfg.data_dir = str(Path(cfg.profiles[name].data_dir).expanduser())
     cfg.active_profile = name
     cfg.profile_source = source

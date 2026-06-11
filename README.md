@@ -402,15 +402,20 @@ Resolution order (first match wins):
 ```bash
 kin profile list                 # configured profiles + file-level stats
 kin profile which                # which profile this invocation resolves to
-kin profile create work --data-dir ~/.kindex-work --roots ~/Work --default
+# Two-step adoption: first register your existing graph as the default...
+kin profile create personal --data-dir ~/.kindex --roots ~/Code,~/Personal --default
+# ...then add the sequestered one
+kin profile create work --data-dir ~/.kindex-work --roots ~/Work
 kin status                       # shows: Profile: work (via roots)
 ```
+
+Register the existing legacy graph (usually `~/.kindex`) as the default profile *before* creating others: once a default profile exists, sessions outside all roots route to it, and an unregistered legacy graph stops receiving cron maintenance (`kin profile create` warns when this would happen).
 
 **Stamp guard.** Each profile's database is stamped with its profile name on first open. Opening a stamped database under a different profile raises an error instead of silently mixing graphs — a wrong `--data-dir` can't cross-contaminate.
 
 **MCP note.** The MCP server binds its profile once at process start and keeps it for the process lifetime. To switch profiles for an agent, restart its MCP server (or run a second server with `KIN_PROFILE` set in its environment).
 
-`kin cron` runs one maintenance pass per profile and routes session ingestion by roots — sessions whose cwd falls under a profile's roots land in that profile's graph; the default profile takes the unmatched remainder.
+`kin cron` runs one maintenance pass per profile and routes session ingestion by roots — sessions whose cwd falls under a profile's roots land in that profile's graph; the default profile takes the unmatched remainder. With no `default_profile`, a final legacy-remainder pass ingests the unmatched sessions into the legacy graph and keeps its maintenance (reminders, decay, dream) running. `kin cron --profile X` pins a single pass and keeps routing active — it only ingests the sessions X owns; a bare `--data-dir` with no resolved profile runs a legacy take-everything pass on exactly that directory. Routing also applies to `kin ingest sessions|codex-sessions`, the MCP `ingest` tool, and `kin watch`. An explicit `--data-dir` that overrides a profile's data_dir never stamps an unstamped database with the active profile.
 
 ## Collab
 

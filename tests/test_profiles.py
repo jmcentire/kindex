@@ -552,7 +552,11 @@ class TestCronRunAll:
 
         base = self._base_config(tmp_path)
         projects_dir = tmp_path / "claude" / "projects"
-        # Session cwds encoded in the Claude project-dir names
+        # Session cwds encoded in the Claude project-dir names. The encoded
+        # fallback (no cwd in the JSONL) verifies subdirectories against the
+        # filesystem, so the real project dirs must exist.
+        (tmp_path / "work" / "repo").mkdir(parents=True)
+        (tmp_path / "personal" / "notes").mkdir(parents=True)
         _make_session(projects_dir, _encode(tmp_path / "work" / "repo"),
                       "workaaaa1111")
         _make_session(projects_dir, _encode(tmp_path / "personal" / "notes"),

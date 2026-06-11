@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import datetime
-import json as _json
-import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
+
+from .routing import (  # noqa: F401  (re-exported for backward compatibility)
+    _encode_claude_project_dir,
+    _session_cwd,
+    _session_profile_owner,
+    cwd_profile_owner,
+    effective_session_filter,
+    profile_session_filter,
+)
 
 if TYPE_CHECKING:
     from .config import Config
@@ -180,7 +187,11 @@ def cron_run_all(base_config: "Config", verbose: bool = False) -> list[dict]:
     identical to the pre-profile behavior). With profiles -> one pass per
     profile, each on its own data_dir/Store. Claude session ingestion within
     a pass only takes sessions whose cwd falls under that profile's roots;
-    the default profile additionally takes unmatched sessions.
+    the default profile additionally takes unmatched sessions. With profiles
+    but NO default_profile, a final legacy-remainder pass on the legacy
+    data_dir ingests the unmatched sessions and keeps the legacy graph's
+    maintenance (decay, reminders, watches, dream) running — mirroring the
+    interactive legacy-passthrough resolution tier.
 
     Returns a list of {profile, source, results} dicts, one per pass.
     """
@@ -215,80 +226,29 @@ def cron_run_all(base_config: "Config", verbose: bool = False) -> list[dict]:
         finally:
             store.close()
         passes.append({"profile": name, "source": "cron", "results": results})
+
+    if default_name is None:
+        # Legacy-remainder pass: interactive resolution (config tier 6) keeps
+        # writing to the legacy data_dir when nothing matches and no default
+        # is set, so cron must keep servicing that graph and ingest exactly
+        # the sessions no profile owns.
+        cfg = base_config.model_copy(deep=True)
+        legacy_dir = getattr(base_config, "_legacy_data_dir", None)
+        if legacy_dir:
+            cfg.data_dir = legacy_dir
+        cfg.active_profile = None
+        cfg.profile_source = "legacy"
+        cfg._session_filter = profile_session_filter(profiles, None, None)
+        if verbose:
+            print(f"== Legacy remainder pass ({cfg.data_dir}) ==")
+        store = Store(cfg)
+        try:
+            results = cron_run(cfg, store, verbose=verbose)
+        finally:
+            store.close()
+        passes.append({"profile": None, "source": "legacy-remainder",
+                       "results": results})
     return passes
-
-
-def profile_session_filter(
-    profiles: dict, name: str, default_name: str | None
-) -> "Callable[[Path], bool]":
-    """Predicate deciding whether a session JSONL belongs to profile `name`.
-
-    A session is owned by the profile whose roots contain its cwd (longest
-    prefix wins). Sessions matching no profile go to the default profile.
-    """
-    def _filter(jsonl_path: Path) -> bool:
-        owner = _session_profile_owner(jsonl_path, profiles)
-        if owner is None:
-            return name == default_name
-        return owner == name
-
-    return _filter
-
-
-def _encode_claude_project_dir(path: str) -> str:
-    """Encode a cwd the way Claude Code names its per-project session dirs.
-
-    Claude Code replaces every non-alphanumeric character of the absolute
-    path with '-': /Users/me/Code/my.repo -> -Users-me-Code-my-repo.
-    """
-    return re.sub(r"[^A-Za-z0-9]", "-", path)
-
-
-def _session_cwd(jsonl_path: Path, max_lines: int = 10) -> str:
-    """Best-effort cwd extraction from a session JSONL's leading entries."""
-    try:
-        with open(jsonl_path, "r", errors="replace") as f:
-            for i, line in enumerate(f):
-                if i >= max_lines:
-                    break
-                try:
-                    entry = _json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if isinstance(entry, dict) and entry.get("cwd"):
-                    return str(entry["cwd"])
-    except OSError:
-        pass
-    return ""
-
-
-def _session_profile_owner(jsonl_path: Path, profiles: dict) -> str | None:
-    """Which profile owns a session, by longest-prefix root match (or None).
-
-    Prefers the real cwd recorded inside the JSONL; falls back to matching
-    the Claude-encoded project directory name.
-    """
-    cwd = _session_cwd(jsonl_path)
-    enc_name = jsonl_path.parent.name
-    best: tuple[int, str] | None = None
-    for pname, entry in profiles.items():
-        for root in getattr(entry, "roots", None) or []:
-            rp = Path(root).expanduser()
-            matched = False
-            if cwd:
-                try:
-                    cp = Path(cwd)
-                    matched = cp == rp or rp in cp.parents
-                except (ValueError, OSError):
-                    matched = False
-            if not matched:
-                enc = _encode_claude_project_dir(str(rp))
-                matched = enc_name == enc or enc_name.startswith(enc + "-")
-            if matched:
-                plen = len(str(rp))
-                if best is None or plen > best[0]:
-                    best = (plen, pname)
-    return best[1] if best else None
 
 
 def _process_inbox(config: "Config", store: "Store", verbose: bool = False) -> int:
@@ -612,8 +572,14 @@ def incremental_ingest(
 
     from .extract import keyword_extract
 
+    # Per-profile session routing — same predicate as scan_sessions, so
+    # `kin watch` cannot pull foreign-profile sessions into this store.
+    session_filter = effective_session_filter(config)
+
     count = 0
     for jsonl_path in new_files:
+        if session_filter is not None and not session_filter(jsonl_path):
+            continue
         session_id = jsonl_path.stem[:12]
         session_slug = f"session-{session_id}"
 

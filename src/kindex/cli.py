@@ -42,6 +42,17 @@ def _config(args):
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
     if getattr(args, "data_dir", None):
+        if cfg.active_profile:
+            # Explicit --data-dir overriding a profile-resolved data_dir:
+            # never stamp an unstamped database with the active profile
+            # (an existing mismatched stamp still hard-refuses in Store).
+            try:
+                same = (Path(args.data_dir).expanduser().resolve()
+                        == Path(cfg.data_dir).expanduser().resolve())
+            except (OSError, ValueError):
+                same = False
+            if not same:
+                cfg._stamp_on_open = False
         cfg.data_dir = args.data_dir
     return cfg
 
@@ -2215,6 +2226,40 @@ def _profile_create(args):
     if getattr(args, "set_default", False):
         print(f"  default_profile: {name}")
 
+    # Warn when the legacy graph would be orphaned or shadowed: an existing
+    # graph at the base data_dir that no profile registers stops receiving
+    # routed sessions once a default profile exists.
+    default_name = data.get("default_profile")
+    base_dir = Path(str(data.get("data_dir") or "~/.kindex")).expanduser()
+    try:
+        base_res = base_dir.resolve()
+    except OSError:
+        base_res = base_dir
+    registered = set()
+    for entry in profiles.values():
+        if isinstance(entry, dict) and entry.get("data_dir"):
+            try:
+                registered.add(Path(str(entry["data_dir"])).expanduser().resolve())
+            except OSError:
+                registered.add(Path(str(entry["data_dir"])).expanduser())
+    legacy_db_exists = ((base_dir / "kindex.db").exists()
+                        or (base_dir / "conv.db").exists())
+    if base_res not in registered:
+        if default_name and legacy_db_exists:
+            print(f"Warning: the existing legacy graph at {base_dir} is not "
+                  f"registered as a profile. With default_profile "
+                  f"'{default_name}', sessions outside all profile roots are "
+                  f"routed to '{default_name}' and the legacy graph no longer "
+                  f"receives cron maintenance.", file=sys.stderr)
+            print(f"  Register it first, e.g.: kin profile create personal "
+                  f"--data-dir {base_dir} --roots <dirs> --default",
+                  file=sys.stderr)
+        elif not default_name:
+            print(f"Note: no default_profile set — sessions outside all "
+                  f"profile roots stay in the legacy graph at {base_dir} "
+                  f"(cron services it in a legacy-remainder pass). Use "
+                  f"--default on one profile to change that.", file=sys.stderr)
+
 
 # ── embed ─────────────────────────────────────────────────────────────
 
@@ -2694,7 +2739,11 @@ def cmd_cron(args):
     """Run one-shot maintenance cycle (designed for crontab).
 
     With profiles configured, runs one pass per profile (each on its own
-    data_dir). An explicit --data-dir or --profile pins a single pass.
+    data_dir), plus a legacy-remainder pass when no default_profile is set.
+    An explicit --data-dir or --profile pins a single pass; session routing
+    stays active whenever a profile resolves (the pinned pass only ingests
+    the sessions that profile owns). A bare --data-dir with no resolved
+    profile runs a legacy take-everything pass on exactly that directory.
     """
     cfg = _config(args)
     verbose = getattr(args, "verbose", False)
@@ -2703,6 +2752,13 @@ def cmd_cron(args):
 
     if getattr(args, "data_dir", None) or getattr(args, "profile", None):
         # Explicit targeting: single pass on exactly this data_dir/profile.
+        # Routing must survive the pin: build the session predicate from the
+        # FULL profiles dict before clearing it, so the pinned pass never
+        # ingests sessions owned by other profiles.
+        if cfg.profiles and cfg.active_profile:
+            from .routing import profile_session_filter
+            cfg._session_filter = profile_session_filter(
+                dict(cfg.profiles), cfg.active_profile, cfg.default_profile)
         cfg.profiles = {}
     passes = cron_run_all(cfg, verbose=verbose)
 
