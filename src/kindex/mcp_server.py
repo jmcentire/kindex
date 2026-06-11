@@ -95,6 +95,20 @@ def _get_store():
     return _store, _config
 
 
+def _get_config():
+    """Config from the lazy singleton (shares _get_store init)."""
+    _, config = _get_store()
+    return config
+
+
+def _default_agent(agent: str = "") -> str:
+    """Explicit agent name, or the resolved stable agent identity."""
+    if agent and agent.strip():
+        return agent.strip()
+    from .config import resolve_agent_id
+    return resolve_agent_id(_get_config())
+
+
 def _json(obj: Any, **kw) -> str:
     """JSON serialize with date/path handling."""
     import datetime
@@ -1177,13 +1191,13 @@ def task_done(id: str) -> str:
 
 
 @mcp.tool()
-def task_claim(id: str, agent: str, ttl_minutes: int = 120,
+def task_claim(id: str, agent: str = "", ttl_minutes: int = 120,
                note: str = "", force: bool = False) -> str:
     """Claim a task for an agent with an expiry.
 
     Args:
         id: Task node ID.
-        agent: Agent/sub-agent name claiming the task.
+        agent: Agent/sub-agent name claiming the task (default: resolved agent id).
         ttl_minutes: Claim TTL. Expired claims can be taken over.
         note: Optional claim note.
         force: Override an existing unexpired claim.
@@ -1192,7 +1206,7 @@ def task_claim(id: str, agent: str, ttl_minutes: int = 120,
     from .tasks import claim_task
     try:
         result = claim_task(
-            store, id, agent,
+            store, id, _default_agent(agent),
             ttl_minutes=ttl_minutes,
             note=note,
             force=force,
@@ -1239,7 +1253,7 @@ def coord_start(name: str, task_id: str = "", agent: str = "",
     Args:
         name: Conversation name.
         task_id: Optional related task ID.
-        agent: Agent creating the conversation.
+        agent: Agent creating the conversation (default: resolved agent id).
         ttl_minutes: Conversation TTL. Expired conversations are cleaned up.
     """
     store, _ = _get_store()
@@ -1250,7 +1264,7 @@ def coord_start(name: str, task_id: str = "", agent: str = "",
             name,
             task_id=task_id or None,
             ttl_minutes=ttl_minutes,
-            created_by=agent,
+            created_by=_default_agent(agent),
         )
     except ValueError as e:
         return f"Could not start coordination conversation: {e}"
@@ -1258,39 +1272,136 @@ def coord_start(name: str, task_id: str = "", agent: str = "",
 
 
 @mcp.tool()
-def coord_post(conversation: str, agent: str, message: str) -> str:
+def coord_join(name: str, agent: str = "") -> str:
+    """Join a coordination conversation as a member.
+
+    Members get read cursors (unread tracking) and receive standing inject
+    messages in their session context. Idempotent.
+
+    Args:
+        name: Conversation ID or name.
+        agent: Joining agent name (default: resolved agent id).
+    """
+    store, _ = _get_store()
+    from .coordination import join_conversation
+    try:
+        member = join_conversation(store, name, _default_agent(agent))
+    except ValueError as e:
+        return f"Could not join conversation: {e}"
+    return f"Joined {name} as {member['agent']}"
+
+
+@mcp.tool()
+def coord_post(conversation: str, agent: str = "", message: str = "",
+               to: str = "") -> str:
     """Post a message to a coordination conversation.
 
     Args:
         conversation: Conversation ID or name.
-        agent: Posting agent name.
+        agent: Posting agent name (default: resolved agent id).
         message: Message body.
+        to: Optional target agent — message is delivered (unread counts,
+            injection) only to them; broadcast when empty.
     """
     store, _ = _get_store()
     from .coordination import post_message
     try:
-        msg = post_message(store, conversation, agent, message)
+        msg = post_message(store, conversation, _default_agent(agent), message,
+                           to=to or None)
     except ValueError as e:
         return f"Could not post coordination message: {e}"
     return f"Posted coordination message #{msg['id']} to {conversation}"
 
 
 @mcp.tool()
-def coord_read(conversation: str, since_id: int = 0, limit: int = 50) -> str:
+def coord_read(conversation: str, since_id: int = 0, limit: int = 50,
+               agent: str = "") -> str:
     """Read messages from a coordination conversation.
+
+    Advances the reading agent's member cursor (unread tracking).
 
     Args:
         conversation: Conversation ID or name.
         since_id: Only return messages with a higher id.
         limit: Maximum messages to return.
+        agent: Reading agent name (default: resolved agent id).
     """
     store, _ = _get_store()
     from .coordination import format_messages, read_messages
     try:
-        payload = read_messages(store, conversation, since_id=since_id, limit=limit)
+        payload = read_messages(store, conversation, since_id=since_id,
+                                limit=limit, agent=_default_agent(agent))
     except ValueError as e:
         return f"Could not read coordination conversation: {e}"
     return format_messages(payload)
+
+
+@mcp.tool()
+def coord_attach(name: str, node_id: str) -> str:
+    """Attach a graph node to a conversation as a shared resource.
+
+    Attached resources surface in members' contexts when locked, so agents
+    see who holds what.
+
+    Args:
+        name: Conversation ID or name.
+        node_id: Node ID or title to attach.
+    """
+    store, _ = _get_store()
+    from .coordination import attach_resource
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    try:
+        resources = attach_resource(store, name,
+                                    node["id"] if node else node_id)
+    except ValueError as e:
+        return f"Could not attach resource: {e}"
+    return f"Attached. Resources on {name}: {', '.join(resources)}"
+
+
+@mcp.tool()
+def coord_inject(name: str, action: str = "list", text: str = "",
+                 to: str = "", message_id: int = 0) -> str:
+    """Manage standing inject messages on a coordination conversation.
+
+    Inject messages are pushed into member agents' session context by the
+    prime/prompt hooks until cleared.
+
+    Args:
+        name: Conversation ID or name.
+        action: set, clear, or list.
+        text: Message text (for set).
+        to: Optional target agent (for set); broadcast when empty.
+        message_id: Specific inject message id to clear (0 = clear all).
+    """
+    store, _ = _get_store()
+    from .coordination import (
+        clear_inject_messages,
+        list_inject_messages,
+        set_inject_message,
+    )
+    try:
+        if action == "set":
+            entry = set_inject_message(store, name, text, _default_agent(),
+                                       to=to or None)
+            target = f" -> {entry['to']}" if entry.get("to") else ""
+            return f"Set inject message #{entry['id']}{target} on {name}"
+        if action == "clear":
+            count = clear_inject_messages(
+                store, name, message_id=message_id or None)
+            return f"Cleared {count} inject message(s) on {name}"
+        if action == "list":
+            msgs = list_inject_messages(store, name)
+            if not msgs:
+                return f"No inject messages on {name}."
+            lines = [f"Inject messages on {name}:"]
+            for m in msgs:
+                target = f" -> {m['to']}" if m.get("to") else ""
+                lines.append(f"  #{m.get('id')} {m.get('created_at')} "
+                             f"{m.get('set_by')}{target}: {m.get('text')}")
+            return "\n".join(lines)
+    except ValueError as e:
+        return f"Could not manage inject messages: {e}"
+    return f"Unknown inject action: {action} (use set, clear, or list)"
 
 
 @mcp.tool()
@@ -1325,6 +1436,61 @@ def coord_end(conversation: str, summary: str = "") -> str:
     if not result:
         return f"Conversation not found: {conversation}"
     return f"Ended coordination conversation: {conversation}"
+
+
+# ── Locks ────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def lock_acquire(node_id: str, ttl_minutes: int = 60, note: str = "",
+                 force: bool = False) -> str:
+    """Acquire an advisory lock on a node for the current agent.
+
+    Locks are advisory: they signal "I am working on this" to other agents
+    (edit refusal, collab context). Expired locks never block anyone.
+
+    Args:
+        node_id: Node ID or title to lock.
+        ttl_minutes: Lock TTL. Re-acquiring refreshes it.
+        note: Why the node is locked.
+        force: Take over a foreign unexpired lock.
+    """
+    store, _ = _get_store()
+    from .locks import lock_node
+    from .store import LockHeldError
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if not node:
+        return f"Node not found: {node_id}"
+    try:
+        lock = lock_node(store, node["id"], _default_agent(),
+                         ttl_minutes=ttl_minutes, note=note, force=force)
+    except (LockHeldError, ValueError) as e:
+        return f"Could not lock node: {e}"
+    return (f"Locked {node['title']} ({node['id']}) for {lock['agent']} "
+            f"until {lock['expires_at']}")
+
+
+@mcp.tool()
+def lock_release(node_id: str, force: bool = False) -> str:
+    """Release an advisory lock held on a node.
+
+    Args:
+        node_id: Node ID or title to unlock.
+        force: Clear a lock held by another agent.
+    """
+    store, _ = _get_store()
+    from .locks import unlock_node
+    from .store import LockHeldError
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if not node:
+        return f"Node not found: {node_id}"
+    try:
+        cleared = unlock_node(store, node["id"], _default_agent(), force=force)
+    except LockHeldError as e:
+        return f"Could not unlock node: {e}"
+    if cleared:
+        return f"Unlocked {node['title']} ({node['id']})"
+    return f"No lock on {node['title']} ({node['id']})"
 
 
 # ── Watches ──────────────────────────────────────────────────────────

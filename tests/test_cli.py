@@ -230,3 +230,116 @@ class TestMigrate:
         # Verify searchable
         r2 = run("search", "test topic", "--data-dir", d)
         assert "Test Topic" in r2.stdout or "test" in r2.stdout.lower()
+
+
+# ── collab: lock/unlock + coord join/attach/inject ────────────────────
+
+
+def run_as(agent, *args):
+    """Run kin as a specific agent identity (KIN_AGENT_ID)."""
+    import os
+    env = {**os.environ, "KIN_AGENT_ID": agent}
+    env.pop("KIN_PROFILE", None)
+    return subprocess.run(
+        [sys.executable, "-m", "kindex.cli", *args],
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+
+
+class TestLockCLI:
+    def test_lock_unlock_cycle(self, data_dir):
+        r = run_as("alpha", "lock", "Stigmergy is coordination through environmental traces",
+                   "--ttl", "30", "--note", "editing", "--data-dir", data_dir)
+        assert r.returncode == 0, r.stderr
+        assert "Locked" in r.stdout
+        assert "alpha" in r.stdout
+
+        # Foreign lock refused without force
+        r = run_as("beta", "lock", "Stigmergy is coordination through environmental traces",
+                   "--data-dir", data_dir)
+        assert r.returncode == 1
+        assert "locked by 'alpha'" in r.stderr
+
+        # Foreign unlock refused without force
+        r = run_as("beta", "unlock", "Stigmergy is coordination through environmental traces",
+                   "--data-dir", data_dir)
+        assert r.returncode == 1
+        assert "alpha" in r.stderr
+
+        # Force takeover, then release
+        r = run_as("beta", "lock", "Stigmergy is coordination through environmental traces",
+                   "--force", "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "beta" in r.stdout
+
+        r = run_as("beta", "unlock", "Stigmergy is coordination through environmental traces",
+                   "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "Unlocked" in r.stdout
+
+        # Unlock with nothing held reports cleanly
+        r = run_as("beta", "unlock", "Stigmergy is coordination through environmental traces",
+                   "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "No lock" in r.stdout
+
+    def test_lock_missing_node(self, data_dir):
+        r = run_as("alpha", "lock", "definitely-not-a-node", "--data-dir", data_dir)
+        assert r.returncode == 1
+        assert "not found" in r.stderr
+
+    def test_lock_explicit_agent_flag(self, data_dir):
+        r = run_as("alpha", "lock", "Stigmergy is coordination through environmental traces",
+                   "--agent", "gamma", "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "gamma" in r.stdout
+
+
+class TestCoordCLI:
+    def test_join_attach_inject_flow(self, data_dir):
+        r = run_as("alpha", "coord", "start", "crew", "--data-dir", data_dir)
+        assert r.returncode == 0, r.stderr
+        assert "Started coordination conversation" in r.stdout
+
+        r = run_as("beta", "coord", "join", "crew", "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "Joined crew as beta" in r.stdout
+
+        # Attach by title
+        r = run_as("alpha", "coord", "attach", "crew",
+                   "Stigmergy is coordination through environmental traces",
+                   "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "Attached" in r.stdout
+
+        # Attach a missing node fails cleanly
+        r = run_as("alpha", "coord", "attach", "crew", "no-such-node",
+                   "--data-dir", data_dir)
+        assert "Error" in r.stderr
+
+        # Inject set (targeted), list, clear
+        r = run_as("alpha", "coord", "inject", "crew", "set", "branch", "frozen",
+                   "--to", "beta", "--data-dir", data_dir)
+        assert r.returncode == 0
+        assert "Set inject message #1" in r.stdout
+
+        r = run_as("alpha", "coord", "inject", "crew", "list", "--data-dir", data_dir)
+        assert "branch frozen" in r.stdout
+        assert "-> beta" in r.stdout
+
+        r = run_as("alpha", "coord", "inject", "crew", "clear", "--id", "1",
+                   "--data-dir", data_dir)
+        assert "Cleared 1" in r.stdout
+
+        r = run_as("alpha", "coord", "inject", "crew", "list", "--data-dir", data_dir)
+        assert "No inject messages" in r.stdout
+
+    def test_post_defaults_agent_and_targets(self, data_dir):
+        run_as("alpha", "coord", "start", "room", "--data-dir", data_dir)
+        r = run_as("alpha", "coord", "post", "room", "hello", "team",
+                   "--to", "beta", "--data-dir", data_dir)
+        assert r.returncode == 0, r.stderr
+        assert "Posted message #1" in r.stdout
+
+        r = run_as("beta", "coord", "read", "room", "--data-dir", data_dir)
+        assert "alpha -> beta: hello team" in r.stdout

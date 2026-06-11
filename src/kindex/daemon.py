@@ -115,6 +115,22 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["watches_expired"] = watch_results.get("expired", 0)
     results["watches_notified"] = watch_results.get("notified", 0)
 
+    # 9b. Collab hygiene — expired locks, conversations, and task claims
+    try:
+        from .coordination import cleanup_expired_conversations
+        from .locks import cleanup_expired_locks
+        from .tasks import cleanup_expired_claims
+        if verbose:
+            print("Sweeping expired locks, conversations, and claims...")
+        results["locks_cleared"] = cleanup_expired_locks(store)
+        results["conversations_expired"] = cleanup_expired_conversations(store)
+        results["claims_released"] = cleanup_expired_claims(store)
+    except Exception:
+        # Best-effort hygiene — a malformed collab row must not break cron
+        results.setdefault("locks_cleared", 0)
+        results.setdefault("conversations_expired", 0)
+        results.setdefault("claims_released", 0)
+
     # 10. Check reminders
     reminder_results = _check_reminders(config, store, verbose=verbose)
     results["reminders_fired"] = reminder_results.get("fired", 0)

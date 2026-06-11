@@ -247,3 +247,176 @@ class TestMCPTags:
         from kindex.mcp_server import list_nodes
         sig = inspect.signature(list_nodes)
         assert sig.parameters["limit"].default == 100
+
+
+@pytest.fixture
+def agent_env(monkeypatch):
+    """Deterministic agent identity for collab tools."""
+    monkeypatch.setenv("KIN_AGENT_ID", "mcp-agent")
+    return "mcp-agent"
+
+
+class TestMCPCoordLegacy:
+    """First coverage of the pre-existing coord_* tools."""
+
+    def test_start_post_read_list_end(self, patch_store, agent_env):
+        from kindex.mcp_server import (
+            coord_end,
+            coord_list,
+            coord_post,
+            coord_read,
+            coord_start,
+        )
+
+        result = coord_start("Build Plan", agent="agent-a")
+        assert "Started coordination conversation" in result
+
+        result = coord_post("build-plan", agent="agent-a", message="claimed parser")
+        assert "Posted coordination message #1" in result
+
+        result = coord_read("build-plan")
+        assert "claimed parser" in result
+        assert "agent-a" in result
+
+        result = coord_list()
+        assert "build-plan" in result
+
+        result = coord_end("build-plan", summary="done")
+        assert "Ended coordination conversation" in result
+        assert "build-plan" not in coord_list()
+
+    def test_post_to_missing_conversation_errors(self, patch_store, agent_env):
+        from kindex.mcp_server import coord_post
+        result = coord_post("ghost", message="anyone there?")
+        assert "Could not post" in result
+
+    def test_read_missing_conversation_errors(self, patch_store, agent_env):
+        from kindex.mcp_server import coord_read
+        result = coord_read("ghost")
+        assert "Could not read" in result
+
+
+class TestMCPCoordCollab:
+    def test_start_defaults_creator_to_resolved_agent(self, patch_store, agent_env):
+        from kindex.coordination import get_conversation
+        from kindex.mcp_server import coord_start
+
+        store, _ = patch_store
+        coord_start("Crew")
+        extra = get_conversation(store, "crew")["extra"]
+        assert extra["created_by"] == "mcp-agent"
+        assert [m["agent"] for m in extra["members"]] == ["mcp-agent"]
+
+    def test_join_idempotent_and_errors(self, patch_store, agent_env):
+        from kindex.coordination import get_conversation
+        from kindex.mcp_server import coord_join, coord_start
+
+        store, _ = patch_store
+        coord_start("Crew", agent="agent-a")
+        assert "Joined crew as mcp-agent" in coord_join("crew")
+        assert "Joined crew as mcp-agent" in coord_join("crew")
+        members = get_conversation(store, "crew")["extra"]["members"]
+        assert [m["agent"] for m in members] == ["agent-a", "mcp-agent"]
+
+        assert "Could not join" in coord_join("ghost")
+
+    def test_read_advances_default_agent_cursor(self, patch_store, agent_env):
+        from kindex.coordination import active_collabs_for_agent
+        from kindex.mcp_server import coord_join, coord_post, coord_read, coord_start
+
+        store, _ = patch_store
+        coord_start("Crew", agent="agent-a")
+        coord_join("crew")  # mcp-agent joins
+        coord_post("crew", agent="agent-a", message="news")
+        assert active_collabs_for_agent(store, "mcp-agent")[0]["unread_count"] == 1
+
+        coord_read("crew")
+        assert active_collabs_for_agent(store, "mcp-agent")[0]["unread_count"] == 0
+
+    def test_post_targeted_message(self, patch_store, agent_env):
+        from kindex.coordination import read_messages
+        from kindex.mcp_server import coord_post, coord_start
+
+        store, _ = patch_store
+        coord_start("Crew")
+        coord_post("crew", message="for b", to="agent-b")
+        msg = read_messages(store, "crew")["messages"][0]
+        assert msg["author"] == "mcp-agent"
+        assert msg["to"] == "agent-b"
+
+    def test_attach_by_id_title_and_missing(self, patch_store, agent_env):
+        from kindex.coordination import get_conversation
+        from kindex.mcp_server import coord_attach, coord_start
+
+        store, _ = patch_store
+        coord_start("Crew")
+        result = coord_attach("crew", "Stigmergy")  # by title
+        assert "Attached" in result
+        resources = get_conversation(store, "crew")["extra"]["resources"]
+        assert len(resources) == 1
+
+        # by id, idempotent
+        coord_attach("crew", resources[0])
+        assert get_conversation(store, "crew")["extra"]["resources"] == resources
+
+        assert "Could not attach" in coord_attach("crew", "no-such-node-xyz")
+
+    def test_inject_set_list_clear(self, patch_store, agent_env):
+        from kindex.mcp_server import coord_inject, coord_start
+
+        coord_start("Crew")
+        result = coord_inject("crew", action="set", text="branch frozen")
+        assert "Set inject message #1" in result
+        result = coord_inject("crew", action="set", text="b: rebase", to="agent-b")
+        assert "#2 " in result or "#2" in result
+
+        listing = coord_inject("crew", action="list")
+        assert "branch frozen" in listing
+        assert "-> agent-b" in listing
+
+        assert "Cleared 1" in coord_inject("crew", action="clear", message_id=1)
+        assert "Cleared 1" in coord_inject("crew", action="clear")
+        assert "No inject messages" in coord_inject("crew", action="list")
+
+    def test_inject_unknown_action(self, patch_store, agent_env):
+        from kindex.mcp_server import coord_inject, coord_start
+        coord_start("Crew")
+        assert "Unknown inject action" in coord_inject("crew", action="bogus")
+
+
+class TestMCPLocks:
+    def test_acquire_conflict_force_release(self, patch_store, agent_env, monkeypatch):
+        from kindex.mcp_server import lock_acquire, lock_release
+
+        result = lock_acquire("Stigmergy", ttl_minutes=30, note="editing")
+        assert "Locked Stigmergy" in result
+        assert "mcp-agent" in result
+
+        # Another agent cannot take or release it without force
+        monkeypatch.setenv("KIN_AGENT_ID", "other-agent")
+        assert "Could not lock node" in lock_acquire("Stigmergy")
+        assert "Could not unlock node" in lock_release("Stigmergy")
+        assert "Locked Stigmergy" in lock_acquire("Stigmergy", force=True)
+
+        # New holder releases cleanly
+        assert "Unlocked Stigmergy" in lock_release("Stigmergy")
+        assert "No lock on" in lock_release("Stigmergy")
+
+    def test_lock_missing_node(self, patch_store, agent_env):
+        from kindex.mcp_server import lock_acquire, lock_release
+        assert "Node not found" in lock_acquire("no-such-node-xyz")
+        assert "Node not found" in lock_release("no-such-node-xyz")
+
+
+class TestMCPTaskClaimDefaults:
+    def test_task_claim_defaults_agent(self, patch_store, agent_env):
+        from kindex.mcp_server import task_add, task_claim
+
+        store, _ = patch_store
+        task_add("Ship the parser")
+        task_id = store.all_nodes(node_type="task", limit=10)[0]["id"]
+
+        result = task_claim(task_id)
+        assert "mcp-agent" in result
+        claim = (store.get_node(task_id).get("extra") or {}).get("claim")
+        assert claim["agent"] == "mcp-agent"

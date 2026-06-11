@@ -431,3 +431,51 @@ class TestLastRunMarker:
         assert "T" in marker1
         assert "T" in marker2
         s.close()
+
+
+class TestCronCollabHygiene:
+    def test_cron_sweeps_expired_locks_conversations_claims(self, tmp_path):
+        """Stage 3: cron pass clears expired locks, conversations, and claims."""
+        from kindex.coordination import create_conversation, get_conversation
+        from kindex.daemon import cron_run
+        from kindex.locks import lock_node
+        from kindex.store import active_lock
+        from kindex.tasks import claim_task, create_task
+
+        cfg = Config(
+            data_dir=str(tmp_path),
+            claude_dir=str(tmp_path / "claude"),
+            project_dirs=[str(tmp_path / "projects")],
+        )
+        s = Store(cfg)
+
+        # Expired lock (negative TTL -> already past)
+        nid = s.add_node("Locked thing", node_type="concept", prov_activity="test")
+        lock_node(s, nid, "agent-a", ttl_minutes=-1)
+        # Live lock must survive the sweep
+        nid_live = s.add_node("Live thing", node_type="concept", prov_activity="test")
+        lock_node(s, nid_live, "agent-a", ttl_minutes=60)
+
+        # Expired conversation
+        create_conversation(s, "stale", ttl_minutes=-1)
+        # Live conversation survives
+        create_conversation(s, "fresh", ttl_minutes=240)
+
+        # Expired task claim
+        task_id = create_task(s, "Sweep me")
+        claim_task(s, task_id, "agent-a", ttl_minutes=-1)
+
+        results = cron_run(cfg, s, verbose=False)
+
+        assert results["locks_cleared"] == 1
+        assert results["conversations_expired"] == 1
+        assert results["claims_released"] == 1
+
+        assert "lock" not in (s.get_node(nid).get("extra") or {})
+        assert active_lock(s.get_node(nid_live)) is not None
+        assert get_conversation(s, "stale") is None
+        assert get_conversation(s, "fresh") is not None
+        extra = s.get_node(task_id).get("extra") or {}
+        assert "claim" not in extra
+        assert extra.get("task_status") == "open"
+        s.close()

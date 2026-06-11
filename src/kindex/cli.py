@@ -2879,11 +2879,12 @@ def cmd_task(args):
             print(f"Task not found: {task_id}", file=sys.stderr)
 
     elif action == "claim":
+        from .config import resolve_agent_id
         from .tasks import claim_task
         task_id = getattr(args, "task_id", None)
-        agent = getattr(args, "agent", None)
-        if not task_id or not agent:
-            print("Usage: kin task claim --task-id <id> --agent <name>", file=sys.stderr)
+        agent = getattr(args, "agent", None) or resolve_agent_id(_config(args))
+        if not task_id:
+            print("Usage: kin task claim --task-id <id> [--agent <name>]", file=sys.stderr)
             store.close()
             return
         try:
@@ -2904,6 +2905,7 @@ def cmd_task(args):
             print(f"Error: {e}", file=sys.stderr)
 
     elif action == "release":
+        from .config import resolve_agent_id
         from .tasks import release_task_claim
         task_id = getattr(args, "task_id", None)
         if not task_id:
@@ -2914,7 +2916,7 @@ def cmd_task(args):
             result = release_task_claim(
                 store,
                 task_id,
-                agent=getattr(args, "agent", "") or "",
+                agent=getattr(args, "agent", "") or resolve_agent_id(_config(args)),
                 force=getattr(args, "force", False),
             )
             if result:
@@ -3007,8 +3009,11 @@ def cmd_task(args):
 
 def cmd_coord(args):
     """Short-lived coordination conversations for agents."""
+    from .config import resolve_agent_id
+    cfg = _config(args)
     store = _store(args)
     action = getattr(args, "coord_action", "list")
+    agent = getattr(args, "agent", "") or resolve_agent_id(cfg)
 
     if action == "start":
         from .coordination import create_conversation
@@ -3024,7 +3029,7 @@ def cmd_coord(args):
                 task_id=getattr(args, "task_id", None),
                 ttl_minutes=getattr(args, "ttl", 240) or 240,
                 project_path=os.getcwd(),
-                created_by=getattr(args, "agent", "") or "",
+                created_by=agent,
             )
             print(f"Started coordination conversation: {conv_id}")
         except ValueError as e:
@@ -3034,13 +3039,14 @@ def cmd_coord(args):
         from .coordination import post_message
         ref = getattr(args, "name", None)
         body = " ".join(getattr(args, "message_words", []) or [])
-        agent = getattr(args, "agent", "") or ""
-        if not ref or not body or not agent:
-            print("Usage: kin coord post <name-or-id> --agent <name> <message>", file=sys.stderr)
+        if not ref or not body:
+            print("Usage: kin coord post <name-or-id> <message> [--agent <name>] [--to <agent>]",
+                  file=sys.stderr)
             store.close()
             return
         try:
-            msg = post_message(store, ref, agent, body)
+            msg = post_message(store, ref, agent, body,
+                               to=getattr(args, "to", None))
             print(f"Posted message #{msg['id']}")
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -3058,8 +3064,77 @@ def cmd_coord(args):
                 ref,
                 since_id=getattr(args, "since_id", 0) or 0,
                 limit=getattr(args, "limit", 50) or 50,
+                agent=agent,
             )
             print(_dumps(payload) if getattr(args, "json", False) else format_messages(payload))
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "join":
+        from .coordination import join_conversation
+        ref = getattr(args, "name", None)
+        if not ref:
+            print("Usage: kin coord join <name-or-id> [--agent <name>]", file=sys.stderr)
+            store.close()
+            return
+        try:
+            member = join_conversation(store, ref, agent)
+            print(f"Joined {ref} as {member['agent']}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "attach":
+        from .coordination import attach_resource
+        ref = getattr(args, "name", None)
+        words = getattr(args, "message_words", []) or []
+        if not ref or not words:
+            print("Usage: kin coord attach <name-or-id> <node-id-or-title>", file=sys.stderr)
+            store.close()
+            return
+        target = " ".join(words)
+        node = store.get_node(target) or store.get_node_by_title(target)
+        try:
+            resources = attach_resource(store, ref, node["id"] if node else target)
+            print(f"Attached. Resources: {', '.join(resources)}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+
+    elif action == "inject":
+        from .coordination import (
+            clear_inject_messages,
+            list_inject_messages,
+            set_inject_message,
+        )
+        ref = getattr(args, "name", None)
+        words = getattr(args, "message_words", []) or []
+        sub = words[0] if words else "list"
+        if not ref or sub not in ("set", "clear", "list"):
+            print("Usage: kin coord inject <name-or-id> set <text> [--to <agent>] | "
+                  "clear [--id N] | list", file=sys.stderr)
+            store.close()
+            return
+        try:
+            if sub == "set":
+                text = " ".join(words[1:])
+                entry = set_inject_message(store, ref, text, agent,
+                                           to=getattr(args, "to", None))
+                print(f"Set inject message #{entry['id']}"
+                      + (f" -> {entry['to']}" if entry.get("to") else ""))
+            elif sub == "clear":
+                count = clear_inject_messages(
+                    store, ref, message_id=getattr(args, "id", None))
+                print(f"Cleared {count} inject message(s)")
+            else:
+                msgs = list_inject_messages(store, ref)
+                if getattr(args, "json", False):
+                    print(_dumps(msgs))
+                elif not msgs:
+                    print("No inject messages.")
+                else:
+                    for m in msgs:
+                        target = f" -> {m['to']}" if m.get("to") else ""
+                        print(f"  #{m.get('id')} {m.get('created_at')} "
+                              f"{m.get('set_by')}{target}: {m.get('text')}")
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
 
@@ -3092,6 +3167,67 @@ def cmd_coord(args):
         count = cleanup_expired_conversations(store)
         print(f"Cleaned expired conversations: {count}")
 
+    store.close()
+
+
+# ── locks ────────────────────────────────────────────────────────────
+
+
+def cmd_lock(args):
+    """Acquire an advisory lock on a node for the current agent."""
+    from .config import resolve_agent_id
+    from .locks import lock_node
+    from .store import LockHeldError
+    cfg = _config(args)
+    store = _store(args)
+    agent = getattr(args, "agent", "") or resolve_agent_id(cfg)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+    try:
+        lock = lock_node(
+            store, node["id"], agent,
+            ttl_minutes=getattr(args, "ttl", 60) or 60,
+            note=getattr(args, "note", "") or "",
+            force=getattr(args, "force", False),
+        )
+        print(f"Locked {node['title']} ({node['id']}) for {lock['agent']} "
+              f"until {lock['expires_at']}")
+    except (LockHeldError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+    store.close()
+
+
+def cmd_unlock(args):
+    """Release an advisory lock on a node."""
+    from .config import resolve_agent_id
+    from .locks import unlock_node
+    from .store import LockHeldError
+    cfg = _config(args)
+    store = _store(args)
+    agent = getattr(args, "agent", "") or resolve_agent_id(cfg)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+    try:
+        cleared = unlock_node(store, node["id"], agent,
+                              force=getattr(args, "force", False))
+        if cleared:
+            print(f"Unlocked {node['title']} ({node['id']})")
+        else:
+            print(f"No lock on {node['title']} ({node['id']})")
+    except LockHeldError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
     store.close()
 
 
@@ -5293,10 +5429,13 @@ def build_parser() -> argparse.ArgumentParser:
     # coord
     s = sub.add_parser("coord", help="Short-lived agent coordination conversations")
     s.add_argument("coord_action", nargs="?", default="list",
-                   choices=["start", "post", "read", "list", "end", "cleanup"])
+                   choices=["start", "post", "read", "list", "end", "cleanup",
+                            "join", "attach", "inject"])
     s.add_argument("name", nargs="?", help="Conversation name or id")
-    s.add_argument("message_words", nargs="*", help="Message body for post")
-    s.add_argument("--agent", help="Agent name")
+    s.add_argument("message_words", nargs="*",
+                   help="Message body (post), node id (attach), or "
+                        "set/clear/list + text (inject)")
+    s.add_argument("--agent", help="Agent name (default: resolved agent id)")
     s.add_argument("--task-id", help="Related task id")
     s.add_argument("--ttl", type=int, default=240, help="Conversation TTL in minutes")
     s.add_argument("--since-id", type=int, default=0, help="Read messages after id")
@@ -5304,8 +5443,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", default="active", help="Filter: active, ended, all")
     s.add_argument("--project", action="store_true", help="Filter by current project")
     s.add_argument("--summary", help="End summary retained after clearing messages")
+    s.add_argument("--to", help="Target agent (post / inject set)")
+    s.add_argument("--id", type=int, help="Inject message id (inject clear)")
     _common(s)
     s.set_defaults(func=cmd_coord)
+
+    # lock / unlock
+    s = sub.add_parser("lock", help="Acquire an advisory lock on a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("--ttl", type=int, default=60, help="Lock TTL in minutes")
+    s.add_argument("--note", default="", help="Why the node is locked")
+    s.add_argument("--agent", help="Agent name (default: resolved agent id)")
+    s.add_argument("--force", action="store_true", help="Take over a foreign lock")
+    _common(s)
+    s.set_defaults(func=cmd_lock)
+
+    s = sub.add_parser("unlock", help="Release an advisory lock on a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("--agent", help="Agent name (default: resolved agent id)")
+    s.add_argument("--force", action="store_true", help="Clear a foreign lock")
+    _common(s)
+    s.set_defaults(func=cmd_unlock)
 
     # remind
     s = sub.add_parser("remind", help="Reminder management (create, list, snooze, done, cancel, check)")
