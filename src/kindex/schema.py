@@ -29,6 +29,41 @@ EDGE_TYPES = (
     "spawned_from", "supersedes", "exemplifies", "context_of", "blocks",
 )
 
+# Edit policy — how mutable each node type is via Store.edit_node:
+#   editable: free-form edits (title, content, tags, intent, aka, ...)
+#   additive: history matters — only append (addendum) and expires allowed;
+#             replacement goes through Store.supersede_node
+#   managed:  lifecycle owned by dedicated tooling (tasks/sessions/coordination);
+#             edit_node always refuses
+EDIT_POLICY: dict[str, tuple[str, ...]] = {
+    "editable": ("concept", "document", "artifact", "skill", "person",
+                 "project", "question"),
+    "additive": ("decision", "constraint", "directive", "checkpoint", "watch"),
+    "managed": ("task", "session", "coordination"),
+}
+
+
+def edit_class_for(node_type: str, overrides: dict[str, str] | None = None) -> str:
+    """Resolve the edit class for a node type.
+
+    Returns 'editable' | 'additive' | 'managed'. Unknown types default to
+    'editable'. `overrides` maps node_type -> class (from Config.edit_policy)
+    and wins over the built-in policy; an override naming an unknown class
+    raises ValueError so config typos surface instead of silently relaxing.
+    """
+    if overrides and node_type in overrides:
+        cls = overrides[node_type]
+        if cls not in EDIT_POLICY:
+            raise ValueError(
+                f"Unknown edit class '{cls}' for node type '{node_type}' "
+                f"(valid: {', '.join(EDIT_POLICY)})"
+            )
+        return cls
+    for cls, types in EDIT_POLICY.items():
+        if node_type in types:
+            return cls
+    return "editable"
+
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
