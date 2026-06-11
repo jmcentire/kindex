@@ -679,6 +679,20 @@ class Store:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def nodes_with_expiry(self, status: str = "active",
+                          limit: int = 1000) -> list[dict]:
+        """Nodes carrying extra['expires'] (cheap LIKE prefilter).
+
+        The `"expires"` pattern (quote-delimited) deliberately does not match
+        `"expires_at"` lock timestamps. Callers confirm with node_expired().
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM nodes WHERE status = ? AND extra LIKE ? "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (status, '%"expires"%', limit),
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
     # ── Edit / supersede / atomic extra ─────────────────────────────────
 
     def _check_lock(self, node: dict, actor: str | None, force: bool) -> None:

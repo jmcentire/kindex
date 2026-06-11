@@ -558,12 +558,15 @@ def select_candidates(
 
     from .reminders import reminder_matches_conversation
     from .scoping import item_matches_conversation
+    from .store import node_expired
 
     by_id: dict[str, AttentionCandidate] = {}
     include_legacy_scoped_items = conversation_id is None
 
     for node in store.fts_search(snippet, limit=max(12, config.attention.max_candidates * 3)):
         if node.get("type") not in {"constraint", "directive", "checkpoint", "watch", "task"}:
+            continue
+        if node_expired(node):
             continue
         if node.get("type") == "task" and not item_matches_conversation(
             node,
@@ -578,6 +581,8 @@ def select_candidates(
 
     for node_type in ("constraint", "directive", "checkpoint", "task"):
         for node in store.all_nodes(node_type=node_type, status="active", limit=100):
+            if node_expired(node):
+                continue
             if node_type == "task" and not item_matches_conversation(
                 node,
                 conversation_id,
@@ -592,6 +597,8 @@ def select_candidates(
                 by_id[candidate.id] = candidate
 
     for node in store.active_watches()[:100]:
+        if node_expired(node):  # active_watches already filters; keep the invariant local
+            continue
         candidate = _node_to_candidate(node, snippet, config)
         if candidate and (
             candidate.id not in by_id or candidate.score > by_id[candidate.id].score

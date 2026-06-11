@@ -115,6 +115,10 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["watches_expired"] = watch_results.get("expired", 0)
     results["watches_notified"] = watch_results.get("notified", 0)
 
+    # 9a. Generic expiry — archive expired non-watch nodes
+    expire_results = _expire_nodes(store, verbose=verbose)
+    results["nodes_expired"] = expire_results.get("archived", 0)
+
     # 9b. Collab hygiene — expired locks, conversations, and task claims
     try:
         from .coordination import cleanup_expired_conversations
@@ -485,6 +489,40 @@ def _check_watches(store: "Store", verbose: bool = False) -> dict:
                             print(f"  Boosted watch: {w['title']} ({days_left}d left)")
             except (ValueError, TypeError):
                 pass
+
+    return results
+
+
+def _expire_nodes(store: "Store", verbose: bool = False) -> dict:
+    """Archive non-watch nodes whose extra['expires'] date has passed.
+
+    Watches keep their dedicated lifecycle in _check_watches (near-expiry
+    weight boost + archive). Every other expired node is archived with
+    extra['expired_at'] stamped for provenance.
+    """
+    import datetime as _dt
+    from .store import node_expired
+
+    results = {"archived": 0}
+
+    try:
+        nodes = store.nodes_with_expiry(status="active")
+    except Exception:
+        return results
+
+    now_iso = _dt.datetime.now().isoformat(timespec="seconds")
+    for n in nodes:
+        if n.get("type") == "watch":
+            continue
+        if not node_expired(n):
+            continue
+        extra = dict(n.get("extra") or {})
+        extra["expired_at"] = now_iso
+        store.update_node(n["id"], status="archived", extra=extra)
+        results["archived"] += 1
+        if verbose:
+            print(f"  Expired node: {n.get('title', n['id'])} "
+                  f"(was due {extra.get('expires')})")
 
     return results
 

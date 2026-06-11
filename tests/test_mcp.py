@@ -420,3 +420,125 @@ class TestMCPTaskClaimDefaults:
         assert "mcp-agent" in result
         claim = (store.get_node(task_id).get("extra") or {}).get("claim")
         assert claim["agent"] == "mcp-agent"
+
+
+class TestMCPEdit:
+    def test_edit_editable_by_title(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        store, _ = patch_store
+        result = edit("Stigmergy", content="Updated body")
+        assert result.startswith("Edited")
+        assert "content" in result
+        assert store.get_node_by_title("Stigmergy")["content"] == "Updated body"
+
+    def test_edit_additive_refused(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        result = edit("Never break the API contract", content="rewrite history")
+        assert result.startswith("Error")
+        assert "additive" in result
+        assert "supersede" in result
+
+    def test_edit_additive_append_ok(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        store, _ = patch_store
+        result = edit("Never break the API contract", append="Reaffirmed for v2")
+        assert result.startswith("Edited")
+        content = store.get_node_by_title("Never break the API contract")["content"]
+        assert "[addendum" in content
+        assert "mcp-agent" in content
+        assert "Reaffirmed for v2" in content
+
+    def test_edit_managed_refused(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        store, _ = patch_store
+        store.add_node("Some task", node_type="task",
+                       extra={"task_status": "open"})
+        result = edit("Some task", content="nope")
+        assert result.startswith("Error")
+        assert "managed" in result
+
+    def test_edit_requires_a_field(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        result = edit("Stigmergy")
+        assert result.startswith("Error")
+        assert "at least one field" in result
+
+    def test_edit_not_found(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        assert "Node not found" in edit("no-such-node-xyz", content="x")
+
+    def test_edit_tags_and_expires(self, patch_store, agent_env):
+        from kindex.mcp_server import edit
+        store, _ = patch_store
+        result = edit("Stigmergy", add_tags="swarm, emergence",
+                      remove_tags="biology", expires="2099-01-01")
+        assert result.startswith("Edited")
+        node = store.get_node_by_title("Stigmergy")
+        assert "swarm" in node["domains"]
+        assert "emergence" in node["domains"]
+        assert "biology" not in node["domains"]
+        assert node["extra"]["expires"] == "2099-01-01"
+
+
+class TestMCPSupersede:
+    def test_supersede_creates_replacement(self, patch_store, agent_env):
+        from kindex.mcp_server import supersede
+        store, _ = patch_store
+        result = supersede("Never break the API contract",
+                           "All public endpoints stay compatible across majors",
+                           reason="tightened wording")
+        assert "Superseded" in result
+        new_id = result.rsplit(" ", 1)[1]
+
+        old = store.get_node_by_title("Never break the API contract")
+        assert old["status"] == "superseded"
+        assert old["extra"]["superseded_by"] == new_id
+
+        new = store.get_node(new_id)
+        assert new["status"] == "active"
+        assert new["type"] == "constraint"
+        assert new["extra"]["supersedes"] == old["id"]
+        assert new["extra"]["supersede_reason"] == "tightened wording"
+
+    def test_supersede_empty_text_errors(self, patch_store, agent_env):
+        from kindex.mcp_server import supersede
+        result = supersede("Stigmergy", "   ")
+        assert result.startswith("Error")
+
+    def test_supersede_not_found(self, patch_store, agent_env):
+        from kindex.mcp_server import supersede
+        assert "Node not found" in supersede("no-such-node-xyz", "text")
+
+
+class TestMCPToolRegistry:
+    def test_tag_update_registered_reinforce_private(self):
+        import kindex.mcp_server as mcp_mod
+        names = {t.name for t in mcp_mod.mcp._tool_manager.list_tools()}
+        assert "tag_update" in names
+        assert "_reinforce_on_end" not in names
+        assert "reinforce_on_end" not in names
+        assert "edit" in names
+        assert "supersede" in names
+
+    def test_tag_end_flow_still_reinforces(self, patch_store):
+        """_reinforce_on_end stays functional as the private helper inside
+        tag_update's end action (never raises, returns '')."""
+        from kindex.mcp_server import tag_start, tag_update
+        tag_start("registry-regression", focus="check end flow")
+        result = tag_update(name="registry-regression", action="end",
+                            summary="all done")
+        assert result.startswith("Completed: registry-regression")
+
+
+class TestMCPChangelogDiffs:
+    def test_changelog_renders_diffs(self, patch_store, agent_env):
+        from kindex.mcp_server import changelog
+        store, _ = patch_store
+        nid = store.get_node_by_title("Stigmergy")["id"]
+        store.edit_node(nid, actor="mcp-agent", content="Changed content here")
+
+        out = changelog(days=1)
+        assert "edit_node" in out
+        assert "Stigmergy" in out
+        assert "content:" in out
+        assert "-> Changed content here" in out

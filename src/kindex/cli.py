@@ -1006,6 +1006,94 @@ def cmd_set_state(args):
     store.close()
 
 
+# ── edit / supersede ──────────────────────────────────────────────────
+
+_EDIT_FIELD_FLAGS = ("--title, --content, --append, --add-tags, "
+                     "--remove-tags, --intent, --expires")
+
+
+def cmd_edit(args):
+    """Policy-aware in-place edit of a node (ID or title resolution)."""
+    from .config import resolve_agent_id
+    from .store import EditPolicyError, LockHeldError
+
+    add_tags = [t.strip() for t in (getattr(args, "add_tags", None) or "").split(",")
+                if t.strip()] or None
+    remove_tags = [t.strip() for t in (getattr(args, "remove_tags", None) or "").split(",")
+                   if t.strip()] or None
+    fields = {
+        "title": getattr(args, "title", None),
+        "content": getattr(args, "content", None),
+        "append": getattr(args, "append", None),
+        "add_tags": add_tags,
+        "remove_tags": remove_tags,
+        "intent": getattr(args, "intent", None),
+        "expires": getattr(args, "expires", None),
+    }
+    provided = {k: v for k, v in fields.items() if v is not None}
+    if not provided:
+        print(f"Error: kin edit requires at least one field ({_EDIT_FIELD_FLAGS}).",
+              file=sys.stderr)
+        sys.exit(2)
+
+    cfg = _config(args)
+    store = _store(args)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    try:
+        updated = store.edit_node(
+            node["id"],
+            actor=resolve_agent_id(cfg),
+            force=getattr(args, "force", False),
+            policy_overrides=cfg.edit_policy or None,
+            **provided,
+        )
+    except (EditPolicyError, LockHeldError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    print(f"Edited {updated.get('title', '')} ({updated['id']}) — "
+          f"fields: {', '.join(sorted(provided))}")
+    store.close()
+
+
+def cmd_supersede(args):
+    """Replace a node with a fresh one, preserving history (ID or title)."""
+    from .config import resolve_agent_id
+    from .store import LockHeldError
+
+    cfg = _config(args)
+    store = _store(args)
+    ref = args.node_id
+    node = store.get_node(ref) or store.get_node_by_title(ref)
+    if not node:
+        print(f"Error: '{ref}' not found.", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    text = " ".join(args.text)
+    try:
+        new = store.supersede_node(
+            node["id"], text,
+            actor=resolve_agent_id(cfg),
+            expires=getattr(args, "expires", None),
+            reason=getattr(args, "reason", None),
+        )
+    except (LockHeldError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    print(f"Superseded {node['title']} ({node['id']}) -> {new['id']}")
+    store.close()
+
+
 # ── export ────────────────────────────────────────────────────────────
 
 def _strip_pii(node: dict) -> dict:
@@ -1613,6 +1701,15 @@ def cmd_log(args):
 
 # ── changelog ─────────────────────────────────────────────────────────
 
+def _diff_value(value, limit: int = 60) -> str:
+    """Compact a diff old/new value for one-line changelog rendering."""
+    if value is None or value == "":
+        return "(none)"
+    s = value if isinstance(value, str) else _dumps(value)
+    s = " ".join(s.split())  # collapse newlines/whitespace
+    return s if len(s) <= limit else s[:limit - 1] + "…"
+
+
 def cmd_changelog(args):
     """Show what changed in the graph since a date or over the last N days."""
     store = _store(args)
@@ -1651,6 +1748,8 @@ def cmd_changelog(args):
         "update_node": "Updated",
         "delete_node": "Deleted",
         "add_edge": "Linked",
+        "edit_node": "Edited",
+        "supersede_node": "Superseded",
     }
     groups: dict[str, list[dict]] = {}
     for e in entries:
@@ -1708,6 +1807,15 @@ def cmd_changelog(args):
                     ntype = details.get("type", "")
                     type_str = f"[{ntype}] " if ntype else ""
                     print(f"  {ts}  {type_str}{target_title}")
+
+                # Compact per-field diff lines for edits
+                diffs = details.get("diffs") if isinstance(details, dict) else None
+                if isinstance(diffs, dict):
+                    for field, change in diffs.items():
+                        if not isinstance(change, dict):
+                            continue
+                        print(f"      {field}: {_diff_value(change.get('old'))} "
+                              f"-> {_diff_value(change.get('new'))}")
             print()
 
     store.close()
@@ -5022,6 +5130,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("value", help="Value to set")
     _common(s)
     s.set_defaults(func=cmd_set_state)
+
+    # edit
+    s = sub.add_parser("edit", help="Policy-aware in-place edit of a node")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("--title", help="Replace the title")
+    s.add_argument("--content", help="Replace the content")
+    s.add_argument("--append", help="Append a dated addendum to the content")
+    s.add_argument("--add-tags", dest="add_tags", help="Comma-separated tags to add")
+    s.add_argument("--remove-tags", dest="remove_tags", help="Comma-separated tags to remove")
+    s.add_argument("--intent", help="Replace the intent")
+    s.add_argument("--expires", help="Set expiry date (YYYY-MM-DD)")
+    s.add_argument("--force", action="store_true", help="Override a foreign lock")
+    _common(s)
+    s.set_defaults(func=cmd_edit)
+
+    # supersede
+    s = sub.add_parser("supersede", help="Replace a node with a new one, preserving history")
+    s.add_argument("node_id", help="Node ID or title")
+    s.add_argument("text", nargs="+", help="Replacement text")
+    s.add_argument("--expires", help="Expiry date for the new node (YYYY-MM-DD)")
+    s.add_argument("--reason", help="Why the node is being replaced")
+    _common(s)
+    s.set_defaults(func=cmd_supersede)
 
     # export
     s = sub.add_parser("export", help="Export graph (audience-aware)")

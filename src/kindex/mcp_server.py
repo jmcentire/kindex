@@ -287,6 +287,104 @@ def add(
 
 
 @mcp.tool()
+def edit(node_id: str, title: str = "", content: str = "", append: str = "",
+         add_tags: str = "", remove_tags: str = "", intent: str = "",
+         expires: str = "", force: bool = False) -> str:
+    """Edit a node in place (policy-aware). Accepts a node ID or exact title.
+
+    Edit classes by node type:
+    - editable (concept, document, artifact, skill, person, project, question):
+      every field below is allowed
+    - additive (decision, constraint, directive, checkpoint, watch): history
+      matters — only append and expires; use `supersede` to replace
+    - managed (task, session, coordination): refused — use the dedicated
+      task/session/coordination tools
+
+    Args:
+        node_id: Node ID or exact title.
+        title: Replace the title.
+        content: Replace the content.
+        append: Append a dated addendum block to the content.
+        add_tags: Comma-separated tags to add.
+        remove_tags: Comma-separated tags to remove.
+        intent: Replace the intent.
+        expires: Set an expiry date (YYYY-MM-DD) — expired nodes stop surfacing
+            and are archived by the daemon.
+        force: Override a foreign advisory lock.
+    """
+    store, config = _get_store()
+    from .store import EditPolicyError, LockHeldError
+
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if not node:
+        return f"Node not found: {node_id}"
+
+    fields = {
+        "title": title or None,
+        "content": content or None,
+        "append": append or None,
+        "add_tags": [t.strip() for t in add_tags.split(",") if t.strip()] or None,
+        "remove_tags": [t.strip() for t in remove_tags.split(",") if t.strip()] or None,
+        "intent": intent or None,
+        "expires": expires or None,
+    }
+    provided = {k: v for k, v in fields.items() if v is not None}
+    if not provided:
+        return ("Error: edit requires at least one field (title, content, "
+                "append, add_tags, remove_tags, intent, expires).")
+
+    try:
+        updated = store.edit_node(
+            node["id"],
+            actor=_default_agent(),
+            force=force,
+            policy_overrides=config.edit_policy or None,
+            **provided,
+        )
+    except (EditPolicyError, LockHeldError, ValueError) as e:
+        return f"Error: {e}"
+
+    return (f"Edited {updated.get('title', '')} ({updated['id']}) — "
+            f"fields: {', '.join(sorted(provided))}")
+
+
+@mcp.tool()
+def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") -> str:
+    """Replace a node with a fresh one, preserving history. Accepts ID or title.
+
+    Creates a new node (same type/tags/audience/intent), links it with a
+    `supersedes` edge, marks the old node status='superseded', and migrates
+    its retrieval pheromone. Use this instead of `edit` for additive types
+    (decision, constraint, directive, checkpoint, watch) when the content
+    must change rather than grow.
+
+    Args:
+        node_id: Node ID or exact title of the node to replace.
+        new_text: Full replacement text (becomes title + content).
+        expires: Optional expiry date for the new node (YYYY-MM-DD).
+        reason: Why the node is being replaced (kept as provenance).
+    """
+    store, _ = _get_store()
+    from .store import LockHeldError
+
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if not node:
+        return f"Node not found: {node_id}"
+
+    try:
+        new = store.supersede_node(
+            node["id"], new_text,
+            actor=_default_agent(),
+            expires=expires or None,
+            reason=reason or None,
+        )
+    except (LockHeldError, ValueError) as e:
+        return f"Error: {e}"
+
+    return f"Superseded {node['title']} ({node['id']}) -> new node {new['id']}"
+
+
+@mcp.tool()
 def context(
     topic: str = "",
     level: str = "abridged",
@@ -805,17 +903,30 @@ def changelog(since: str = "", days: int = 7) -> str:
     if not entries:
         return f"No changes since {since_iso}."
 
+    def _compact(value, limit=60):
+        if value is None or value == "":
+            return "(none)"
+        s = value if isinstance(value, str) else _json(value)
+        s = " ".join(s.split())
+        return s if len(s) <= limit else s[:limit - 1] + "…"
+
     lines = [f"{len(entries)} change(s) since {since_iso}:\n"]
     for e in entries[:50]:
         ts = e.get("timestamp", "?")[:19]
         action = e.get("action", "?")
-        target = e.get("node_id", "?")
+        target = e.get("target_title") or e.get("target_id") or "?"
         actor = e.get("actor", "")
-        detail = e.get("detail", "")
+        details = e.get("details") or {}
         actor_str = f" by {actor}" if actor else ""
         lines.append(f"  {ts} {action} {target}{actor_str}")
-        if detail:
-            lines.append(f"    {detail[:80]}")
+        # Compact per-field diff lines for edits
+        diffs = details.get("diffs") if isinstance(details, dict) else None
+        if isinstance(diffs, dict):
+            for field, change in diffs.items():
+                if not isinstance(change, dict):
+                    continue
+                lines.append(f"    {field}: {_compact(change.get('old'))} "
+                             f"-> {_compact(change.get('new'))}")
     return "\n".join(lines)
 
 
@@ -991,9 +1102,10 @@ def tag_start(name: str, description: str = "", focus: str = "",
         return f"Error: {e}"
 
 
-@mcp.tool()
 def _reinforce_on_end(store, config, tag_name: str, summary: str) -> str:
-    """Silently queue this session for later reinforcement grading (no LLM, no
+    """Private helper (NOT an MCP tool — it takes store/config directly).
+
+    Silently queue this session for later reinforcement grading (no LLM, no
     output here — the grading runs off the critical path in cron). Uses the
     summary + segment history as the trace; a Stop hook's full transcript, if
     present, supersedes it. Returns '' always — kin stays transparent. Never raises.
@@ -1026,6 +1138,7 @@ def _reinforce_on_end(store, config, tag_name: str, summary: str) -> str:
     return ""
 
 
+@mcp.tool()
 def tag_update(name: str = "", focus: str = "", description: str = "",
                remaining: str = "", add_remaining: str = "",
                done: str = "", summary: str = "",
