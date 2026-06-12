@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated:** March 24, 2026
+**Last updated:** June 12, 2026
 
 ## The short version
 
@@ -29,9 +29,9 @@ Kindex does not communicate with any third-party services for its core operation
 
 If you configure optional embedding providers (e.g., Google Gemini), those API calls are made using your own API key and are governed by that provider's terms. Kindex does not intermediate, log, or cache these requests.
 
-## Claude Code Plugin Context
+## MCP Host Context
 
-When Kindex is used as a Claude Code plugin, MCP tool responses are returned to the Claude session. This content is processed by Anthropic according to the [Anthropic Privacy Policy](https://www.anthropic.com/privacy). Kindex has no visibility into or control over what happens after tool responses are returned to the host.
+When Kindex is used as an MCP plugin, tool responses are returned to the host agent session. That content is processed by the host provider, such as Anthropic for Claude Code, OpenAI for Codex, Google for Gemini CLI or Antigravity, or the provider behind your chosen MCP-capable client, according to that provider's privacy policy. Kindex has no visibility into or control over what happens after tool responses are returned to the host.
 
 ## Analytics and Tracking
 
