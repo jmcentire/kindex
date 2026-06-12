@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
+from pathlib import Path
 
-from kindex.code_map import export_understand_anything, ingest_understand_anything
+import pytest
+
+from kindex.code_map import (
+    _relative_to_root,
+    export_understand_anything,
+    ingest_understand_anything,
+)
 from kindex.config import Config
 from kindex.store import Store
 
@@ -115,6 +123,221 @@ def test_export_understand_anything_filters_by_repo_root(tmp_path):
         store.close()
 
     assert [n["id"] for n in graph["nodes"]] == ["code-mod-a"]
+
+
+def test_export_understand_anything_normalizes_absolute_provenance(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    repo = tmp_path / "repo"
+    source = repo / "src" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("print('hi')\n")
+    try:
+        store.add_node(
+            "AppService",
+            node_id="code-sym-demo-app",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_source=f"{source}:22",
+            prov_activity="code-ingest",
+            extra={"repo_root": str(repo), "kind": "class"},
+        )
+
+        graph = export_understand_anything(store, directory=repo)
+    finally:
+        store.close()
+
+    assert [n["filePath"] for n in graph["nodes"]] == ["src/app.py:22"]
+
+
+def test_export_understand_anything_omits_unresolved_absolute_provenance(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    source = tmp_path / "outside" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("print('hi')\n")
+    try:
+        store.add_node(
+            "AppService",
+            node_id="code-sym-demo-outside",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_source=str(source),
+            prov_activity="code-ingest",
+            extra={"kind": "class"},
+        )
+
+        graph = export_understand_anything(store)
+    finally:
+        store.close()
+
+    assert graph["nodes"] == []
+
+
+def test_export_understand_anything_warns_when_omitting_unportable_path(
+    tmp_path,
+    caplog,
+):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    repo = tmp_path / "repo"
+    source = tmp_path / "outside" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("print('hi')\n")
+    try:
+        store.add_node(
+            "AppService",
+            node_id="code-sym-demo-unportable",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_source=str(source),
+            prov_activity="code-ingest",
+            extra={"repo_root": str(repo), "kind": "class"},
+        )
+
+        with caplog.at_level(logging.WARNING, logger="kindex.code_map"):
+            graph = export_understand_anything(store, directory=repo)
+    finally:
+        store.close()
+
+    assert graph["nodes"] == []
+    assert "Skipping code-map node with non-portable path" in caplog.text
+    assert "outside_repo_root" in caplog.text
+    assert str(source) not in caplog.text
+
+
+def test_export_understand_anything_rejects_symlink_outside_repo(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    repo = tmp_path / "repo"
+    source = tmp_path / "outside" / "app.py"
+    link = repo / "src" / "app.py"
+    source.parent.mkdir(parents=True)
+    link.parent.mkdir(parents=True)
+    source.write_text("print('hi')\n")
+    try:
+        link.symlink_to(source)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    try:
+        store.add_node(
+            "AppService",
+            node_id="code-sym-demo-symlink",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_source=str(link),
+            prov_activity="code-ingest",
+            extra={"repo_root": str(repo), "kind": "class"},
+        )
+
+        graph = export_understand_anything(store, directory=repo)
+    finally:
+        store.close()
+
+    assert graph["nodes"] == []
+
+
+def test_export_understand_anything_normalizes_windows_relative_separators(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    try:
+        store.add_node(
+            "AppService",
+            node_id="code-sym-demo-windows",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_activity="code-ingest",
+            extra={"relative_path": r"src\app.py", "kind": "class"},
+        )
+
+        graph = export_understand_anything(store)
+    finally:
+        store.close()
+
+    assert [n["filePath"] for n in graph["nodes"]] == ["src/app.py"]
+
+
+def test_relative_to_root_handles_windows_paths_without_host_os_dependency():
+    assert _relative_to_root(
+        r"C:\repo\src\app.py",
+        Path(r"C:\repo"),
+    ) == "src/app.py"
+
+
+def test_relative_to_root_handles_unc_paths_without_host_os_dependency():
+    assert _relative_to_root(
+        r"\\server\share\repo\src\app.py",
+        Path(r"\\server\share\repo"),
+    ) == "src/app.py"
+
+
+def test_export_understand_anything_excludes_archived_nodes_by_default(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    repo = tmp_path / "repo"
+    try:
+        store.add_node(
+            "ActiveService",
+            node_id="code-sym-demo-active",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_activity="code-ingest",
+            extra={"relative_path": "src/active.py", "repo_root": str(repo)},
+        )
+        store.add_node(
+            "ArchivedService",
+            node_id="code-sym-demo-archived",
+            node_type="concept",
+            domains=["code", "python"],
+            status="archived",
+            prov_activity="code-ingest",
+            extra={"relative_path": "src/archived.py", "repo_root": str(repo)},
+        )
+
+        graph = export_understand_anything(store, directory=repo)
+        with_archived = export_understand_anything(
+            store,
+            directory=repo,
+            include_archived=True,
+        )
+    finally:
+        store.close()
+
+    assert [n["id"] for n in graph["nodes"]] == ["code-sym-demo-active"]
+    assert [n["id"] for n in with_archived["nodes"]] == [
+        "code-sym-demo-active",
+        "code-sym-demo-archived",
+    ]
+
+
+def test_export_understand_anything_does_not_mutate_source_provenance(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    repo = tmp_path / "repo"
+    source = repo / "src" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("print('hi')\n")
+    try:
+        store.add_node(
+            "AppService",
+            node_id="code-sym-demo-immutable",
+            node_type="concept",
+            domains=["code", "python"],
+            prov_source=str(source),
+            prov_activity="code-ingest",
+            extra={"repo_root": str(repo), "kind": "class"},
+        )
+        before = store.get_node("code-sym-demo-immutable")
+
+        graph = export_understand_anything(store, directory=repo)
+        after = store.get_node("code-sym-demo-immutable")
+    finally:
+        store.close()
+
+    assert graph["nodes"][0]["filePath"] == "src/app.py"
+    assert after["prov_source"] == before["prov_source"]
+    assert after["extra"] == before["extra"]
 
 
 def test_export_understand_anything_uses_canonical_ordering_and_source_time(tmp_path):

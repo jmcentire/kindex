@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from .adapters.base import IngestResult
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 
 
 UA_VERSION = "1.0.0"
+_LINE_SUFFIX_RE = re.compile(r"^(?P<path>.*):(?P<line>\d+)$")
+logger = logging.getLogger(__name__)
 
 
 def _sha(value: str, length: int = 12) -> str:
@@ -99,15 +103,132 @@ def _node_matches_root(node: dict, root: Path | None) -> bool:
         except OSError:
             pass
 
-    prov_source = node.get("prov_source") or ""
-    if prov_source:
-        try:
-            Path(prov_source).expanduser().resolve().relative_to(root)
+    for candidate in (
+        extra.get("relative_path"),
+        node.get("prov_source"),
+    ):
+        if not candidate:
+            continue
+        path, _ = _split_location(str(candidate))
+        if _is_absolute_path(path) and _relative_to_root(path, root) is not None:
             return True
-        except (OSError, ValueError):
-            pass
 
     return False
+
+
+def _split_location(value: str) -> tuple[str, str]:
+    match = _LINE_SUFFIX_RE.match(value)
+    if not match:
+        return value, ""
+    return match.group("path"), f":{match.group('line')}"
+
+
+def _is_windows_absolute(value: str) -> bool:
+    return PureWindowsPath(value).is_absolute()
+
+
+def _is_absolute_path(value: str) -> bool:
+    return Path(value).is_absolute() or _is_windows_absolute(value)
+
+
+def _relative_to_root(value: str, root: Path) -> str | None:
+    if _is_windows_absolute(value) or _is_windows_absolute(str(root)):
+        try:
+            return PureWindowsPath(value).relative_to(
+                PureWindowsPath(str(root)),
+            ).as_posix()
+        except ValueError:
+            return None
+
+    try:
+        return Path(value).expanduser().resolve().relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _normalize_relative_path(value: str) -> str | None:
+    if not value or not value.strip():
+        return None
+    normalized = value.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        path.is_absolute()
+        or PureWindowsPath(normalized).drive
+        or ".." in path.parts
+    ):
+        return None
+    result = path.as_posix()
+    return None if result == "." else result
+
+
+def _node_location(node: dict) -> tuple[str, str]:
+    extra = node.get("extra") or {}
+    relative_path = extra.get("relative_path")
+    if relative_path:
+        return str(relative_path), ""
+    return _split_location(str(node.get("prov_source") or ""))
+
+
+def _effective_root(node: dict, root: Path | None) -> Path | None:
+    if root is not None:
+        return root
+    extra = node.get("extra") or {}
+    effective_root = root
+    if extra.get("repo_root"):
+        try:
+            effective_root = Path(str(extra["repo_root"])).expanduser().resolve()
+        except OSError:
+            effective_root = None
+    return effective_root
+
+
+def _portable_path(node: dict, root: Path | None) -> str | None:
+    """Return a repo-relative POSIX location suitable for tracked output."""
+    path, suffix = _node_location(node)
+    effective_root = _effective_root(node, root)
+
+    if _is_absolute_path(path):
+        if effective_root is None:
+            return None
+        relative = _relative_to_root(path, effective_root)
+    else:
+        relative = _normalize_relative_path(path)
+
+    if not relative:
+        return None
+    return f"{relative}{suffix}"
+
+
+def _unportable_path_reason(node: dict, root: Path | None) -> str:
+    path, _ = _node_location(node)
+    if not path or not path.strip():
+        return "missing_path"
+    if _is_absolute_path(path):
+        if _effective_root(node, root) is None:
+            return "missing_repo_root"
+        return "outside_repo_root"
+    return "invalid_relative_path"
+
+
+def _warn_unportable_node(node: dict, root: Path | None) -> None:
+    reason = _unportable_path_reason(node, root)
+    logger.warning(
+        "Skipping code-map node with non-portable path: %s",
+        reason,
+        extra={
+            "node_id": node.get("id", ""),
+            "reason": reason,
+        },
+    )
+
+
+def _node_status(node: dict) -> str:
+    return str(node.get("status") or "active")
+
+
+def _node_is_exportable(node: dict, include_archived: bool) -> bool:
+    status = _node_status(node)
+    return status == "active" or (include_archived and status == "archived")
 
 
 def _ua_node_type(node: dict) -> str:
@@ -122,9 +243,11 @@ def _ua_node_type(node: dict) -> str:
     return "concept"
 
 
-def _canonical_code_node_key(node: dict) -> tuple[str, str, str]:
-    extra = node.get("extra") or {}
-    rel_path = extra.get("relative_path") or node.get("prov_source") or ""
+def _canonical_code_node_key(
+    node: dict,
+    root: Path | None = None,
+) -> tuple[str, str, str]:
+    rel_path = _portable_path(node, root) or ""
     return (str(rel_path), _ua_node_type(node), str(node.get("id", "")))
 
 
@@ -188,15 +311,31 @@ def export_understand_anything(
     directory: str | Path | None = None,
     project_name: str | None = None,
     limit: int = 10000,
+    include_archived: bool = False,
 ) -> dict[str, Any]:
-    """Project Kindex code nodes into an Understand-Anything-compatible graph."""
+    """Project Kindex code nodes into an Understand-Anything-compatible graph.
+
+    Tracked code-map output is intentionally portable: file paths are always
+    repo-relative POSIX paths and never raw machine-local provenance paths.
+    Active nodes are exported by default; callers may opt into archived nodes
+    for historical analysis.
+    """
     root = Path(directory).resolve() if directory else None
     all_nodes = store.all_nodes(limit=limit)
-    code_nodes = [
-        n for n in all_nodes
-        if _node_is_code(n) and _node_matches_root(n, root)
-    ]
-    code_nodes.sort(key=_canonical_code_node_key)
+    code_nodes = []
+    for node in all_nodes:
+        if not _node_is_code(node) or not _node_is_exportable(
+            node,
+            include_archived,
+        ):
+            continue
+        if not _node_matches_root(node, root):
+            continue
+        if not _portable_path(node, root):
+            _warn_unportable_node(node, root)
+            continue
+        code_nodes.append(node)
+    code_nodes.sort(key=lambda node: _canonical_code_node_key(node, root))
     code_ids = {n["id"] for n in code_nodes}
 
     if project_name is None:
@@ -208,7 +347,7 @@ def export_understand_anything(
 
     for node in code_nodes:
         extra = node.get("extra") or {}
-        rel_path = extra.get("relative_path") or node.get("prov_source") or ""
+        rel_path = _portable_path(node, root) or ""
         language = extra.get("language") or next(
             (d for d in node.get("domains", []) if d != "code"),
             "",
