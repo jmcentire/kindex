@@ -265,7 +265,7 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.23.0</span>
+      <span class="badge green">v0.24.1</span>
       <span class="badge orange">MCP Plugin</span>
       <span class="badge blue">52 MCP Tools</span>
       <span class="badge purple">69 CLI Commands</span>
@@ -467,7 +467,7 @@
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
-    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via Claude Code hooks. Use whichever integration fits your workflow.</p>
+    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via Claude Code hooks. Use whichever integration fits your workflow. For durable work, agents should use Kindex tags and tasks, search before adding, and treat tracked <code>.kin</code> files as shipped project state; host-local task scratch is not a substitute for persistent graph state.</p>
   </div>
 </section>
 
@@ -563,7 +563,7 @@
 <section>
   <div class="container">
     <h2>.kin Project Contract</h2>
-    <p>Repos ship <code>.kin/</code> with the code: project context, inheritance, graph snapshots, and optional work policy. Private runtime state stays in <code>~/.kindex</code> or ignored <code>.kin/local</code> directories.</p>
+    <p>Repos ship <code>.kin/</code> with the code: project context, inheritance, graph snapshots, code maps, and optional work policy. Private runtime state stays in <code>~/.kindex</code> or ignored <code>.kin/local</code> directories.</p>
     <div class="features" style="grid-template-columns: 1fr 1fr 1fr;">
       <div class="card">
         <h3>Org Voice</h3>
@@ -614,7 +614,18 @@ work_policy:
 </div>
       </div>
     </div>
-    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets inherited voice and standards plus its own policy. Linear enforcement is opt-in: personal projects leave <code>work_policy.linear.enabled</code> false or absent. Kindex resolves config from <code>--project-path</code>, <code>KIN_PROJECT</code>, git root, then cwd. <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Example voice files included.</a></p>
+    <p style="margin-top: 16px; color: var(--text-dim);">The payments service gets inherited voice and standards plus its own policy. Linear enforcement is opt-in: personal projects leave <code>work_policy.linear.enabled</code> false or absent. Kindex resolves config from <code>--project-path</code>, <code>KIN_PROJECT</code>, git root, then cwd. Tracked <code>.kin</code> artifacts must be self-contained and machine-portable: code-map paths are repo-relative POSIX paths, and task/report metadata must not point at a developer-local filesystem location. <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Example voice files included.</a></p>
+    <div class="features" style="grid-template-columns: 1fr 1fr; margin-top: 20px;">
+      <div class="card">
+        <h3>Graph Export</h3>
+        <p><code>kin export</code> emits audience-aware graph data for backup, exchange, and graph-level tooling.</p>
+      </div>
+      <div class="card">
+        <h3>Code Map Export</h3>
+        <p><code>kin export code-map</code> emits current repo structure, dependencies, layers, and repo-relative file paths for dashboards, code navigation, and agent tooling.</p>
+      </div>
+    </div>
+    <p style="margin-top: 16px; color: var(--text-dim);">For code-map output, <code>src/file.py</code> is portable; <code>/Users/alice/repo/src/file.py</code> and <code>C:\repo\src\file.py</code> are not. Outside-root, malformed, or unresolved paths are omitted rather than leaked into the tracked artifact.</p>
   </div>
 </section>
 
@@ -696,6 +707,7 @@ work_policy:
         <tr><td><code>kin set-audience &lt;id&gt;</code></td><td>Set privacy scope (private/team/org/public)</td></tr>
         <tr><td><code>kin set-state &lt;id&gt; &lt;k&gt; &lt;v&gt;</code></td><td>Set mutable state on directives/watches</td></tr>
         <tr><td><code>kin export</code></td><td>Audience-aware graph export with PII stripping</td></tr>
+        <tr><td><code>kin export code-map</code></td><td>Repo-relative code map for dashboards, code navigation, and agent tooling</td></tr>
         <tr><td><code>kin import &lt;file&gt;</code></td><td>Import nodes/edges from JSON/JSONL</td></tr>
         <tr><td><code>kin sync-links</code></td><td>Update node content with connection references</td></tr>
       </table>
@@ -763,7 +775,7 @@ work_policy:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.23.0 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 69 CLI Commands &middot; 1348 Tests</p>
+    <p style="margin-top: 8px;">v0.24.1 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 69 CLI Commands &middot; 1479 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

@@ -6,7 +6,7 @@
 - **Hub modules are additive-only**: `store.py` and `config.py` have high fan-in. Changes must add new methods/fields/classes only — never change existing function semantics or signatures. Edits must never route through `add_node` (INSERT OR REPLACE); node mutation goes through `update_node`/`edit_node` (UPDATE only).
 - **MCP tools match CLI**: a new capability needs both surfaces (CLI subcommand in `cli.py` and `@mcp.tool()` in `mcp_server.py`) with consistent behavior and defaults. Verify the decorator lands on the intended public function — a misplaced `@mcp.tool()` silently registers the wrong thing.
 - **Forward-only migrations**: schema changes in `schema.py` append migrations; never edit or reorder applied ones. Existing databases must open cleanly after the change.
-- **No private-audience data in git-tracked artifacts**: `.kin/index.json` and exports must respect audience boundaries (`public`/`team` only unless the repo `.kin` audience is `private`). No secrets, transcripts, or machine-local state in tracked `.kin/` files.
+- **No private-audience data in git-tracked artifacts**: `.kin/index.json` and exports must respect audience boundaries (`public`/`team` only unless the repo `.kin` audience is `private`). No secrets, transcripts, machine-local state, absolute local paths, or developer-local report pointers in tracked `.kin/` files.
 - **Backward compatibility for no-profiles configs**: a config without `profiles:` must behave byte-identically to pre-profile kindex — `data_dir` untouched, `active_profile` None, no stamp written. Profile resolution must only activate when profiles are configured or explicitly requested.
 
 ## Style
