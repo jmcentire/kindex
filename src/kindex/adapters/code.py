@@ -6,9 +6,9 @@ Extracts the structural skeleton and dependency graph of a codebase:
 - Edges: imports (depends_on), inheritance (implements), containment (context_of)
 
 Tools degrade gracefully:
-- Tier A: ctags only (baseline, always available)
+- Tier A: module indexing plus ctags symbols when available
 - Tier B: ctags + cscope (C/C++ cross-references)
-- Tier C: ctags + tree-sitter (AST-based call graphs, import resolution)
+- Tier C: ctags/tree-sitter (AST-based call graphs, import resolution)
 """
 
 from __future__ import annotations
@@ -117,14 +117,62 @@ def _git_ls_files(repo_root: Path) -> list[Path]:
     return []
 
 
-# Source file extensions ctags handles well
-_CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".c", ".h",
-    ".cpp", ".hpp", ".cc", ".cxx", ".hh", ".java", ".rb", ".php",
-    ".cs", ".swift", ".kt", ".kts", ".scala", ".lua", ".zig",
-    ".ex", ".exs", ".erl", ".hrl", ".hs", ".ml", ".mli", ".r",
-    ".sh", ".bash", ".zsh", ".vim", ".el",
+# Source file extensions worth indexing even when ctags has no parser for them.
+_LANGUAGE_BY_EXTENSION = {
+    ".py": "Python",
+    ".js": "JavaScript",
+    ".mjs": "JavaScript",
+    ".cjs": "JavaScript",
+    ".jsx": "JavaScript",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".mts": "TypeScript",
+    ".cts": "TypeScript",
+    ".astro": "Astro",
+    ".svelte": "Svelte",
+    ".vue": "Vue",
+    ".rs": "Rust",
+    ".go": "Go",
+    ".c": "C",
+    ".h": "C",
+    ".cpp": "C++",
+    ".hpp": "C++",
+    ".cc": "C++",
+    ".cxx": "C++",
+    ".hh": "C++",
+    ".java": "Java",
+    ".rb": "Ruby",
+    ".php": "PHP",
+    ".cs": "C#",
+    ".swift": "Swift",
+    ".kt": "Kotlin",
+    ".kts": "Kotlin",
+    ".scala": "Scala",
+    ".lua": "Lua",
+    ".zig": "Zig",
+    ".ex": "Elixir",
+    ".exs": "Elixir",
+    ".erl": "Erlang",
+    ".hrl": "Erlang",
+    ".hs": "Haskell",
+    ".ml": "OCaml",
+    ".mli": "OCaml",
+    ".r": "R",
+    ".sh": "Shell",
+    ".bash": "Shell",
+    ".zsh": "Shell",
+    ".vim": "Vim",
+    ".el": "Emacs Lisp",
 }
+
+_CODE_EXTENSIONS = set(_LANGUAGE_BY_EXTENSION)
+
+# Universal Ctags supports TypeScript but does not map `.tsx` by default.
+_CTAGS_EXTENSION_MAPS = [
+    "--map-TypeScript=+.tsx",
+    "--map-TypeScript=+.mts",
+    "--map-TypeScript=+.cts",
+]
 
 _DEFAULT_EXCLUDES = [
     "test_*", "*_test.*", "*_test_*", "tests/*", "test/*",
@@ -175,10 +223,27 @@ def _get_file_list(directory: Path, repo_root: Path | None,
 
 # ── ctags extraction (Tier A) ──────────────────────────────────────
 
-def _run_ctags(files: list[Path], repo_root: Path) -> list[dict]:
-    """Run ctags on all files, return parsed JSON tags."""
-    if not files:
+def _parse_ctags_output(output: str | None) -> list[dict]:
+    """Parse any valid JSON tags from ctags output."""
+    if not output:
         return []
+    tags = []
+    for line in output.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            tag = json.loads(line)
+            if tag.get("_type") == "tag":
+                tags.append(tag)
+        except json.JSONDecodeError:
+            continue
+    return tags
+
+
+def _run_ctags_once(files: list[Path], repo_root: Path) -> tuple[list[dict], bool]:
+    """Run ctags once, preserving usable output even when the command fails."""
+    if not files:
+        return [], False
     # Write file list to a temp file to avoid arg length limits
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         for path in files:
@@ -190,38 +255,83 @@ def _run_ctags(files: list[Path], repo_root: Path) -> list[dict]:
                 "ctags",
                 "--output-format=json",
                 "--fields=+nKSlri",
+                *_CTAGS_EXTENSION_MAPS,
                 "-f", "-",
                 "-L", listfile,
             ],
             capture_output=True, text=True, timeout=120,
             cwd=str(repo_root),
         )
-        if r.returncode != 0:
-            return []
-        tags = []
-        for line in r.stdout.strip().split("\n"):
-            if not line:
-                continue
-            try:
-                tag = json.loads(line)
-                if tag.get("_type") == "tag":
-                    tags.append(tag)
-            except json.JSONDecodeError:
-                continue
-        return tags
+        return _parse_ctags_output(r.stdout), r.returncode != 0
     except Exception:
-        return []
+        return [], False
     finally:
         Path(listfile).unlink(missing_ok=True)
 
 
-def _group_by_file(tags: list[dict]) -> dict[str, list[dict]]:
-    """Group tags by file path."""
+def _canonical_path(path: str | Path, repo_root: Path | None = None) -> Path:
+    """Normalize a source path, resolving relative ctags paths from repo root."""
+    normalized = Path(path)
+    if not normalized.is_absolute() and repo_root:
+        normalized = repo_root / normalized
+    return normalized.resolve()
+
+
+def _tag_key(tag: dict) -> str:
+    """Build a stable dedupe key for ctags output."""
+    return json.dumps(tag, sort_keys=True, separators=(",", ":"))
+
+
+def _run_ctags(files: list[Path], repo_root: Path) -> list[dict]:
+    """Run ctags, preserving partial output and isolating failed files."""
+    tags, had_failure = _run_ctags_once(files, repo_root)
+    if had_failure and len(files) > 1:
+        tagged_paths = {
+            _canonical_path(tag["path"], repo_root)
+            for tag in tags
+            if tag.get("path")
+        }
+        for path in files:
+            if _canonical_path(path, repo_root) in tagged_paths:
+                continue
+            retry_tags, _ = _run_ctags_once([path], repo_root)
+            tags.extend(retry_tags)
+
+    deduped: dict[str, dict] = {}
+    for tag in tags:
+        deduped.setdefault(_tag_key(tag), tag)
+    return list(deduped.values())
+
+
+def _group_by_file(
+    tags: list[dict],
+    files: list[Path] | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, list[dict]]:
+    """Group tags by file path, retaining source files with no tags."""
+    if files is None:
+        grouped: dict[str, list[dict]] = {}
+        for tag in tags:
+            path = tag.get("path", "")
+            if path:
+                grouped.setdefault(path, []).append(tag)
+        return grouped
+
     grouped: dict[str, list[dict]] = {}
+    known_paths: dict[Path, str] = {}
+    if files:
+        for path in files:
+            key = str(_canonical_path(path, repo_root))
+            grouped[key] = []
+            known_paths[_canonical_path(path, repo_root)] = key
+
     for tag in tags:
         path = tag.get("path", "")
         if path:
-            grouped.setdefault(path, []).append(tag)
+            normalized = _canonical_path(path, repo_root)
+            key = known_paths.get(normalized)
+            if key:
+                grouped[key].append(tag)
     return grouped
 
 
@@ -242,17 +352,35 @@ def _is_public(tag: dict) -> bool:
     return True
 
 
-def _build_module_content(rel_path: str, tags: list[dict]) -> str:
-    """Build structural summary for a module node."""
-    # Determine language from first tag
-    language = "Unknown"
-    for t in tags:
-        if t.get("language"):
-            language = t["language"]
-            break
+def _infer_language(path: Path, tags: list[dict]) -> str:
+    """Prefer ctags language, then use the source extension as fallback."""
+    for tag in tags:
+        if tag.get("language"):
+            return tag["language"]
+    return _LANGUAGE_BY_EXTENSION.get(path.suffix.lower(), "Unknown")
 
-    # Count lines from the last tag's line number (approximate)
-    max_line = max((t.get("line", 0) for t in tags), default=0)
+
+def _count_lines(path: Path) -> int:
+    """Count source lines without requiring text decoding."""
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return 0
+    if not content:
+        return 0
+    return content.count(b"\n") + (not content.endswith(b"\n"))
+
+
+def _build_module_content(
+    rel_path: str,
+    tags: list[dict],
+    *,
+    language: str = "Unknown",
+    line_count: int = 0,
+) -> str:
+    """Build structural summary for a module node."""
+    # Count lines from the last tag's line number when no file count is known.
+    max_line = line_count or max((t.get("line", 0) for t in tags), default=0)
 
     # Collect classes
     classes = []
@@ -811,10 +939,10 @@ def ingest_code(
     if verbose:
         print(f"  ctags produced {len(tags)} tags")
 
-    if not tags:
-        return IngestResult(errors=["ctags produced no output"])
+    if not tags and verbose:
+        print("  ctags produced no tags; continuing with module fallback")
 
-    grouped = _group_by_file(tags)
+    grouped = _group_by_file(tags, files, effective_root)
 
     created = 0
     updated = 0
@@ -868,14 +996,21 @@ def ingest_code(
             errors.append(f"Cannot read: {rel_path}")
             continue
 
-        # Determine language
-        language = "Unknown"
-        for t in file_tags:
-            if t.get("language"):
-                language = t["language"]
-                break
+        # Determine language from ctags when possible, then from extension.
+        language = _infer_language(abs_path, file_tags)
+        language_source = (
+            "ctags"
+            if any(tag.get("language") for tag in file_tags)
+            else "extension"
+        )
+        line_count = _count_lines(abs_path)
 
-        content = _build_module_content(rel_path, file_tags)
+        content = _build_module_content(
+            rel_path,
+            file_tags,
+            language=language,
+            line_count=line_count,
+        )
 
         # Count classes and functions
         class_count = sum(1 for t in file_tags if t.get("kind") in _CLASS_KINDS)
@@ -886,7 +1021,9 @@ def ingest_code(
             "file_hash": current_hash,
             "relative_path": rel_path,
             "language": language,
-            "line_count": max((t.get("line", 0) for t in file_tags), default=0),
+            "language_source": language_source,
+            "ctags_tag_count": len(file_tags),
+            "line_count": line_count,
             "class_count": class_count,
             "function_count": func_count,
             "tool_tier": "A",
@@ -1112,13 +1249,9 @@ def ingest_code(
     # Group files by language, try to load parser for each
     lang_files: dict[str, list[tuple[str, Path]]] = {}
     for abs_path_str, file_tags in grouped.items():
-        language = "Unknown"
-        for t in file_tags:
-            if t.get("language"):
-                language = t["language"]
-                break
+        abs_path = Path(abs_path_str)
+        language = _infer_language(abs_path, file_tags)
         if language != "Unknown":
-            abs_path = Path(abs_path_str)
             try:
                 rel_path = str(abs_path.relative_to(effective_root))
             except ValueError:
