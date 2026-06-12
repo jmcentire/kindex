@@ -633,6 +633,7 @@ Ingest repository structure with `kin ingest code --directory .`:
 - **Symbol nodes** (concept) — one per class/interface/type with method signatures
 - **Edges** — imports (`depends_on`), inheritance (`implements`), containment (`context_of`), call graph (`relates_to`)
 - **Three extraction tiers** — ctags (100+ languages), cscope (C/C++ cross-refs), tree-sitter (AST call graphs)
+- **Resilient fallback** — unsupported or untagged files still become module nodes; available tree-sitter parsers can still enrich those modules, with fallback provenance retained in metadata
 - **Incremental** — file hashing skips unchanged files on re-ingest
 
 Code structure lives in the same graph as your decisions, watches, and constraints. Search finds both what calls a function and what broke last time someone changed it.
