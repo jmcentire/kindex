@@ -2,6 +2,16 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.0] - 2026-06-12
+
+### Added
+- **Google Antigravity support** — `kin setup-antigravity-mcp` writes Kindex MCP config to both Antigravity global MCP config locations (`~/.gemini/config/mcp_config.json` and `~/.gemini/antigravity-cli/mcp_config.json`), while `kin setup-antigravity-hooks` installs PreInvocation context priming, PreToolUse attention and config-write permission gating, and Stop-time reinforcement enqueue.
+- **Agent adapter layer** — hook output and tool payload translation now lives behind a client adapter boundary, with Antigravity `injectSteps`, PreToolUse `allow`/`force_ask`, and nested `toolCall` payload parsing alongside existing Claude/Codex envelopes.
+- **Per-agent tuning** — `agents.clients.<client>` and `agents.instances.<client>:<instance>` overlays can tune Kindex behavior by client family or individual conversation/instance. `kin agent-config show|set` writes only approved behavior keys (`attention.*`, `sim.*`, `collab.*`, `hooks.prime_tokens`) so agents can propose tuning through the host permission flow without silently mutating arbitrary config.
+
+### Changed
+- Agent setup docs now cover Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, and Cursor consistently across README, `/docs`, and `kindex.tools` surfaces.
+
 ## [0.23.0] - 2026-06-09
 
 ### Added

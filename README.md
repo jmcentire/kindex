@@ -2,17 +2,17 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.24.1](https://img.shields.io/badge/version-0.24.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.25.0](https://img.shields.io/badge/version-0.25.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1479%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1492%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
 
 Kindex does one thing. It knows what you know.
 
-It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents never start a session blind. Available as a **free MCP plugin** or standalone CLI.
+It's a persistent knowledge graph for AI-assisted workflows. It indexes your conversations, projects, and intellectual work so that Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start a session blind. Available as a **free MCP plugin** or standalone CLI.
 
 > **Memory plugins capture what happened. Kindex captures what it means and how it connects.** Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time — understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.
 
@@ -44,7 +44,7 @@ Extras — combine in one install (`'kindex[mcp,llm,reminders]'`) or use `'kinde
 
 | Extra | Adds |
 |-------|------|
-| `mcp` | `kin-mcp` MCP server (for Claude Code, Codex, Gemini, OpenCode, Cursor, etc.) |
+| `mcp` | `kin-mcp` MCP server (for Claude Code, Codex, Gemini, Antigravity, OpenCode, Cursor, etc.) |
 | `llm` | Anthropic-powered extraction (`kin learn`, `kin ask`) |
 | `vectors` | sqlite-vec for semantic similarity search |
 | `reminders` | Natural-language time parsing for `kin remind` |
@@ -100,6 +100,25 @@ kin setup-gemini-md --install
 ```
 
 Or hand-edit `~/.gemini/settings.json`:
+```json
+{ "mcpServers": { "kindex": { "command": "kin-mcp", "args": [] } } }
+```
+
+### Google Antigravity
+
+```bash
+kin setup-antigravity-mcp
+kin setup-antigravity-hooks
+kin setup-antigravity-md --install
+```
+
+`setup-antigravity-mcp` writes the standalone MCP config shape used by
+Antigravity's editor/shared config and CLI config. `setup-antigravity-hooks`
+installs PreInvocation priming/prompt checks, PreToolUse advisory attention and
+permission gating for Kindex config writes, and Stop-time reinforcement enqueue.
+
+Or hand-edit `~/.gemini/config/mcp_config.json` and
+`~/.gemini/antigravity-cli/mcp_config.json`:
 ```json
 { "mcpServers": { "kindex": { "command": "kin-mcp", "args": [] } } }
 ```
@@ -206,6 +225,9 @@ kin setup-agents-md --install --global
 
 # Gemini CLI
 kin setup-gemini-md --install
+
+# Google Antigravity
+kin setup-antigravity-md --install
 
 # Cursor — writes ~/.cursor/rules/kindex.mdc with alwaysApply: true
 kin setup-cursor-rules --install
@@ -617,7 +639,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 
 **Operational**: constraint (invariants), directive (soft rules), checkpoint (pre-flight), watch (attention flags)
 
-## CLI Reference (69 commands)
+## CLI Reference (70+ commands)
 
 ### Core
 | Command | Description |
@@ -688,17 +710,21 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 |---------|-------------|
 | `kin init` | Initialize data directory |
 | `kin config [show\|get\|set]` | View or edit configuration |
+| `kin agent-config [show\|set]` | View or tune per-client/per-instance agent behavior overrides |
 | `kin policy [show\|check]` | Show or enforce project work policy from `.kin/config` |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
 | `kin setup-codex-hooks` | Install prompt-time attention hook into Codex |
 | `kin setup-codex-mcp` | Install kindex MCP server into Codex |
 | `kin setup-gemini-mcp` | Install kindex MCP server into Gemini CLI |
+| `kin setup-antigravity-mcp` | Install kindex MCP server into Google Antigravity |
+| `kin setup-antigravity-hooks` | Install lifecycle hooks into Google Antigravity |
 | `kin setup-opencode-mcp` | Install kindex MCP server into OpenCode |
 | `kin setup-cursor-mcp` | Install kindex MCP server into Cursor |
 | `kin setup-cron` | Install periodic maintenance (launchd/crontab) |
 | `kin setup-claude-md` | Output/install recommended CLAUDE.md kindex directives |
 | `kin setup-agents-md` | Output/install recommended AGENTS.md kindex directives (Codex, OpenCode) |
 | `kin setup-gemini-md` | Output/install recommended GEMINI.md kindex directives |
+| `kin setup-antigravity-md` | Output/install Antigravity/GEMINI.md kindex directives |
 | `kin setup-cursor-rules` | Output/install recommended Cursor rule (.mdc) for kindex |
 | `kin stop-guard` | Stop hook guard for actionable reminders |
 | `kin doctor` | Health check with graph enforcement (--fix) |
@@ -723,6 +749,41 @@ Config is layered like git — global defaults, then global config, then local c
 | Local | `.kin/config` or `kin.yaml` at project root | Project-specific overrides shipped with code |
 
 Use `kin config set --global llm.enabled true` for global settings, or `kin config set llm.model claude-sonnet-4-6` for project-local. Use `--project-path /path/to/repo` or `KIN_PROJECT=/path/to/repo` when running from outside the repo.
+
+Agent-facing behavior can be tuned at three levels:
+
+```bash
+# Global/project default for every client
+kin config set attention.tick_interval 3
+
+# Client default, e.g. every Claude session
+kin agent-config set attention.tick_interval 2 --client claude
+
+# One instance/conversation
+kin agent-config set hooks.prime_tokens 1200 --client claude --scope instance --instance session-a
+```
+
+`agent-config` writes only approved behavior keys such as `attention.*`,
+`sim.*`, `collab.prompt_cooldown_minutes`, and `hooks.prime_tokens`; it cannot
+change storage paths or arbitrary config. Agents should propose these changes
+through their normal tool/command permission flow. Antigravity hooks force a user
+permission prompt before `kin config set` or `kin agent-config set` runs.
+
+```yaml
+agents:
+  clients:
+    claude:
+      attention:
+        tick_interval: 2
+        display: quiet
+  instances:
+    claude:session-a:
+      client: claude
+      attention:
+        tick_interval: 1
+      hooks:
+        prime_tokens: 1200
+```
 
 ```yaml
 data_dir: ~/.kindex
@@ -792,7 +853,7 @@ Use `kin attention estimate --messages 1000` to estimate cost over a fixed promp
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 1479 tests
+make test         # run 1492 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```

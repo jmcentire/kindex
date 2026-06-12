@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kindex — The memory layer AI coding agents don't have</title>
-<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents never start blind. Free MCP plugin with CLI, ingestion, and cache-optimized LLM retrieval.">
+<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start blind. Free MCP plugin with CLI, ingestion, and cache-optimized LLM retrieval.">
 <style>
   :root {
     --bg: #0d1117;
@@ -251,7 +251,7 @@
     </p>
     <p class="subline">
       Kindex does one thing. It knows what you know.
-      A persistent knowledge graph so Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents never start blind.
+      A persistent knowledge graph so Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start blind.
     </p>
     <div class="install-boxes">
       <div class="install-box primary mono">
@@ -265,10 +265,10 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.24.1</span>
+      <span class="badge green">v0.25.0</span>
       <span class="badge orange">MCP Plugin</span>
       <span class="badge blue">52 MCP Tools</span>
-      <span class="badge purple">69 CLI Commands</span>
+      <span class="badge purple">75 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -332,29 +332,46 @@
   </div>
 </section>
 
-<!-- Encouraging Claude -->
+<!-- Encouraging Agents -->
 <section>
   <div class="container">
-    <h2>Getting Claude to Actually Use It</h2>
+    <h2>Getting Agents to Actually Use It</h2>
     <div class="callout">
-      <strong>Installing tools is not enough. Claude won't use them proactively unless you tell it to.</strong>
-      <p>Kindex ships with a recommended CLAUDE.md block that turns passive tools into active habits. The difference between "Claude has a knowledge graph" and "Claude actively maintains a knowledge graph" is one command.</p>
+      <strong>Installing tools is not enough. Agents won't use them proactively unless you tell them to.</strong>
+      <p>Kindex ships with recommended instruction files and lifecycle hooks that turn passive tools into active habits. The difference between "an agent has a knowledge graph" and "an agent actively maintains a knowledge graph" is the right setup command for that client.</p>
     </div>
     <div class="terminal mono">
-<span class="comment"># Print the recommended CLAUDE.md directives</span>
-<span class="prompt">$</span> <span class="cmd">kin setup-claude-md</span>
-
-<span class="comment"># Or auto-append to ~/.claude/CLAUDE.md</span>
+<span class="comment"># Claude Code: CLAUDE.md + lifecycle hooks</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-claude-md</span> <span class="flag">--install</span>
-
-<span class="comment"># Install lifecycle hooks</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-hooks</span>
+
+<span class="comment"># Codex: MCP + hooks + AGENTS.md</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-codex-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-codex-hooks</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-agents-md</span> <span class="flag">--install</span> <span class="flag">--global</span>
+
+<span class="comment"># Gemini CLI: MCP + GEMINI.md</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-gemini-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-gemini-md</span> <span class="flag">--install</span>
+
+<span class="comment"># Google Antigravity: MCP + hooks + GEMINI.md</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-antigravity-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-antigravity-hooks</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-antigravity-md</span> <span class="flag">--install</span>
+
+<span class="comment"># OpenCode: MCP + AGENTS.md</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-opencode-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-agents-md</span> <span class="flag">--install</span>
+
+<span class="comment"># Cursor: MCP + always-applied rule</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-cursor-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-cursor-rules</span> <span class="flag">--install</span>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">The directives add:</p>
     <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: 8px;">
       <div class="card">
         <h3>Session Lifecycle</h3>
-        <p>Start/segment/end rules so Claude tags every session and tracks context across conversations.</p>
+        <p>Start/segment/end rules so each agent tags sessions and tracks context across conversations.</p>
       </div>
       <div class="card">
         <h3>Capture Triggers</h3>
@@ -369,7 +386,7 @@
         <p>Use <code>learn</code> after reading long files or completing complex tasks to auto-extract and index concepts.</p>
       </div>
     </div>
-    <p style="margin-top: 16px; color: var(--text-dim);">The SessionStart hook reinforces these directives at every session start and after context compaction, so Claude never forgets.</p>
+    <p style="margin-top: 16px; color: var(--text-dim);">Lifecycle hooks reinforce these directives where the client exposes hook surfaces; instruction files cover clients that only expose MCP and rules.</p>
   </div>
 </section>
 
@@ -413,7 +430,7 @@
 <section>
   <div class="container">
     <h2>Install as Agent MCP Plugin</h2>
-    <p>Claude Code, Codex, Gemini CLI, OpenCode, Cursor, and other MCP-capable agents get native tools for your knowledge graph. Pick whichever installer you already use &mdash; <code>pip</code>, <code>uv tool</code>, <code>uvx</code>, or <code>git clone &amp;&amp; make install</code>.</p>
+    <p>Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents get native tools for your knowledge graph. Pick whichever installer you already use &mdash; <code>pip</code>, <code>uv tool</code>, <code>uvx</code>, or <code>git clone &amp;&amp; make install</code>.</p>
     <div class="terminal mono">
 <span class="comment"># Claude Code</span>
 <span class="prompt">$</span> <span class="cmd">claude mcp add</span> <span class="flag">--scope</span> user <span class="flag">--transport</span> stdio kindex <span class="flag">--</span> kin-mcp
@@ -426,6 +443,11 @@
 <span class="comment"># Gemini CLI</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-gemini-mcp</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-gemini-md</span> <span class="flag">--install</span>
+
+<span class="comment"># Google Antigravity</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-antigravity-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-antigravity-hooks</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-antigravity-md</span> <span class="flag">--install</span>
 
 <span class="comment"># OpenCode (also reads AGENTS.md)</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-opencode-mcp</span>
@@ -467,7 +489,7 @@
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
-    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via Claude Code hooks. Use whichever integration fits your workflow. For durable work, agents should use Kindex tags and tasks, search before adding, and treat tracked <code>.kin</code> files as shipped project state; host-local task scratch is not a substitute for persistent graph state.</p>
+    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via agent lifecycle hooks. Use whichever integration fits your workflow. Per-client and per-instance behavior can be tuned with <code>kin agent-config</code>. For durable work, agents should use Kindex tags and tasks, search before adding, and treat tracked <code>.kin</code> files as shipped project state; host-local task scratch is not a substitute for persistent graph state.</p>
   </div>
 </section>
 
@@ -658,7 +680,7 @@ work_policy:
 <section>
   <div class="container">
     <h2>CLI Reference</h2>
-    <p style="color: var(--text-dim); margin-bottom: 24px;">69 commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, <code>--profile</code>, and <code>--json</code> flags.</p>
+    <p style="color: var(--text-dim); margin-bottom: 24px;">70+ commands organized by function. All support <code>--data-dir</code>, <code>--config</code>, <code>--profile</code>, and <code>--json</code> flags.</p>
 
     <div class="cmd-group">
       <h3>Core</h3>
@@ -739,16 +761,20 @@ work_policy:
       <table>
         <tr><td><code>kin init</code></td><td>Initialize data directory</td></tr>
         <tr><td><code>kin config [show|get|set]</code></td><td>View or edit configuration</td></tr>
+        <tr><td><code>kin agent-config [show|set]</code></td><td>View or tune per-client/per-instance agent behavior overrides</td></tr>
         <tr><td><code>kin policy [show|check]</code></td><td>Show/check project work policy from tracked <code>.kin/config</code></td></tr>
         <tr><td><code>kin setup-hooks</code></td><td>Install lifecycle hooks into Claude Code</td></tr>
         <tr><td><code>kin setup-codex-mcp</code></td><td>Install kindex MCP server into Codex</td></tr>
         <tr><td><code>kin setup-gemini-mcp</code></td><td>Install kindex MCP server into Gemini CLI</td></tr>
+        <tr><td><code>kin setup-antigravity-mcp</code></td><td>Install kindex MCP server into Google Antigravity</td></tr>
+        <tr><td><code>kin setup-antigravity-hooks</code></td><td>Install lifecycle hooks into Google Antigravity</td></tr>
         <tr><td><code>kin setup-opencode-mcp</code></td><td>Install kindex MCP server into OpenCode</td></tr>
         <tr><td><code>kin setup-cursor-mcp</code></td><td>Install kindex MCP server into Cursor</td></tr>
         <tr><td><code>kin setup-cron</code></td><td>Install periodic maintenance (launchd/crontab)</td></tr>
         <tr><td><code>kin setup-claude-md</code></td><td>Output/install recommended CLAUDE.md directives</td></tr>
         <tr><td><code>kin setup-agents-md</code></td><td>Output/install AGENTS.md directives (Codex, OpenCode)</td></tr>
         <tr><td><code>kin setup-gemini-md</code></td><td>Output/install GEMINI.md directives</td></tr>
+        <tr><td><code>kin setup-antigravity-md</code></td><td>Output/install Antigravity/GEMINI.md directives</td></tr>
         <tr><td><code>kin setup-cursor-rules</code></td><td>Output/install Cursor rule (.mdc) for kindex</td></tr>
         <tr><td><code>kin stop-guard</code></td><td>Stop hook guard for actionable reminders</td></tr>
         <tr><td><code>kin doctor</code></td><td>Health check with graph enforcement</td></tr>
@@ -775,7 +801,7 @@ work_policy:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.24.1 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 69 CLI Commands &middot; 1479 Tests</p>
+    <p style="margin-top: 8px;">v0.25.0 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 75 CLI Commands &middot; 1492 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

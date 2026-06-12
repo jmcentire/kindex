@@ -39,6 +39,29 @@ class CollabConfig(BaseModel):
     prompt_cooldown_minutes: int = 10
 
 
+class AgentOverrideConfig(BaseModel):
+    """Behavior overrides scoped to one client family or one client instance."""
+    attention: dict[str, Any] = Field(default_factory=dict)
+    sim: dict[str, Any] = Field(default_factory=dict)
+    collab: dict[str, Any] = Field(default_factory=dict)
+    hooks: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentInstanceConfig(AgentOverrideConfig):
+    """Instance-scoped overrides, optionally tied to a specific client."""
+    client: str = ""
+
+
+class AgentsConfig(BaseModel):
+    """Client/instance-specific Kindex behavior overlays.
+
+    Root config remains the global/project default. These overlays only tune
+    agent-facing behavior such as injection cadence, display, and hook budgets.
+    """
+    clients: dict[str, AgentOverrideConfig] = Field(default_factory=dict)
+    instances: dict[str, AgentInstanceConfig] = Field(default_factory=dict)
+
+
 class EmbeddingConfig(BaseModel):
     provider: str = "voyage"     # "voyage", "openai", "gemini", "local"
     model: str = ""              # empty = provider default
@@ -82,6 +105,7 @@ class AttentionConfig(BaseModel):
     # "when you do X, always Y" reminders can trigger on arbitrary work.
     skip_tools: list[str] = Field(default_factory=lambda: [
         "Read", "Grep", "Glob", "LS", "NotebookRead", "TodoWrite",
+        "view_file", "list_dir", "find_by_name", "grep_search", "read_url_content",
         "mcp__kindex__*",
     ])
     # For Bash, attention skips ONLY commands that are purely read-only
@@ -324,8 +348,11 @@ class Config(BaseModel):
     claude_dir: str = "~/.claude"
     codex_dir: str = "~/.codex"
     gemini_dir: str = "~/.gemini"
+    antigravity_dir: str = "~/.gemini/config"
+    antigravity_cli_dir: str = "~/.gemini/antigravity-cli"
     opencode_dir: str = "~/.config/opencode"
     cursor_dir: str = "~/.cursor"
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
@@ -392,6 +419,14 @@ class Config(BaseModel):
     @property
     def gemini_path(self) -> Path:
         return Path(self.gemini_dir).expanduser().resolve()
+
+    @property
+    def antigravity_path(self) -> Path:
+        return Path(self.antigravity_dir).expanduser().resolve()
+
+    @property
+    def antigravity_cli_path(self) -> Path:
+        return Path(self.antigravity_cli_dir).expanduser().resolve()
 
     @property
     def opencode_path(self) -> Path:

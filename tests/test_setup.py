@@ -346,6 +346,116 @@ class TestSetupGemini:
         assert r.returncode == 0
 
 
+class TestSetupAntigravity:
+    def test_install_antigravity_mcp_writes_both_global_configs(self, tmp_path):
+        from kindex.setup import install_antigravity_mcp
+
+        ag_dir = tmp_path / ".gemini" / "config"
+        cli_dir = tmp_path / ".gemini" / "antigravity-cli"
+        ag_dir.mkdir(parents=True)
+        editor_config = ag_dir / "mcp_config.json"
+        editor_config.write_text(json.dumps({
+            "mcpServers": {
+                "other": {"command": "other-mcp"},
+            },
+        }))
+
+        cfg = Config(
+            data_dir=str(tmp_path),
+            antigravity_dir=str(ag_dir),
+            antigravity_cli_dir=str(cli_dir),
+        )
+        actions = install_antigravity_mcp(cfg)
+
+        assert any("Antigravity editor/shared" in a for a in actions)
+        assert any("Antigravity CLI" in a for a in actions)
+        editor = json.loads(editor_config.read_text())
+        cli = json.loads((cli_dir / "mcp_config.json").read_text())
+        assert editor["mcpServers"]["other"] == {"command": "other-mcp"}
+        assert editor["mcpServers"]["kindex"] == {"command": "kin-mcp", "args": []}
+        assert cli["mcpServers"]["kindex"] == {"command": "kin-mcp", "args": []}
+
+    def test_uninstall_antigravity_mcp_preserves_other_servers(self, tmp_path):
+        from kindex.setup import uninstall_antigravity_mcp
+
+        ag_dir = tmp_path / ".gemini" / "config"
+        cli_dir = tmp_path / ".gemini" / "antigravity-cli"
+        ag_dir.mkdir(parents=True)
+        cli_dir.mkdir(parents=True)
+        for path in (ag_dir / "mcp_config.json", cli_dir / "mcp_config.json"):
+            path.write_text(json.dumps({
+                "mcpServers": {
+                    "kindex": {"command": "kin-mcp", "args": []},
+                    "other": {"command": "other-mcp"},
+                },
+            }))
+
+        cfg = Config(
+            data_dir=str(tmp_path),
+            antigravity_dir=str(ag_dir),
+            antigravity_cli_dir=str(cli_dir),
+        )
+        actions = uninstall_antigravity_mcp(cfg)
+
+        assert any("Removed" in a for a in actions)
+        for path in (ag_dir / "mcp_config.json", cli_dir / "mcp_config.json"):
+            data = json.loads(path.read_text())
+            assert "kindex" not in data["mcpServers"]
+            assert "other" in data["mcpServers"]
+
+    def test_install_antigravity_hooks_writes_schema(self, tmp_path):
+        from kindex.setup import install_antigravity_hooks
+
+        ag_dir = tmp_path / ".gemini" / "config"
+        ag_dir.mkdir(parents=True)
+        hooks = ag_dir / "hooks.json"
+        hooks.write_text(json.dumps({"other-hook": {"enabled": True}}))
+        cfg = Config(data_dir=str(tmp_path), antigravity_dir=str(ag_dir))
+
+        actions = install_antigravity_hooks(cfg)
+
+        assert any("Antigravity Kindex hooks" in a for a in actions)
+        data = json.loads(hooks.read_text())
+        assert "other-hook" in data
+        block = data["kindex"]
+        assert block["enabled"] is True
+        assert "PreInvocation" in block
+        assert "PreToolUse" in block
+        assert "Stop" in block
+        assert "agent-prime-hook" in str(block["PreInvocation"])
+        assert "prompt-check" in str(block["PreInvocation"])
+        assert "attention-hook" in str(block["PreToolUse"])
+        assert "agent-stop-hook" in str(block["Stop"])
+        assert "source ~/.profile" in str(block)
+
+    def test_uninstall_antigravity_hooks_preserves_other_hooks(self, tmp_path):
+        from kindex.setup import uninstall_antigravity_hooks
+
+        ag_dir = tmp_path / ".gemini" / "config"
+        ag_dir.mkdir(parents=True)
+        hooks = ag_dir / "hooks.json"
+        hooks.write_text(json.dumps({
+            "other-hook": {"enabled": True},
+            "kindex": {"enabled": True},
+        }))
+        cfg = Config(data_dir=str(tmp_path), antigravity_dir=str(ag_dir))
+
+        actions = uninstall_antigravity_hooks(cfg)
+
+        assert any("Removed" in a for a in actions)
+        data = json.loads(hooks.read_text())
+        assert "kindex" not in data
+        assert "other-hook" in data
+
+    def test_antigravity_setup_cli_dry_runs(self, tmp_path):
+        d = str(tmp_path)
+        run("init", data_dir=d)
+        mcp = run("setup-antigravity-mcp", "--dry-run", data_dir=d)
+        hooks = run("setup-antigravity-hooks", "--dry-run", data_dir=d)
+        assert mcp.returncode == 0
+        assert hooks.returncode == 0
+
+
 class TestSetupOpenCode:
     def test_install_opencode_mcp_writes_settings(self, tmp_path):
         from kindex.setup import install_opencode_mcp

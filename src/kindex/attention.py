@@ -13,6 +13,7 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .agent_adapters import extract_shell_command, extract_tool_call
 from .budget import BudgetLedger
 from .config import Config
 
@@ -226,8 +227,7 @@ def extract_conversation_text(
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value
-    tool_name = payload.get("tool_name") or payload.get("toolName")
-    tool_input = payload.get("tool_input") or payload.get("toolInput") or payload.get("parameters")
+    tool_name, tool_input = extract_tool_call(payload)
     if tool_name or tool_input:
         try:
             tool_text = json.dumps(tool_input, ensure_ascii=False, sort_keys=True)
@@ -282,7 +282,7 @@ def is_background_action(
     Returns False for non-tool events (e.g. a real user prompt) so those still run.
     """
     payload = hook_payload or {}
-    tool_name = payload.get("tool_name") or payload.get("toolName")
+    tool_name, _tool_input = extract_tool_call(payload)
     if not tool_name:
         return False  # not a tool event (user prompt, etc.) — let it run
 
@@ -290,18 +290,8 @@ def is_background_action(
         if fnmatch.fnmatchcase(tool_name, pattern):
             return True
 
-    if tool_name == "Bash":
-        tool_input = (
-            payload.get("tool_input")
-            or payload.get("toolInput")
-            or payload.get("parameters")
-            or {}
-        )
-        command = ""
-        if isinstance(tool_input, dict):
-            command = str(tool_input.get("command") or "")
-        else:
-            command = str(tool_input or "")
+    if tool_name in {"Bash", "run_command"}:
+        command = extract_shell_command(payload)
         if not command.strip():
             return True
         if ">" in command:  # redirection writes a file — that's an action

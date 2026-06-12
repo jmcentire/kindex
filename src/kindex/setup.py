@@ -5,7 +5,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
@@ -506,6 +506,174 @@ def uninstall_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
 
     settings_path.write_text(json.dumps(data, indent=2) + "\n")
     return [f"Removed Gemini MCP server from {settings_path}"]
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    if path.exists():
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _antigravity_mcp_paths(config: "Config") -> list[tuple[Path, str]]:
+    candidates = [
+        (config.antigravity_path / "mcp_config.json", "Antigravity editor/shared"),
+        (config.antigravity_cli_path / "mcp_config.json", "Antigravity CLI"),
+    ]
+    seen: set[Path] = set()
+    out: list[tuple[Path, str]] = []
+    for path, label in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append((path, label))
+    return out
+
+
+def install_antigravity_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex MCP config into Antigravity's standalone MCP files.
+
+    Antigravity documentation has used both ~/.gemini/config/mcp_config.json
+    and ~/.gemini/antigravity-cli/mcp_config.json for global MCP server config,
+    so Kindex writes both while preserving unrelated servers.
+    """
+    actions: list[str] = []
+    server = {"command": "kin-mcp", "args": []}
+
+    for settings_path, label in _antigravity_mcp_paths(config):
+        data = _read_json_object(settings_path)
+        mcp_servers = data.setdefault("mcpServers", {})
+        if "kindex" in mcp_servers:
+            actions.append(f"{label} MCP server already installed")
+            continue
+        mcp_servers["kindex"] = server
+        if dry_run:
+            actions.append(f"Would add Antigravity MCP server to {settings_path}")
+            continue
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        actions.append(f"Added {label} MCP server: kindex -> kin-mcp")
+        actions.append(f"Wrote {settings_path}")
+
+    return actions
+
+
+def uninstall_antigravity_mcp(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex MCP config from Antigravity MCP files."""
+    actions: list[str] = []
+    for settings_path, label in _antigravity_mcp_paths(config):
+        if not settings_path.exists():
+            actions.append(f"No {label} mcp_config.json found")
+            continue
+        data = _read_json_object(settings_path)
+        mcp_servers = data.get("mcpServers", {})
+        if "kindex" not in mcp_servers:
+            actions.append(f"No Kindex {label} MCP server found")
+            continue
+        if dry_run:
+            actions.append(f"Would remove Antigravity MCP server from {settings_path}")
+            continue
+        del mcp_servers["kindex"]
+        if mcp_servers:
+            data["mcpServers"] = mcp_servers
+        else:
+            data.pop("mcpServers", None)
+        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        actions.append(f"Removed {label} MCP server from {settings_path}")
+    return actions
+
+
+def _antigravity_hook_config(kin_path: str) -> dict[str, Any]:
+    """Kindex hook block for Antigravity's hooks.json schema."""
+    return {
+        "enabled": True,
+        "PreInvocation": [
+            {
+                "type": "command",
+                "command": _kin_hook_command(
+                    kin_path,
+                    ["agent-prime-hook", "--adapter", "antigravity", "--client", "antigravity"],
+                ),
+                "timeout": 5,
+            },
+            {
+                "type": "command",
+                "command": _kin_hook_command(
+                    kin_path,
+                    ["prompt-check", "--adapter", "antigravity"],
+                ),
+                "timeout": 5,
+            },
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": _kin_hook_command(
+                        kin_path,
+                        [
+                            "attention-hook",
+                            "--adapter",
+                            "antigravity",
+                            "--event",
+                            "PreToolUse",
+                        ],
+                    ),
+                    "timeout": 5,
+                }],
+            },
+        ],
+        "Stop": [
+            {
+                "type": "command",
+                "command": _kin_hook_command(
+                    kin_path,
+                    ["agent-stop-hook", "--adapter", "antigravity"],
+                ),
+                "timeout": 5,
+            },
+        ],
+    }
+
+
+def install_antigravity_hooks(config: "Config", dry_run: bool = False) -> list[str]:
+    """Install Kindex lifecycle hooks into Antigravity hooks.json."""
+    hooks_path = config.antigravity_path / "hooks.json"
+    data = _read_json_object(hooks_path)
+    hook_config = _antigravity_hook_config(_find_kin_path())
+    existing = data.get("kindex")
+
+    if existing == hook_config:
+        return ["Antigravity Kindex hooks already installed"]
+
+    action = "Updated Antigravity Kindex hooks" if existing else "Added Antigravity Kindex hooks"
+    data["kindex"] = hook_config
+    actions = [action]
+
+    if dry_run:
+        actions.append(f"Would write {hooks_path}")
+        return actions
+
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    actions.append(f"Wrote {hooks_path}")
+    return actions
+
+
+def uninstall_antigravity_hooks(config: "Config", dry_run: bool = False) -> list[str]:
+    """Remove Kindex's Antigravity hook block."""
+    hooks_path = config.antigravity_path / "hooks.json"
+    if not hooks_path.exists():
+        return ["No Antigravity hooks.json found"]
+    data = _read_json_object(hooks_path)
+    if "kindex" not in data:
+        return ["No Kindex Antigravity hooks found"]
+    if dry_run:
+        return [f"Would remove Antigravity Kindex hooks from {hooks_path}"]
+    data.pop("kindex", None)
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    return [f"Removed Antigravity Kindex hooks from {hooks_path}"]
 
 
 def install_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]:

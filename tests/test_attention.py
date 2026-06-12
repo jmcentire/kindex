@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from kindex.agent_adapters import permission_gate_output, render_hook_context
 from kindex.cli import build_parser
 from kindex.attention import (
     estimate_message_window,
@@ -403,12 +404,77 @@ def test_is_background_action_skips_noise_and_fires_on_actions():
     assert is_background_action({"prompt": "push to github"}, cfg) is False
 
 
+def test_antigravity_tool_call_payload_extracts_text_and_background_status():
+    cfg = Config()
+    payload = {
+        "toolCall": {
+            "name": "run_command",
+            "args": {"CommandLine": "git push origin main", "Cwd": "/repo"},
+        },
+    }
+
+    text = extract_conversation_text(hook_payload=payload)
+
+    assert "tool_name: run_command" in text
+    assert "git push origin main" in text
+    assert is_background_action(payload, cfg) is False
+    assert is_background_action({
+        "toolCall": {
+            "name": "run_command",
+            "args": {"CommandLine": "rg antigravity src"},
+        },
+    }, cfg) is True
+    assert is_background_action({
+        "toolCall": {
+            "name": "view_file",
+            "args": {"Path": "src/kindex/cli.py"},
+        },
+    }, cfg) is True
+
+
+def test_antigravity_pretool_config_write_forces_permission_prompt():
+    payload = {
+        "toolCall": {
+            "name": "run_command",
+            "args": {
+                "CommandLine": "kin agent-config set attention.tick_interval 1 --client claude",
+            },
+        },
+    }
+
+    output = permission_gate_output(
+        adapter="antigravity",
+        event="PreToolUse",
+        payload=payload,
+    )
+
+    data = json.loads(output)
+    assert data["decision"] == "force_ask"
+    assert "changes Kindex behavior" in data["reason"]
+
+
+def test_antigravity_hook_context_uses_inject_steps_and_pretool_allow():
+    pre_invocation = json.loads(render_hook_context(
+        "hello",
+        adapter="antigravity",
+        event="PreInvocation",
+    ))
+    pre_tool = json.loads(render_hook_context(
+        "check this",
+        adapter="antigravity",
+        event="PreToolUse",
+    ))
+
+    assert pre_invocation == {"injectSteps": [{"ephemeralMessage": "hello"}]}
+    assert pre_tool == {"decision": "allow", "reason": "check this"}
+
+
 def test_prompt_check_parser_accepts_adapter():
     parser = build_parser()
 
-    args = parser.parse_args(["prompt-check", "--adapter", "codex"])
+    args = parser.parse_args(["prompt-check", "--adapter", "antigravity"])
 
-    assert args.adapter == "codex"
+    assert args.adapter == "antigravity"
 
 
 def test_attention_hook_parser_accepts_client_adapter():
@@ -417,10 +483,10 @@ def test_attention_hook_parser_accepts_client_adapter():
     args = parser.parse_args([
         "attention-hook",
         "--adapter",
-        "claude",
+        "antigravity",
         "--event",
         "PreToolUse",
     ])
 
-    assert args.adapter == "claude"
+    assert args.adapter == "antigravity"
     assert args.event == "PreToolUse"

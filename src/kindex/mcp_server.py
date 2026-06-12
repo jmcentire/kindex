@@ -1,7 +1,8 @@
 """Kindex MCP Server — agent plugin for the knowledge graph.
 
 Exposes Kindex tools, resources, and prompts via the Model Context Protocol.
-Run with: kin-mcp (stdio transport, for Claude Code, Codex, and other MCP clients)
+Run with: kin-mcp (stdio transport, for Claude Code, Codex, Gemini CLI,
+Google Antigravity, OpenCode, Cursor, and other MCP clients)
 """
 
 from __future__ import annotations

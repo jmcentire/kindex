@@ -257,6 +257,7 @@ capture pre-compaction context, and run stop guards.
 
 ```bash
 kin setup-codex-mcp
+kin setup-codex-hooks
 kin setup-agents-md --install --global
 kin ingest codex-sessions   # optional: backfill saved sessions
 ```
@@ -281,11 +282,26 @@ Or hand-edit `~/.gemini/settings.json`:
 { "mcpServers": { "kindex": { "command": "kin-mcp", "args": [] } } }
 ```
 
+### Google Antigravity
+
+```bash
+kin setup-antigravity-mcp
+kin setup-antigravity-hooks
+kin setup-antigravity-md --install
+```
+
+Antigravity uses standalone MCP config files, so Kindex writes both
+`~/.gemini/config/mcp_config.json` and
+`~/.gemini/antigravity-cli/mcp_config.json`. Hooks live in
+`~/.gemini/config/hooks.json`: Kindex installs PreInvocation context priming and
+prompt checks, PreToolUse advisory attention plus config-write permission
+gating, and Stop-time reinforcement enqueue.
+
 ### OpenCode
 
 ```bash
 kin setup-opencode-mcp
-kin setup-agents-md --install   # OpenCode reads AGENTS.md
+kin setup-agents-md --install --global   # OpenCode reads AGENTS.md
 ```
 
 Or hand-edit `~/.config/opencode/opencode.json`:
@@ -312,6 +328,21 @@ Or hand-edit `~/.cursor/mcp.json`:
 ```json
 { "mcpServers": { "kindex": { "type": "stdio", "command": "kin-mcp" } } }
 ```
+
+## Agent-Specific Tuning
+
+Root config is the global/project default. Client and instance overrides live
+under `agents.clients` and `agents.instances`:
+
+```bash
+kin config set attention.tick_interval 3
+kin agent-config set attention.tick_interval 2 --client claude
+kin agent-config set hooks.prime_tokens 1200 --client claude --scope instance --instance session-a
+```
+
+Agents may propose these changes, but writes should go through the host's normal
+tool/command permission gate. Antigravity hooks force an explicit user prompt
+before `kin config set` or `kin agent-config set` runs.
 
 ## Human Setup Checklist
 

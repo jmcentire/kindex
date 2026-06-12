@@ -1495,6 +1495,12 @@ def cmd_prime(args):
         store.close()
         return
 
+    from .agent_adapters import normalize_adapter
+    from .agent_settings import (
+        agent_setting_value,
+        apply_agent_overrides,
+        resolve_agent_instance_key,
+    )
     from .attention import parse_hook_payload, resolve_conversation_id
     from .hooks import prime_context
 
@@ -1502,12 +1508,30 @@ def cmd_prime(args):
     tokens = getattr(args, "tokens", 750) or 750
     output_for = getattr(args, "output_for", "stdout") or "stdout"
     conversation_id = getattr(args, "conversation_id", None)
+    adapter = normalize_adapter(getattr(args, "adapter", "claude"))
+    hook_payload = {}
     if output_for == "hook" and not conversation_id and not sys.stdin.isatty():
+        hook_payload = parse_hook_payload(sys.stdin.read())
         conversation_id = resolve_conversation_id(
             None,
-            parse_hook_payload(sys.stdin.read()),
+            hook_payload,
             fallback_to_cwd=False,
         )
+    instance_key = ""
+    if output_for == "hook" or getattr(args, "agent_instance", None):
+        instance_key = resolve_agent_instance_key(
+            adapter,
+            getattr(args, "agent_instance", None),
+            hook_payload,
+        )
+        tokens = int(agent_setting_value(
+            cfg,
+            client=adapter,
+            instance_key=instance_key,
+            key="hooks.prime_tokens",
+            default=tokens,
+        ) or tokens)
+        cfg = apply_agent_overrides(cfg, client=adapter, instance_key=instance_key)
 
     block = prime_context(
         store,
@@ -1527,14 +1551,15 @@ def cmd_prime(args):
         except Exception:
             pass
         body = notice + block
-        adapter = str(getattr(args, "adapter", "claude") or "claude").lower()
         quiet = str(getattr(cfg.attention, "display", "full")).lower() == "quiet"
-        if adapter == "codex":
-            # Codex SessionStart ingests context from the additionalContext JSON
-            # envelope (Claude-style hook parity), so always render the envelope;
-            # suppressOutput in quiet mode (feed the model, hide the block).
+        if adapter in {"codex", "antigravity"}:
+            # JSON adapters ingest context through client hook envelopes, so
+            # always render the adapter-specific envelope.
             rendered = _hook_context_output(
-                body, adapter="codex", event="SessionStart", suppress=quiet,
+                body,
+                adapter=adapter,
+                event=("PreInvocation" if adapter == "antigravity" else "SessionStart"),
+                suppress=quiet,
             )
             if rendered:
                 print(rendered, end="")
@@ -1557,6 +1582,99 @@ def cmd_prime(args):
         print(block)
 
     store.close()
+
+
+def cmd_agent_prime_hook(args):
+    """Prime-once hook for clients that do not have a SessionStart event."""
+    from .agent_adapters import normalize_adapter
+    from .agent_settings import (
+        agent_setting_value,
+        apply_agent_overrides,
+        resolve_agent_instance_key,
+    )
+    from .attention import read_hook_payload, resolve_conversation_id
+    from .hooks import prime_context
+
+    adapter = normalize_adapter(getattr(args, "adapter", "plain"))
+    client = normalize_adapter(getattr(args, "client", None) or adapter)
+    payload = read_hook_payload()
+    conversation_id = resolve_conversation_id(
+        getattr(args, "conversation_id", None),
+        payload,
+        fallback_to_cwd=False,
+    )
+    instance_key = resolve_agent_instance_key(
+        client,
+        getattr(args, "agent_instance", None),
+        payload,
+    )
+
+    store = _store(args)
+    cfg = _config(args)
+    if not conversation_id:
+        store.close()
+        return
+
+    meta_key = f"agent_prime_hook.{client}.{conversation_id}"
+    if store.get_meta(meta_key):
+        store.close()
+        return
+
+    tokens = int(agent_setting_value(
+        cfg,
+        client=client,
+        instance_key=instance_key,
+        key="hooks.prime_tokens",
+        default=getattr(args, "tokens", 750) or 750,
+    ) or 750)
+    cfg = apply_agent_overrides(cfg, client=client, instance_key=instance_key)
+    block = prime_context(
+        store,
+        topic=getattr(args, "topic", None),
+        max_tokens=tokens,
+        config=cfg,
+        conversation_id=conversation_id,
+    )
+    store.set_meta(meta_key, datetime.datetime.now().isoformat(timespec="seconds"))
+    rendered = _hook_context_output(
+        block,
+        adapter=adapter,
+        event=getattr(args, "event", None) or "PreInvocation",
+        suppress=str(getattr(cfg.attention, "display", "full")).lower() == "quiet",
+    )
+    if rendered:
+        print(rendered, end="")
+    store.close()
+
+
+def cmd_agent_stop_hook(args):
+    """Portable session-end hook: enqueue reinforcement and satisfy client schema."""
+    from .agent_adapters import normalize_adapter
+    from .attention import read_hook_payload, resolve_conversation_id
+
+    adapter = normalize_adapter(getattr(args, "adapter", "plain"))
+    payload = read_hook_payload()
+    store = _store(args)
+    conversation_id = resolve_conversation_id(
+        getattr(args, "conversation_id", None),
+        payload,
+        fallback_to_cwd=False,
+    )
+    if conversation_id:
+        try:
+            from .reinforce import enqueue_reinforce
+            transcript_path = (
+                payload.get("transcript_path")
+                or payload.get("transcriptPath")
+                or payload.get("conversationPath")
+                or ""
+            )
+            enqueue_reinforce(store, conversation_id, transcript_path=transcript_path)
+        except Exception:
+            pass
+    store.close()
+    if adapter == "antigravity":
+        print(_dumps({"decision": ""}))
 
 
 def _prime_codebook(store, args):
@@ -3730,23 +3848,14 @@ def _hook_context_output(context: str, *, adapter: str, event: str,
     user (the "feed me, don't show you" quiet mode). Only meaningful for the JSON
     adapters; plain adapters echo the text and cannot hide it.
     """
-    if not context.strip():
-        return ""
-    adapter = (adapter or "plain").lower()
-    event = event or "UserPromptSubmit"
-    if adapter in {"plain", "claude-plain"}:
-        return context
+    from .agent_adapters import render_hook_context
 
-    hook_output = {
-        "hookEventName": event,
-        "additionalContext": context,
-    }
-    if adapter in {"claude", "claude-code"} and event == "PreToolUse":
-        hook_output["permissionDecision"] = "allow"
-    payload: dict = {"hookSpecificOutput": hook_output}
-    if suppress:
-        payload["suppressOutput"] = True
-    return _dumps(payload)
+    return render_hook_context(
+        context,
+        adapter=adapter,
+        event=event,
+        suppress=suppress,
+    )
 
 
 def _collab_unread_messages(store, collab: dict, agent: str) -> list[dict]:
@@ -3842,7 +3951,10 @@ def cmd_prompt_check(args):
     store = _store(args)
     cfg = _config(args)
 
-    adapter = getattr(args, "adapter", "plain")
+    from .agent_adapters import normalize_adapter
+    from .agent_settings import apply_agent_overrides, resolve_agent_instance_key
+
+    adapter = normalize_adapter(getattr(args, "adapter", "plain"))
     hook_event = "UserPromptSubmit"
     hook_payload = {}
     conversation_id = ""
@@ -3866,6 +3978,16 @@ def cmd_prompt_check(args):
             hook_payload.get("hook_event_name")
             or hook_payload.get("hookEventName")
             or hook_event
+        )
+        agent_instance = resolve_agent_instance_key(
+            adapter,
+            getattr(args, "agent_instance", None),
+            hook_payload,
+        )
+        cfg = apply_agent_overrides(
+            cfg,
+            client=adapter,
+            instance_key=agent_instance,
         )
         conversation_text = extract_conversation_text(
             getattr(args, "text", None),
@@ -4059,6 +4181,12 @@ def cmd_prompt_check(args):
 
 def cmd_attention_hook(args):
     """Advisory attention hook for tool/action boundaries."""
+    from .agent_adapters import (
+        antigravity_allow,
+        normalize_adapter,
+        permission_gate_output,
+    )
+    from .agent_settings import apply_agent_overrides, resolve_agent_instance_key
     from .attention import (
         extract_conversation_text,
         format_attention_injections,
@@ -4076,17 +4204,35 @@ def cmd_attention_hook(args):
         or payload.get("hookEventName")
         or "PreToolUse"
     )
+    adapter = normalize_adapter(getattr(args, "adapter", "claude"))
+    gate = permission_gate_output(adapter=adapter, event=event, payload=payload)
+    if gate:
+        print(gate)
+        return
+
+    def allow_if_needed() -> None:
+        if adapter == "antigravity" and event == "PreToolUse":
+            print(antigravity_allow())
+
     text = extract_conversation_text(getattr(args, "text", None), payload)
     if not text:
+        allow_if_needed()
         return
 
     store = _store(args)
     cfg = _config(args)
+    agent_instance = resolve_agent_instance_key(
+        adapter,
+        getattr(args, "agent_instance", None),
+        payload,
+    )
+    cfg = apply_agent_overrides(cfg, client=adapter, instance_key=agent_instance)
 
     # Ignore Kindex's own noise and local/background tool calls — attention should
     # only weigh in on the agent's outward-facing or irreversible actions.
     if not getattr(args, "force", False) and is_background_action(payload, cfg):
         store.close()
+        allow_if_needed()
         return
     conversation_id = resolve_conversation_id(
         getattr(args, "conversation_id", None),
@@ -4095,6 +4241,7 @@ def cmd_attention_hook(args):
     )
     if not conversation_id:
         store.close()
+        allow_if_needed()
         return
     result = run_attention_check(
         store,
@@ -4108,10 +4255,11 @@ def cmd_attention_hook(args):
 
     lines = format_attention_injections(result)
     if not lines:
+        allow_if_needed()
         return
     rendered = _hook_context_output(
         "\n".join(lines),
-        adapter=getattr(args, "adapter", "claude"),
+        adapter=adapter,
         event=event,
     )
     if rendered:
@@ -4765,6 +4913,43 @@ def cmd_setup_gemini_md(args):
         print(block)
 
 
+def cmd_setup_antigravity_mcp(args):
+    """Install/uninstall Kindex as an Antigravity MCP server."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_antigravity_mcp
+        actions = uninstall_antigravity_mcp(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_antigravity_mcp
+        actions = install_antigravity_mcp(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_antigravity_hooks(args):
+    """Install/uninstall Kindex lifecycle hooks in Antigravity."""
+    cfg = _config(args)
+    dry_run = getattr(args, "dry_run", False)
+
+    if getattr(args, "uninstall", False):
+        from .setup import uninstall_antigravity_hooks
+        actions = uninstall_antigravity_hooks(cfg, dry_run=dry_run)
+    else:
+        from .setup import install_antigravity_hooks
+        actions = install_antigravity_hooks(cfg, dry_run=dry_run)
+
+    for a in actions:
+        print(f"  {a}")
+
+
+def cmd_setup_antigravity_md(args):
+    """Output recommended Antigravity/GEMINI.md Kindex directives."""
+    cmd_setup_gemini_md(args)
+
+
 def cmd_setup_opencode_mcp(args):
     """Install/uninstall Kindex as an OpenCode MCP server."""
     cfg = _config(args)
@@ -4993,6 +5178,89 @@ def cmd_config(args):
     # Default: show
     cfg = _config(args)
     print(yaml.dump(cfg.model_dump(), default_flow_style=False, sort_keys=False).strip())
+
+
+def cmd_agent_config(args):
+    """Show or set per-client/per-instance agent behavior overrides."""
+    from .agent_settings import (
+        agent_config_write_key,
+        agent_settings_summary,
+        normalize_agent_client,
+        resolve_agent_instance_key,
+        validate_agent_setting_key,
+    )
+
+    action = getattr(args, "agent_config_action", "show")
+    client = normalize_agent_client(getattr(args, "client", None))
+    if not client or client == "plain":
+        print("Error: agent-config requires --client <claude|codex|antigravity|...>",
+              file=sys.stderr)
+        sys.exit(1)
+    instance_key = resolve_agent_instance_key(
+        client,
+        getattr(args, "instance", None),
+        {},
+    )
+
+    if action == "show":
+        cfg = _config(args)
+        summary = agent_settings_summary(
+            cfg,
+            client=client,
+            instance_key=instance_key,
+        )
+        if getattr(args, "json", False):
+            print(_dumps(summary, indent=2))
+        else:
+            print(yaml.dump(summary, default_flow_style=False, sort_keys=False).strip())
+        return
+
+    if action == "set":
+        key = getattr(args, "key", None)
+        value = getattr(args, "value", None)
+        if not key or value is None:
+            print("Error: kin agent-config set <key> <value> --client <client>",
+                  file=sys.stderr)
+            sys.exit(1)
+        try:
+            setting_key = validate_agent_setting_key(key)
+            scope = getattr(args, "scope", "client")
+            write_key = agent_config_write_key(
+                scope=scope,
+                client=client,
+                instance_key=instance_key,
+                setting_key=setting_key,
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        config_path = getattr(args, "config", None)
+        is_global = getattr(args, "global_", False)
+        project_path = getattr(args, "project_path", None)
+        if getattr(args, "scope", "client") == "instance":
+            _config_write(
+                f"agents.instances.{instance_key}.client",
+                client,
+                config_path,
+                global_=is_global,
+                project_path=project_path,
+            )
+        _config_write(
+            write_key,
+            value,
+            config_path,
+            global_=is_global,
+            project_path=project_path,
+        )
+        scope_label = getattr(args, "scope", "client")
+        target = client if scope_label == "client" else instance_key
+        file_scope = "global" if is_global else "local"
+        print(f"Set {setting_key} = {value} ({scope_label}: {target}, {file_scope})")
+        return
+
+    print(f"Error: unknown agent-config action '{action}'", file=sys.stderr)
+    sys.exit(1)
 
 
 # ── policy ────────────────────────────────────────────────────────────
@@ -5395,8 +5663,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--codebook", action="store_true",
                    help="Regenerate the LLM prompt cache codebook")
     s.add_argument("--conversation-id", help="Conversation/session id for scoped reminders")
-    s.add_argument("--adapter", default="claude", choices=["plain", "claude", "codex"],
-                   help="Hook output adapter: codex emits the additionalContext JSON envelope")
+    s.add_argument("--adapter", default="claude",
+                   choices=["plain", "claude", "codex", "antigravity"],
+                   help="Hook output adapter for client hook protocols")
+    s.add_argument("--agent-instance", help="Agent instance/conversation override key")
     _common(s)
     s.set_defaults(func=cmd_prime)
 
@@ -5538,6 +5808,30 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_setup_gemini_md)
 
+    # setup-antigravity-mcp
+    s = sub.add_parser("setup-antigravity-mcp",
+                       help="Install Kindex MCP server into Google Antigravity")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed MCP server")
+    _common(s)
+    s.set_defaults(func=cmd_setup_antigravity_mcp)
+
+    # setup-antigravity-hooks
+    s = sub.add_parser("setup-antigravity-hooks",
+                       help="Install Kindex lifecycle hooks into Google Antigravity")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove installed hooks")
+    _common(s)
+    s.set_defaults(func=cmd_setup_antigravity_hooks)
+
+    # setup-antigravity-md
+    s = sub.add_parser("setup-antigravity-md",
+                       help="Output recommended Antigravity/GEMINI.md kindex directives")
+    s.add_argument("--install", action="store_true",
+                   help="Append to ~/.gemini/GEMINI.md (if not already present)")
+    _common(s)
+    s.set_defaults(func=cmd_setup_antigravity_md)
+
     # setup-opencode-mcp
     s = sub.add_parser("setup-opencode-mcp", help="Install Kindex MCP server into OpenCode")
     s.add_argument("--dry-run", action="store_true", help="Show what would be done")
@@ -5571,6 +5865,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Write to global config (~/.config/kindex/kin.yaml)")
     _common(s)
     s.set_defaults(func=cmd_config)
+
+    # agent-config
+    s = sub.add_parser("agent-config",
+                       help="Show/set per-agent Kindex behavior overrides")
+    s.add_argument("agent_config_action", nargs="?", default="show",
+                   choices=["show", "set"],
+                   help="Action: show or set")
+    s.add_argument("key", nargs="?", help="Setting key for set")
+    s.add_argument("value", nargs="?", help="Setting value for set")
+    s.add_argument("--client", help="Client family: claude, codex, antigravity, etc.")
+    s.add_argument("--instance", help="Instance/conversation key for instance scope")
+    s.add_argument("--scope", choices=["client", "instance"], default="client",
+                   help="Write scope for set (default: client)")
+    s.add_argument("--global", dest="global_", action="store_true",
+                   help="Write to global config (~/.config/kindex/kin.yaml)")
+    _common(s)
+    s.set_defaults(func=cmd_agent_config)
 
     # attention
     s = sub.add_parser("attention", help="Conversation-attention runtime controls")
@@ -5804,6 +6115,27 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_mode)
 
+    # agent-prime-hook (portable one-shot prime hook)
+    s = sub.add_parser("agent-prime-hook", help="Portable one-shot agent prime hook")
+    s.add_argument("--adapter", default="plain",
+                   choices=["plain", "claude", "codex", "antigravity"])
+    s.add_argument("--client", help="Client family for config overrides")
+    s.add_argument("--event", default="PreInvocation", help="Hook event name")
+    s.add_argument("--tokens", type=int, default=750)
+    s.add_argument("--topic")
+    s.add_argument("--conversation-id")
+    s.add_argument("--agent-instance")
+    _common(s)
+    s.set_defaults(func=cmd_agent_prime_hook)
+
+    # agent-stop-hook (portable session-end hook)
+    s = sub.add_parser("agent-stop-hook", help="Portable session-end hook")
+    s.add_argument("--adapter", default="plain",
+                   choices=["plain", "claude", "codex", "antigravity"])
+    s.add_argument("--conversation-id")
+    _common(s)
+    s.set_defaults(func=cmd_agent_stop_hook)
+
     # stop-guard (Claude Code Stop hook)
     s = sub.add_parser("stop-guard", help="Stop hook guard for actionable reminders")
     _common(s)
@@ -5815,18 +6147,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--conversation-id", help="Conversation/session id for attention budgets")
     s.add_argument("--force-attention", action="store_true",
                    help="Run attention regardless of tick interval")
-    s.add_argument("--adapter", default="plain", choices=["plain", "claude", "codex"],
+    s.add_argument("--adapter", default="plain",
+                   choices=["plain", "claude", "codex", "antigravity"],
                    help="Render hook output for a client protocol")
+    s.add_argument("--agent-instance", help="Agent instance/conversation override key")
     _common(s)
     s.set_defaults(func=cmd_prompt_check)
 
     # attention-hook (advisory tool/action hook)
     s = sub.add_parser("attention-hook", help="Advisory attention hook for tool/action events")
-    s.add_argument("--adapter", default="claude", choices=["plain", "claude", "codex"],
+    s.add_argument("--adapter", default="claude",
+                   choices=["plain", "claude", "codex", "antigravity"],
                    help="Render hook output for a client protocol")
     s.add_argument("--event", help="Hook event name (default from stdin, then PreToolUse)")
     s.add_argument("--text", help="Conversation/action snippet (normally read from hook stdin)")
     s.add_argument("--conversation-id", help="Conversation/session id for attention budgets")
+    s.add_argument("--agent-instance", help="Agent instance/conversation override key")
     s.add_argument("--force", action="store_true", help="Run attention regardless of tick interval")
     _common(s)
     s.set_defaults(func=cmd_attention_hook)
