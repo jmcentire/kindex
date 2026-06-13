@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.25.1](https://img.shields.io/badge/version-0.25.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.25.2](https://img.shields.io/badge/version-0.25.2-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1495%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1499%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -854,7 +854,7 @@ Use `kin attention estimate --messages 1000` to estimate cost over a fixed promp
 
 ```bash
 make dev          # install with dev + LLM dependencies
-make test         # run 1495 tests
+make test         # run 1499 tests
 make check        # lint + test combined
 make clean        # remove build artifacts
 ```

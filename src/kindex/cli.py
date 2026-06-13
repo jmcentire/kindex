@@ -4168,9 +4168,9 @@ def cmd_prompt_check(args):
 
     rendered = _hook_context_output(
         "\n".join(lines),
-        # Quiet mode needs the JSON adapter so suppressOutput is honored; the
-        # plain adapter echoes raw text and can't hide anything.
-        adapter=("claude" if suppress else adapter),
+        # Preserve the caller's protocol. Forcing Claude here broke
+        # Antigravity quiet-mode hooks by emitting a Claude envelope.
+        adapter=adapter,
         event=hook_event,
         suppress=suppress,
     )

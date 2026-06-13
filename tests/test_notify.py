@@ -45,6 +45,12 @@ class TestSystemChannel:
         expected = platform.system() == "Darwin"
         assert ch.is_available(config) == expected
 
+    def test_is_available_respects_enabled_flag(self, config):
+        ch = SystemChannel()
+        config.reminders.channels.system.enabled = False
+
+        assert not ch.is_available(config)
+
     def test_send_fallback(self, config, reminder, monkeypatch):
         ch = SystemChannel()
         # Mock subprocess to simulate alerter not found, osascript fallback

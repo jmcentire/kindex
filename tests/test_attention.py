@@ -469,6 +469,29 @@ def test_antigravity_hook_context_uses_inject_steps_and_pretool_allow():
     assert pre_tool == {"decision": "allow", "reason": "check this"}
 
 
+def test_codex_quiet_output_does_not_emit_unsupported_suppress_output():
+    payload = json.loads(render_hook_context(
+        "hello",
+        adapter="codex",
+        event="SessionStart",
+        suppress=True,
+    ))
+
+    assert payload["hookSpecificOutput"]["additionalContext"] == "hello"
+    assert "suppressOutput" not in payload
+
+
+def test_claude_quiet_output_keeps_suppress_output():
+    payload = json.loads(render_hook_context(
+        "hello",
+        adapter="claude",
+        event="SessionStart",
+        suppress=True,
+    ))
+
+    assert payload["suppressOutput"] is True
+
+
 def test_prompt_check_parser_accepts_adapter():
     parser = build_parser()
 

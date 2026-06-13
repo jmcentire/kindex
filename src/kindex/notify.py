@@ -42,7 +42,10 @@ class SystemChannel:
 
     def is_available(self, config: Config) -> bool:
         import platform
-        return platform.system() == "Darwin"
+        return (
+            config.reminders.channels.system.enabled
+            and platform.system() == "Darwin"
+        )
 
     def send(self, reminder: dict, config: Config) -> NotifyResult:
         title = reminder.get("title", "Reminder")

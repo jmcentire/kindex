@@ -74,7 +74,9 @@ def render_hook_context(
     if canonical == "claude" and hook_event == "PreToolUse":
         hook_output["permissionDecision"] = "allow"
     payload = {"hookSpecificOutput": hook_output}
-    if suppress:
+    # Codex parses suppressOutput but does not implement it yet. Emitting it
+    # causes a failed hook run without hiding the context.
+    if suppress and canonical == "claude":
         payload["suppressOutput"] = True
     return _json(payload)
 

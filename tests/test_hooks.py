@@ -542,6 +542,26 @@ class TestPromptCheckCollabCLI:
         assert "broadcast note" in ctx
         assert "coord_read ship-it" in ctx
 
+    def test_prompt_check_antigravity_quiet_uses_antigravity_envelope(self, tmp_path):
+        import json
+        self._seed(tmp_path)
+        cfg_path = tmp_path / "kin.test.yaml"
+        cfg_path.write_text("attention:\n  display: quiet\n")
+        r = self._run(
+            tmp_path,
+            "prompt-check",
+            "--config",
+            str(cfg_path),
+            "--adapter",
+            "antigravity",
+            input_text=json.dumps({"session_id": "chat-1", "prompt": "status"}),
+        )
+        assert r.returncode == 0, r.stderr
+        payload = json.loads(r.stdout)
+        assert "injectSteps" in payload
+        assert "hookSpecificOutput" not in payload
+        assert "COLLAB UPDATES" in payload["injectSteps"][0]["ephemeralMessage"]
+
     def test_prompt_check_collab_disabled_is_silent(self, tmp_path):
         import json
         self._seed(tmp_path)

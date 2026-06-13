@@ -2,6 +2,13 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.2] - 2026-06-13
+
+### Fixed
+- Antigravity quiet-mode prompt checks now preserve the Antigravity hook protocol instead of emitting a Claude `hookSpecificOutput` envelope that agy rejects.
+- macOS system reminder delivery now honors `reminders.channels.system.enabled=false`, so disabling system notifications actually suppresses desktop popups.
+- Codex no longer receives unsupported `suppressOutput` fields from Kindex quiet-mode hook output; Codex still receives the required SessionStart prime context.
+
 ## [0.25.0] - 2026-06-12
 
 ### Added
