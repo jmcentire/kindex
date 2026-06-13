@@ -510,8 +510,14 @@ def uninstall_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
 
 def _read_json_object(path: Path) -> dict[str, Any]:
     if path.exists():
-        data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else {}
+        content = path.read_text().strip()
+        if not content:
+            return {}
+        try:
+            data = json.loads(content)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 
