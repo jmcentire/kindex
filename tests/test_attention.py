@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 
 from kindex.agent_adapters import permission_gate_output, render_hook_context
 from kindex.cli import build_parser
 from kindex.attention import (
+    ATTENTION_PENDING_META,
+    ATTENTION_QUEUE_META,
+    _prepare_attention_job,
+    drain_attention_queue,
+    enqueue_attention_review,
     estimate_message_window,
     extract_conversation_text,
     is_background_action,
+    pop_pending_attention_injections,
     resolve_conversation_id,
     run_attention_check,
     runtime_status,
     select_candidates,
     set_runtime_enabled,
+    wait_for_pending_attention,
 )
 from kindex.budget import BudgetLedger
 from kindex.config import AttentionConfig, BudgetConfig, Config, LLMConfig
@@ -303,6 +311,83 @@ def test_attention_estimate_respects_check_budget(tmp_path, monkeypatch):
     assert result["status"] == "estimate_exceeds_check_budget"
     assert client.messages.calls == 0
     assert ledger.entries == []
+    store.close()
+
+
+def test_async_attention_delivers_fast_result_immediately(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    node_id = store.add_node(
+        "Deploy checklist",
+        node_type="directive",
+        extra={"attention_triggers": ["deploy"]},
+    )
+    prepared = _prepare_attention_job(store, cfg, "deploy this", "conv-1", force=True)
+    assert prepared["status"] == "queued"
+    assert enqueue_attention_review(store, cfg, prepared["job"]) is True
+
+    client = _MockClient(f"node:{node_id}")
+    drained = drain_attention_queue(store, cfg, client=client)
+    assert drained["reviewed"] == 1
+    assert drained["flagged"] == 1
+    assert store.get_meta(ATTENTION_QUEUE_META) == "[]"
+
+    injections = pop_pending_attention_injections(
+        store,
+        cfg,
+        "conv-1",
+        "deploy this",
+        tick=prepared["ticks"],
+        job_id=prepared["job"]["job_id"],
+    )
+    assert len(injections) == 1
+    assert injections[0].id == f"node:{node_id}"
+    assert store.get_meta(ATTENTION_PENDING_META) == "[]"
+    store.close()
+
+
+def test_async_attention_drops_stale_deferred_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    node_id = store.add_node(
+        "Deploy checklist",
+        node_type="directive",
+        extra={"attention_triggers": ["deploy"]},
+    )
+    prepared = _prepare_attention_job(store, cfg, "deploy this", "conv-1", force=True)
+    assert enqueue_attention_review(store, cfg, prepared["job"]) is True
+    drain_attention_queue(store, cfg, client=_MockClient(f"node:{node_id}"))
+    pending = json.loads(store.get_meta(ATTENTION_PENDING_META) or "[]")
+
+    injections = pop_pending_attention_injections(
+        store,
+        cfg,
+        "conv-1",
+        "unrelated frontend colors",
+        tick=int(pending[0]["tick"]) + 4,
+    )
+    assert injections == []
+    assert store.get_meta(ATTENTION_PENDING_META) == "[]"
+    store.close()
+
+
+def test_wait_for_pending_attention_returns_empty_at_deadline(tmp_path):
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    start = time.monotonic()
+    injections = wait_for_pending_attention(
+        store,
+        cfg,
+        "conv-1",
+        "deploy this",
+        tick=1,
+        job_id="missing",
+        deadline=start + 0.05,
+    )
+    assert injections == []
+    assert time.monotonic() - start < 0.2
     store.close()
 
 

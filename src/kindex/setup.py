@@ -53,6 +53,10 @@ def _hook_needs_stop_active_guard(entry: object) -> bool:
     return "stop_hook_active" not in str(entry)
 
 
+def _hook_needs_attention_deadline(entry: object) -> bool:
+    return "--deadline-ms" not in str(entry)
+
+
 def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     """Install Kindex hooks into Claude Code's settings.json.
 
@@ -147,7 +151,11 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": _kin_hook_command(kin_path, ["attention-hook", "--adapter", "claude", "--event", "PreToolUse"]),
+            "command": _kin_hook_command(
+                kin_path,
+                ["attention-hook", "--adapter", "claude", "--event", "PreToolUse",
+                 "--deadline-ms", "3500"],
+            ),
             "timeout": 5000,
         }]
     }
@@ -155,9 +163,12 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     if existing_idx is None:
         pre_tool.append(attention_hook)
         actions.append("Added PreToolUse hook: kin attention-hook")
-    elif _hook_needs_profile(pre_tool[existing_idx]):
+    elif (
+        _hook_needs_profile(pre_tool[existing_idx])
+        or _hook_needs_attention_deadline(pre_tool[existing_idx])
+    ):
         pre_tool[existing_idx] = attention_hook
-        actions.append("Updated PreToolUse hook to source ~/.profile")
+        actions.append("Updated PreToolUse hook with internal deadline")
     else:
         actions.append("PreToolUse attention hook already installed")
 
@@ -282,7 +293,11 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     entry = {
         "hooks": [{
             "type": "command",
-            "command": _kin_hook_command(kin_path, ["attention-hook", "--adapter", "codex", "--event", "UserPromptSubmit"]),
+            "command": _kin_hook_command(
+                kin_path,
+                ["attention-hook", "--adapter", "codex", "--event", "UserPromptSubmit",
+                 "--deadline-ms", "3500"],
+            ),
             "timeout": 5,
             "statusMessage": "Checking Kindex attention",
         }]
@@ -300,6 +315,7 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         _hook_needs_profile(prompt_submit[existing_idx])
         or "prompt-check" in str(prompt_submit[existing_idx])
         or "--adapter" not in str(prompt_submit[existing_idx])
+        or _hook_needs_attention_deadline(prompt_submit[existing_idx])
     ):
         prompt_submit[existing_idx] = entry
         actions.append("Updated Codex UserPromptSubmit hook to source ~/.profile")
@@ -310,7 +326,11 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     post_entry = {
         "hooks": [{
             "type": "command",
-            "command": _kin_hook_command(kin_path, ["attention-hook", "--adapter", "codex", "--event", "PostToolUse"]),
+            "command": _kin_hook_command(
+                kin_path,
+                ["attention-hook", "--adapter", "codex", "--event", "PostToolUse",
+                 "--deadline-ms", "3500"],
+            ),
             "timeout": 5,
             "statusMessage": "Checking Kindex attention",
         }]
@@ -319,9 +339,12 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     if existing_idx is None:
         post_tool.append(post_entry)
         actions.append("Added Codex PostToolUse hook: kin attention-hook")
-    elif _hook_needs_profile(post_tool[existing_idx]):
+    elif (
+        _hook_needs_profile(post_tool[existing_idx])
+        or _hook_needs_attention_deadline(post_tool[existing_idx])
+    ):
         post_tool[existing_idx] = post_entry
-        actions.append("Updated Codex PostToolUse hook to source ~/.profile")
+        actions.append("Updated Codex PostToolUse hook with internal deadline")
     else:
         actions.append("Codex PostToolUse attention hook already installed")
 
@@ -624,6 +647,8 @@ def _antigravity_hook_config(kin_path: str) -> dict[str, Any]:
                             "antigravity",
                             "--event",
                             "PreToolUse",
+                            "--deadline-ms",
+                            "3500",
                         ],
                     ),
                     "timeout": 5,

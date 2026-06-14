@@ -215,11 +215,13 @@ class TestSetupCodex:
         prompt_hooks = data["hooks"]["UserPromptSubmit"]
         assert len(prompt_hooks) == 1
         assert "attention-hook" in prompt_hooks[0]["hooks"][0]["command"]
+        assert "--deadline-ms 3500" in prompt_hooks[0]["hooks"][0]["command"]
         assert "--adapter" in prompt_hooks[0]["hooks"][0]["command"]
         assert "source ~/.profile" in prompt_hooks[0]["hooks"][0]["command"]
         post_hooks = data["hooks"]["PostToolUse"]
         assert len(post_hooks) == 1
         assert "attention-hook" in post_hooks[0]["hooks"][0]["command"]
+        assert "--deadline-ms 3500" in post_hooks[0]["hooks"][0]["command"]
         # SessionStart hook injects the prime block (parity with Claude) via the
         # codex adapter so Codex gets the directive + .kin guidance at startup.
         session_hooks = data["hooks"]["SessionStart"]

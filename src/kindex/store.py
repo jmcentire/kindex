@@ -127,13 +127,14 @@ class Store:
     human-readable canonical source; the store indexes them.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, *, sqlite_timeout: float = 5.0):
         self.config = config
                 # Support both kindex.db (new) and conv.db (legacy)
         new_db = config.data_path / "kindex.db"
         old_db = config.data_path / "conv.db"
         self.db_path = old_db if old_db.exists() and not new_db.exists() else new_db
         self._conn: sqlite3.Connection | None = None
+        self._sqlite_timeout = max(0.0, float(sqlite_timeout))
         # Profile stamp guard: configs that carry an active_profile (added by
         # the profiles feature) bind this database to that profile name.
         self._expected_profile: str | None = getattr(config, "active_profile", None)
@@ -142,8 +143,12 @@ class Store:
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
             self.config.data_path.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=self._sqlite_timeout,
+            )
             self._conn.row_factory = sqlite3.Row
+            self._conn.execute(f"PRAGMA busy_timeout={int(self._sqlite_timeout * 1000)}")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._init_schema()

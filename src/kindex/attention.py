@@ -9,8 +9,12 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
+import time
+import uuid
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from .agent_adapters import extract_shell_command, extract_tool_call
@@ -22,6 +26,13 @@ if False:  # pragma: no cover - type checking without runtime imports
 
 
 ATTENTION_PURPOSE = "attention"
+ATTENTION_QUEUE_META = "attention.queue"
+ATTENTION_PENDING_META = "attention.pending"
+ATTENTION_INFLIGHT_META = "attention.inflight"
+_ATTENTION_QUEUE_MAX = 50
+_ATTENTION_PENDING_MAX_STALE_TICKS = 3
+_ATTENTION_PENDING_MIN_OVERLAP = 0.18
+_ATTENTION_INFLIGHT_STALE_SECONDS = 60
 _STOP_TRIGGERS = {
     "a", "an", "and", "at", "be", "by", "for", "if", "in", "it", "of", "on",
     "or", "the", "this", "that", "to", "we", "you",
@@ -91,6 +102,45 @@ def _load_state(store: "Store", conversation_id: str) -> dict[str, Any]:
 
 def _save_state(store: "Store", conversation_id: str, state: dict[str, Any]) -> None:
     store.set_meta(_state_key(conversation_id), json.dumps(state, sort_keys=True))
+
+
+def _attention_lock_path(config: Config) -> Path:
+    return config.data_path / "attention.lock"
+
+
+def _acquire_attention_lock(config: Config) -> int | None:
+    """Acquire the short-lived queue lock, or return None if another worker holds it."""
+    try:
+        import fcntl
+
+        path = _attention_lock_path(config)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        return None
+
+
+def _release_attention_lock(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _read_meta_list(store: "Store", key: str) -> list[dict]:
+    try:
+        raw = store.get_meta(key)
+        data = json.loads(raw) if raw else []
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 def set_runtime_enabled(
@@ -376,6 +426,17 @@ def read_hook_payload() -> dict[str, Any]:
 
 def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9][a-z0-9_-]*", text.lower()))
+
+
+def _fingerprint(text: str) -> list[str]:
+    return sorted(token for token in _tokens(text) if len(token) > 3)
+
+
+def _overlap(a: list[str], b: list[str]) -> float:
+    left, right = set(a), set(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
 
 
 def _split_phrases(value: Any) -> list[str]:
@@ -852,17 +913,15 @@ def judge_candidates(
     }
 
 
-def run_attention_check(
+def _prepare_attention_job(
     store: "Store",
     config: Config,
-    ledger: BudgetLedger,
     snippet: str,
     conversation_id: str,
     *,
     force: bool = False,
-    client: Any | None = None,
 ) -> dict:
-    """Run one attention tick and return selected injections plus accounting."""
+    """Advance one attention tick and return a judge-ready job when needed."""
     if not conversation_id:
         return {"status": "missing_conversation_id", "injections": []}
 
@@ -889,38 +948,490 @@ def run_attention_check(
 
     candidates = select_candidates(store, snippet, config, conversation_id=conversation_id)
     candidates = _filter_cooldown(candidates, state, config)
+    _save_state(store, conversation_id, state)
+
+    if not candidates:
+        return {
+            "status": "no_candidates",
+            "injections": [],
+            "candidates": [],
+            "runtime": status,
+            "ticks": state["ticks"],
+        }
+
+    return {
+        "status": "queued",
+        "injections": [],
+        "candidates": [asdict(c) for c in candidates],
+        "runtime": status,
+        "ticks": state["ticks"],
+        "_state": state,
+        "job": {
+            "job_id": uuid.uuid4().hex,
+            "conversation_id": conversation_id,
+            "snippet": snippet[: config.attention.max_context_chars],
+            "fingerprint": _fingerprint(snippet),
+            "candidate_ids": [c.id for c in candidates],
+            "candidates": [asdict(c) for c in candidates],
+            "tick": state["ticks"],
+            "at": _now(),
+            "attempts": 0,
+        },
+    }
+
+
+def _record_attention_delivery(
+    store: "Store",
+    config: Config,
+    conversation_id: str,
+    injections: list[AttentionInjection],
+    *,
+    state: dict[str, Any] | None = None,
+) -> None:
+    if not injections:
+        return
+    state = state or _load_state(store, conversation_id)
+    injected = state.setdefault("injected", {})
+    now = _now()
+    ctx = pheromone_context(config)
+    deposit = state.setdefault("pheromone_deposits", {})
+    for injection in injections:
+        injected[injection.id] = now
+        # Stigmergic trace: the injection itself is the deposit. Lay on both
+        # the coarse global trail and the context-conditioned trail.
+        if config.attention.pheromone_enabled:
+            _deposit_injection_pheromone(store, config, injection.id, ctx)
+            deposit[injection.id] = {"at": now, "context": ctx}
+    state["last_injection_at"] = now
+    _save_state(store, conversation_id, state)
+
+
+def run_attention_check(
+    store: "Store",
+    config: Config,
+    ledger: BudgetLedger,
+    snippet: str,
+    conversation_id: str,
+    *,
+    force: bool = False,
+    client: Any | None = None,
+) -> dict:
+    """Run one attention tick synchronously and return selected injections."""
+    prepared = _prepare_attention_job(
+        store,
+        config,
+        snippet,
+        conversation_id,
+        force=force,
+    )
+    job = prepared.get("job")
+    if not job:
+        prepared.pop("_state", None)
+        return prepared
+
+    candidates = [AttentionCandidate(**item) for item in job["candidates"]]
     injections, judge = judge_candidates(
         config,
         ledger,
-        snippet[: config.attention.max_context_chars],
+        job["snippet"],
         candidates,
         conversation_id,
         client=client,
     )
 
     if injections:
-        injected = state.setdefault("injected", {})
-        now = _now()
-        ctx = pheromone_context(config)
-        deposit = state.setdefault("pheromone_deposits", {})
-        for injection in injections:
-            injected[injection.id] = now
-            # Stigmergic trace: the injection itself is the deposit. Lay on both
-            # the coarse global trail and the context-conditioned trail.
-            if config.attention.pheromone_enabled:
-                _deposit_injection_pheromone(store, config, injection.id, ctx)
-                deposit[injection.id] = {"at": now, "context": ctx}
-        state["last_injection_at"] = now
-    _save_state(store, conversation_id, state)
+        _record_attention_delivery(
+            store,
+            config,
+            conversation_id,
+            injections,
+            state=prepared.get("_state"),
+        )
 
     return {
         "status": judge.get("status", "ok"),
         "injections": [asdict(i) for i in injections],
-        "candidates": [asdict(c) for c in candidates],
+        "candidates": job["candidates"],
         "judge": judge,
-        "runtime": status,
-        "ticks": state["ticks"],
+        "runtime": prepared.get("runtime"),
+        "ticks": prepared.get("ticks", 0),
     }
+
+
+def enqueue_attention_review(
+    store: "Store",
+    config: Config,
+    job: dict[str, Any],
+) -> bool:
+    """Queue a judge-ready attention job. Cheap enough for a hook hot path."""
+    if not job.get("job_id") or not job.get("conversation_id"):
+        return False
+    fd = _acquire_attention_lock(config)
+    if fd is None:
+        return False
+    try:
+        queue = [
+            item for item in _read_meta_list(store, ATTENTION_QUEUE_META)
+            if item.get("job_id") != job["job_id"]
+        ]
+        queue.append(job)
+        store.set_meta(ATTENTION_QUEUE_META, json.dumps(queue[-_ATTENTION_QUEUE_MAX:]))
+        return True
+    except Exception:
+        return False
+    finally:
+        _release_attention_lock(fd)
+
+
+def _parse_at(value: str | None) -> _dt.datetime | None:
+    if not value:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _claim_attention_jobs(
+    store: "Store",
+    config: Config,
+    *,
+    max_jobs: int,
+) -> list[dict]:
+    fd = _acquire_attention_lock(config)
+    if fd is None:
+        return []
+    try:
+        now = _dt.datetime.now()
+        queue = _read_meta_list(store, ATTENTION_QUEUE_META)
+        inflight = _read_meta_list(store, ATTENTION_INFLIGHT_META)
+        reclaimed: list[dict] = []
+        kept_inflight: list[dict] = []
+        for job in inflight:
+            claimed_at = _parse_at(job.get("claimed_at"))
+            if claimed_at and (now - claimed_at).total_seconds() > _ATTENTION_INFLIGHT_STALE_SECONDS:
+                job.pop("claimed_at", None)
+                reclaimed.append(job)
+            else:
+                kept_inflight.append(job)
+
+        queue = reclaimed + queue
+        claimed = queue[:max_jobs]
+        remaining = queue[max_jobs:]
+        for job in claimed:
+            job["claimed_at"] = _now()
+            job["attempts"] = int(job.get("attempts", 0) or 0) + 1
+
+        store.set_meta(ATTENTION_QUEUE_META, json.dumps(remaining[-_ATTENTION_QUEUE_MAX:]))
+        store.set_meta(
+            ATTENTION_INFLIGHT_META,
+            json.dumps((kept_inflight + claimed)[-_ATTENTION_QUEUE_MAX:]),
+        )
+        return claimed
+    except Exception:
+        return []
+    finally:
+        _release_attention_lock(fd)
+
+
+def _finish_attention_job(
+    store: "Store",
+    config: Config,
+    job: dict,
+    *,
+    injections: list[AttentionInjection] | None = None,
+    retry: bool = False,
+) -> None:
+    fd = _acquire_attention_lock(config)
+    if fd is None:
+        return
+    try:
+        job_id = job.get("job_id")
+        conversation_id = job.get("conversation_id")
+        inflight = [
+            item for item in _read_meta_list(store, ATTENTION_INFLIGHT_META)
+            if item.get("job_id") != job_id
+        ]
+        queue = _read_meta_list(store, ATTENTION_QUEUE_META)
+        if retry:
+            retry_job = dict(job)
+            retry_job.pop("claimed_at", None)
+            queue.append(retry_job)
+        pending = _read_meta_list(store, ATTENTION_PENDING_META)
+        if injections and conversation_id:
+            tick = int(job.get("tick", 0) or 0)
+            has_newer = any(
+                item.get("conversation_id") == conversation_id
+                and int(item.get("tick", 0) or 0) > tick
+                for item in pending
+            )
+            if not has_newer:
+                pending = [
+                    item for item in pending
+                    if item.get("conversation_id") != conversation_id
+                    or int(item.get("tick", 0) or 0) > tick
+                ]
+                pending.append({
+                    "job_id": job_id,
+                    "conversation_id": conversation_id,
+                    "fingerprint": job.get("fingerprint") or [],
+                    "candidate_ids": job.get("candidate_ids") or [],
+                    "tick": tick,
+                    "at": _now(),
+                    "injections": [asdict(item) for item in injections],
+                })
+        store.set_meta(ATTENTION_QUEUE_META, json.dumps(queue[-_ATTENTION_QUEUE_MAX:]))
+        store.set_meta(ATTENTION_INFLIGHT_META, json.dumps(inflight[-_ATTENTION_QUEUE_MAX:]))
+        store.set_meta(ATTENTION_PENDING_META, json.dumps(pending[-_ATTENTION_QUEUE_MAX:]))
+    except Exception:
+        pass
+    finally:
+        _release_attention_lock(fd)
+
+
+def drain_attention_queue(
+    store: "Store",
+    config: Config,
+    *,
+    client: Any | None = None,
+    ledger: BudgetLedger | None = None,
+    max_jobs: int = 5,
+) -> dict:
+    """Judge queued attention jobs off the hook critical path."""
+    jobs = _claim_attention_jobs(store, config, max_jobs=max_jobs)
+    if not jobs:
+        return {"status": "empty", "reviewed": 0, "flagged": 0, "pending": 0}
+
+    ledger = ledger or BudgetLedger(config.ledger_path, config.budget)
+    reviewed = 0
+    flagged = 0
+    for job in jobs:
+        try:
+            prepared = _prepare_attention_job(
+                store,
+                config,
+                str(job.get("snippet") or ""),
+                str(job.get("conversation_id") or ""),
+                force=bool(job.get("force", False)),
+            )
+            judge_job = prepared.get("job") or {}
+            if not judge_job:
+                _finish_attention_job(store, config, job)
+                reviewed += 1
+                continue
+            judge_job["job_id"] = job.get("job_id") or judge_job.get("job_id")
+            judge_job["attempts"] = int(job.get("attempts", 0) or 0)
+            judge_job["at"] = job.get("at") or judge_job.get("at")
+            judge_job["force"] = bool(job.get("force", False))
+            candidates = [AttentionCandidate(**item) for item in judge_job.get("candidates") or []]
+            injections, judge = judge_candidates(
+                config,
+                ledger,
+                str(judge_job.get("snippet") or "")[: config.attention.max_context_chars],
+                candidates,
+                str(judge_job.get("conversation_id") or ""),
+                client=client,
+            )
+            status = judge.get("status", "")
+            retry = status in {
+                "over_global_budget",
+                "llm_unavailable",
+                "estimate_exceeds_check_budget",
+                "estimate_exceeds_conversation_budget",
+                "llm_error",
+            } and int(job.get("attempts", 0) or 0) < 2
+            _finish_attention_job(
+                store,
+                config,
+                judge_job,
+                injections=injections,
+                retry=retry,
+            )
+            if not retry:
+                reviewed += 1
+            if injections:
+                flagged += 1
+        except Exception:
+            _finish_attention_job(
+                store,
+                config,
+                job,
+                retry=int(job.get("attempts", 0) or 0) < 2,
+            )
+
+    pending = len(_read_meta_list(store, ATTENTION_PENDING_META))
+    return {"status": "ok", "reviewed": reviewed, "flagged": flagged, "pending": pending}
+
+
+def spawn_background_attention_drain(config: Config) -> bool:
+    """Fire-and-forget an attention drain so hooks only wait for fast results."""
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "kindex.cli",
+                "attention",
+                "drain",
+                "--data-dir",
+                str(config.data_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env={**os.environ},
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _pending_attention_is_relevant(
+    store: "Store",
+    config: Config,
+    pending: dict,
+    current_snippet: str,
+) -> bool:
+    if not current_snippet.strip():
+        return False
+    fingerprint = pending.get("fingerprint") or []
+    if _overlap(fingerprint, _fingerprint(current_snippet)) >= _ATTENTION_PENDING_MIN_OVERLAP:
+        return True
+    try:
+        current = select_candidates(
+            store,
+            current_snippet,
+            config,
+            conversation_id=str(pending.get("conversation_id") or ""),
+        )
+    except Exception:
+        return False
+    current_ids = {candidate.id for candidate in current}
+    return bool(current_ids & set(pending.get("candidate_ids") or []))
+
+
+def pop_pending_attention_injections(
+    store: "Store",
+    config: Config,
+    conversation_id: str,
+    current_snippet: str,
+    *,
+    tick: int,
+    job_id: str = "",
+) -> list[AttentionInjection]:
+    """Pick up a fresh pending injection for this conversation, if relevant."""
+    if not conversation_id:
+        return []
+    fd = _acquire_attention_lock(config)
+    if fd is None:
+        return []
+    try:
+        pending = _read_meta_list(store, ATTENTION_PENDING_META)
+        keep: list[dict] = []
+        chosen: dict | None = None
+        for item in pending:
+            if item.get("conversation_id") != conversation_id:
+                keep.append(item)
+                continue
+            age = tick - int(item.get("tick", tick) or tick)
+            if age > _ATTENTION_PENDING_MAX_STALE_TICKS:
+                continue
+            if job_id and item.get("job_id") == job_id:
+                chosen = item
+                continue
+            if not job_id and _pending_attention_is_relevant(
+                store,
+                config,
+                item,
+                current_snippet,
+            ):
+                chosen = item
+                continue
+            keep.append(item)
+        if chosen or len(keep) != len(pending):
+            store.set_meta(ATTENTION_PENDING_META, json.dumps(keep[-_ATTENTION_QUEUE_MAX:]))
+        if not chosen:
+            return []
+        return [
+            AttentionInjection(**item)
+            for item in chosen.get("injections") or []
+            if isinstance(item, dict)
+        ]
+    except Exception:
+        return []
+    finally:
+        _release_attention_lock(fd)
+
+
+def prepare_async_attention_review(
+    store: "Store",
+    config: Config,
+    snippet: str,
+    conversation_id: str,
+    *,
+    force: bool = False,
+) -> dict:
+    """Queue raw hook context; the responder does selection + LLM arbitration."""
+    if not conversation_id:
+        return {"status": "missing_conversation_id", "injections": []}
+    status = runtime_status(store, config, conversation_id)
+    if not status["enabled"]:
+        return {"status": "disabled", "injections": [], "runtime": status}
+    if not status["llm_configured"]:
+        return {"status": "llm_not_configured", "injections": [], "runtime": status}
+    job = {
+        "job_id": uuid.uuid4().hex,
+        "conversation_id": conversation_id,
+        "snippet": snippet[: config.attention.max_context_chars],
+        "force": force,
+        "at": _now(),
+        "attempts": 0,
+    }
+    if not enqueue_attention_review(store, config, job):
+        return {
+            "status": "queue_unavailable",
+            "injections": [],
+            "runtime": status,
+            "ticks": int(_load_state(store, conversation_id).get("ticks", 0)),
+        }
+    spawn_background_attention_drain(config)
+    return {
+        "status": "queued",
+        "injections": [],
+        "runtime": status,
+        "ticks": int(_load_state(store, conversation_id).get("ticks", 0)),
+        "job": job,
+    }
+
+
+def wait_for_pending_attention(
+    store: "Store",
+    config: Config,
+    conversation_id: str,
+    snippet: str,
+    *,
+    tick: int,
+    job_id: str,
+    deadline: float,
+) -> list[AttentionInjection]:
+    """Poll briefly for the current job's result; return empty at deadline."""
+    while time.monotonic() < deadline:
+        injections = pop_pending_attention_injections(
+            store,
+            config,
+            conversation_id,
+            snippet,
+            tick=tick,
+            job_id=job_id,
+        )
+        if injections:
+            return injections
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+    return []
 
 
 def format_attention_injections(result: dict, display: str = "full") -> list[str]:

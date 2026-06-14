@@ -62,6 +62,12 @@ def _store(args):
     return Store(_config(args))
 
 
+def _hook_store(args, cfg=None):
+    """Open the graph with a short SQLite busy timeout for hook hot paths."""
+    from .store import Store
+    return Store(cfg or _config(args), sqlite_timeout=0.25)
+
+
 def _ledger(args):
     from .budget import BudgetLedger
     cfg = _config(args)
@@ -3964,8 +3970,11 @@ def cmd_prompt_check(args):
     attention_lines: list[str] = []
     try:
         from .attention import (
+            _load_state,
+            _record_attention_delivery,
             extract_conversation_text,
             format_attention_injections,
+            pop_pending_attention_injections,
             read_hook_payload,
             resolve_conversation_id,
             run_attention_check,
@@ -3999,6 +4008,28 @@ def cmd_prompt_check(args):
             fallback_to_cwd=False,
         )
         if conversation_text and conversation_id:
+            pending = pop_pending_attention_injections(
+                store,
+                cfg,
+                conversation_id,
+                conversation_text,
+                tick=int(_load_state(store, conversation_id).get("ticks", 0)),
+            )
+            if pending:
+                _record_attention_delivery(store, cfg, conversation_id, pending)
+                attention_lines.extend(format_attention_injections(
+                    {"injections": [
+                        {
+                            "id": item.id,
+                            "title": item.title,
+                            "message": item.message,
+                            "reason": item.reason,
+                            "confidence": item.confidence,
+                        }
+                        for item in pending
+                    ]},
+                    display=cfg.attention.display,
+                ))
             ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
             attention_result = run_attention_check(
                 store,
@@ -4181,6 +4212,8 @@ def cmd_prompt_check(args):
 
 def cmd_attention_hook(args):
     """Advisory attention hook for tool/action boundaries."""
+    import time
+
     from .agent_adapters import (
         antigravity_allow,
         normalize_adapter,
@@ -4191,11 +4224,14 @@ def cmd_attention_hook(args):
         extract_conversation_text,
         format_attention_injections,
         is_background_action,
+        pop_pending_attention_injections,
+        prepare_async_attention_review,
         read_hook_payload,
+        _record_attention_delivery,
+        _load_state,
         resolve_conversation_id,
-        run_attention_check,
+        wait_for_pending_attention,
     )
-    from .budget import BudgetLedger
 
     payload = read_hook_payload()
     event = str(
@@ -4219,51 +4255,107 @@ def cmd_attention_hook(args):
         allow_if_needed()
         return
 
-    store = _store(args)
-    cfg = _config(args)
-    agent_instance = resolve_agent_instance_key(
-        adapter,
-        getattr(args, "agent_instance", None),
-        payload,
-    )
-    cfg = apply_agent_overrides(cfg, client=adapter, instance_key=agent_instance)
+    deadline_ms = max(0, int(getattr(args, "deadline_ms", 3500) or 3500))
+    deadline = time.monotonic() + (deadline_ms / 1000.0)
+    store = None
+    try:
+        cfg = _config(args)
+        store = _hook_store(args, cfg)
+        agent_instance = resolve_agent_instance_key(
+            adapter,
+            getattr(args, "agent_instance", None),
+            payload,
+        )
+        cfg = apply_agent_overrides(cfg, client=adapter, instance_key=agent_instance)
 
-    # Ignore Kindex's own noise and local/background tool calls — attention should
-    # only weigh in on the agent's outward-facing or irreversible actions.
-    if not getattr(args, "force", False) and is_background_action(payload, cfg):
-        store.close()
-        allow_if_needed()
-        return
-    conversation_id = resolve_conversation_id(
-        getattr(args, "conversation_id", None),
-        payload,
-        fallback_to_cwd=False,
-    )
-    if not conversation_id:
-        store.close()
-        allow_if_needed()
-        return
-    result = run_attention_check(
-        store,
-        cfg,
-        BudgetLedger(cfg.ledger_path, cfg.budget),
-        text,
-        conversation_id,
-        force=getattr(args, "force", False),
-    )
-    store.close()
+        # Ignore Kindex's own noise and local/background tool calls — attention
+        # should only weigh in on outward-facing or irreversible actions.
+        if not getattr(args, "force", False) and is_background_action(payload, cfg):
+            allow_if_needed()
+            return
+        conversation_id = resolve_conversation_id(
+            getattr(args, "conversation_id", None),
+            payload,
+            fallback_to_cwd=False,
+        )
+        if not conversation_id:
+            allow_if_needed()
+            return
 
-    lines = format_attention_injections(result)
-    if not lines:
+        delivered = pop_pending_attention_injections(
+            store,
+            cfg,
+            conversation_id,
+            text,
+            tick=int(_load_state(store, conversation_id).get("ticks", 0)),
+        )
+        if delivered:
+            _record_attention_delivery(store, cfg, conversation_id, delivered)
+
+        prepared = prepare_async_attention_review(
+            store,
+            cfg,
+            text,
+            conversation_id,
+            force=getattr(args, "force", False),
+        )
+        job = prepared.get("job") or {}
+        if job and time.monotonic() < deadline:
+            immediate = wait_for_pending_attention(
+                store,
+                cfg,
+                conversation_id,
+                text,
+                tick=int(prepared.get("ticks", 0) or 0),
+                job_id=str(job.get("job_id") or ""),
+                deadline=deadline,
+            )
+            if immediate:
+                _record_attention_delivery(store, cfg, conversation_id, immediate)
+                delivered.extend(immediate)
+
+        deduped: list = []
+        seen = set()
+        for injection in delivered:
+            key = (injection.id, injection.message)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(injection)
+        if not deduped:
+            allow_if_needed()
+            return
+
+        result = {"injections": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "message": item.message,
+                "reason": item.reason,
+                "confidence": item.confidence,
+            }
+            for item in deduped
+        ]}
+        lines = format_attention_injections(result, display=cfg.attention.display)
+        if not lines:
+            allow_if_needed()
+            return
+        rendered = _hook_context_output(
+            "\n".join(lines),
+            adapter=adapter,
+            event=event,
+            suppress=str(getattr(cfg.attention, "display", "full")).lower() == "quiet",
+        )
+        if rendered:
+            print(rendered)
+    except Exception:
         allow_if_needed()
-        return
-    rendered = _hook_context_output(
-        "\n".join(lines),
-        adapter=adapter,
-        event=event,
-    )
-    if rendered:
-        print(rendered)
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
 
 
 def cmd_sim(args):
@@ -4359,6 +4451,7 @@ def cmd_attention(args):
 
     from .attention import (
         clear_runtime_enabled,
+        drain_attention_queue,
         extract_conversation_text,
         estimate_message_window,
         format_attention_injections,
@@ -4388,6 +4481,12 @@ def cmd_attention(args):
         clear_runtime_enabled(store, conversation_id=conversation_id)
         scope = f"conversation {conversation_id}" if conversation_id else "global runtime"
         print(f"Attention override cleared ({scope}).")
+        store.close()
+        return
+
+    if action == "drain":
+        result = drain_attention_queue(store, cfg)
+        print(_dumps(result, indent=2))
         store.close()
         return
 
@@ -5886,8 +5985,8 @@ def build_parser() -> argparse.ArgumentParser:
     # attention
     s = sub.add_parser("attention", help="Conversation-attention runtime controls")
     s.add_argument("attention_action", nargs="?", default="status",
-                   choices=["status", "on", "off", "inherit", "check", "budget", "estimate", "reinforce"],
-                   help="Action: status, on, off, inherit, check, budget, estimate, reinforce")
+                   choices=["status", "on", "off", "inherit", "check", "drain", "budget", "estimate", "reinforce"],
+                   help="Action: status, on, off, inherit, check, drain, budget, estimate, reinforce")
     s.add_argument("--conversation-id", help="Conversation/session id for per-conversation state")
     s.add_argument("--text", help="Conversation snippet for manual check")
     s.add_argument("--force", action="store_true", help="Run check regardless of tick interval")
@@ -6164,6 +6263,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--conversation-id", help="Conversation/session id for attention budgets")
     s.add_argument("--agent-instance", help="Agent instance/conversation override key")
     s.add_argument("--force", action="store_true", help="Run attention regardless of tick interval")
+    s.add_argument("--deadline-ms", type=int, default=3500,
+                   help="Internal hook deadline; return empty if no result arrives in time")
     _common(s)
     s.set_defaults(func=cmd_attention_hook)
 

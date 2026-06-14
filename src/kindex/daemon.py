@@ -92,6 +92,17 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     except Exception:
         results["sim_reviewed"] = 0
 
+    # Drain queued attention reviews. Hook-time attention only waits for a fast
+    # result; slower LLM arbitration lands here for later prompt pickup.
+    try:
+        from .attention import drain_attention_queue
+        attention_drained = drain_attention_queue(store, config)
+        results["attention_reviewed"] = attention_drained.get("reviewed", 0)
+        results["attention_flagged"] = attention_drained.get("flagged", 0)
+        results["attention_pending"] = attention_drained.get("pending", 0)
+    except Exception:
+        results["attention_reviewed"] = 0
+
     # 5. Run doctor checks
     if verbose:
         print("Running health checks...")

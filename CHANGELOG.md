@@ -2,6 +2,13 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.3] - 2026-06-14
+
+### Fixed
+- Attention hooks now return within a bounded internal deadline instead of consuming Codex's 5-second hook timeout while waiting on LLM arbitration.
+- Slow attention reviews are queued asynchronously and injected later only when the result remains relevant to the conversation.
+- Hook setup now migrates attention commands to `--deadline-ms 3500`, leaving room inside the host hook timeout for process and SQLite overhead.
+
 ## [0.25.2] - 2026-06-13
 
 ### Fixed
