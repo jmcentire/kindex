@@ -158,24 +158,36 @@ class TestEditReembed:
         )
         return calls
 
+    def _drain(self, store):
+        from kindex.vectors import drain_embedding_queue
+        return drain_embedding_queue(store)
+
     def test_reembed_on_content_change(self, store, embed_calls):
         nid = store.add_node("Title", content="body", node_type="concept")
-        embed_calls.clear()  # ignore the add_node embed
+        self._drain(store)        # flush the add_node enqueue
+        embed_calls.clear()
         store.edit_node(nid, content="new body")
+        # Embedding is deferred — nothing runs until the daemon drains the queue.
+        assert embed_calls == []
+        self._drain(store)
         assert embed_calls == [(nid, "Title new body")]
 
     def test_reembed_on_append(self, store, embed_calls):
         nid = store.add_node("D", content="base", node_type="decision")
+        self._drain(store)
         embed_calls.clear()
         store.edit_node(nid, append="addendum text")
+        self._drain(store)
         assert len(embed_calls) == 1
         assert embed_calls[0][0] == nid
         assert "addendum text" in embed_calls[0][1]
 
     def test_no_reembed_on_tag_only_change(self, store, embed_calls):
         nid = store.add_node("Tagged", node_type="concept")
+        self._drain(store)
         embed_calls.clear()
         store.edit_node(nid, add_tags=["new-tag"])
+        self._drain(store)
         assert embed_calls == []
 
     def test_embed_failure_does_not_break_edit(self, store, monkeypatch):
@@ -189,6 +201,8 @@ class TestEditReembed:
         nid = store.add_node("Robust", content="a", node_type="concept")
         node = store.edit_node(nid, content="b")
         assert node["content"] == "b"
+        # A provider that raises during the deferred drain must not propagate.
+        vectors.drain_embedding_queue(store)
 
 
 # ── Reserved extra keys ────────────────────────────────────────────────

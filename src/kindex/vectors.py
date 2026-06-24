@@ -288,6 +288,91 @@ def upsert_embedding(store: Store, node_id: str, text: str) -> bool:
         return False
 
 
+EMBED_QUEUE_META = "embed.queue"
+
+
+def enqueue_embedding(store: Store, node_id: str, *, max_queue: int = 2000) -> bool:
+    """Queue a node for (re)embedding by the daemon. Cheap: one small SQLite
+    write, no model load, no network — safe on the add/edit/supersede hot path.
+
+    Deferring keeps a slow embedding provider (a remote API can stall up to its
+    HTTP timeout per call) off the agent's critical path. The daemon drains the
+    queue in cron via ``drain_embedding_queue``. Deduped by node_id; FIFO.
+    """
+    if not node_id:
+        return False
+    try:
+        raw = store.get_meta(EMBED_QUEUE_META)
+        queue = json.loads(raw) if raw else []
+        if not isinstance(queue, list):
+            queue = []
+    except Exception:
+        queue = []
+    # Dedup and move to the tail so the newest edit wins ordering.
+    queue = [n for n in queue if n != node_id]
+    queue.append(node_id)
+    try:
+        store.set_meta(EMBED_QUEUE_META, json.dumps(queue[-max_queue:]))
+        return True
+    except Exception:
+        return False
+
+
+def drain_embedding_queue(store: Store, config: Config | None = None, *,
+                          max_jobs: int = 200) -> dict:
+    """Embed queued nodes. This is where the (possibly networked) embedding cost
+    lives — runs in cron, off the agent's path. Idempotent per node.
+
+    Each node is re-fetched fresh so the embedding reflects its current text.
+    Bounded to ``max_jobs`` attempts per drain; unattempted nodes and transient
+    failures are carried to the next cron (failures re-queued at the tail so a
+    persistently failing node can't starve newer ones).
+    """
+    try:
+        raw = store.get_meta(EMBED_QUEUE_META)
+        queue = json.loads(raw) if raw else []
+        if not isinstance(queue, list):
+            queue = []
+    except Exception:
+        queue = []
+    if not queue:
+        return {"status": "empty", "embedded": 0, "pending": 0}
+    if not is_available():
+        # Backend not installed/usable; leave the (bounded) queue intact in case
+        # it becomes available later.
+        return {"status": "unavailable", "embedded": 0, "pending": len(queue)}
+
+    # De-dup preserving order; drop falsy ids.
+    deduped = list(dict.fromkeys(n for n in queue if n))
+    remaining: list[str] = []
+    embedded = 0
+    attempts = 0
+    for i, node_id in enumerate(deduped):
+        if attempts >= max_jobs:
+            remaining.extend(deduped[i:])  # carry the rest to the next cron
+            break
+        node = store.get_node(node_id)
+        if not node or node.get("status") == "superseded":
+            continue  # node is gone — drop from the queue
+        text = f"{node.get('title') or ''} {node.get('content') or ''}".strip()
+        if not text:
+            continue  # nothing to embed — drop
+        attempts += 1
+        try:
+            ok = upsert_embedding(store, node_id, text)
+        except Exception:
+            ok = False  # provider raised — treat as transient
+        if ok:
+            embedded += 1
+        else:
+            remaining.append(node_id)  # transient (e.g. provider down) — retry
+    try:
+        store.set_meta(EMBED_QUEUE_META, json.dumps(remaining))
+    except Exception:
+        pass
+    return {"status": "ok", "embedded": embedded, "pending": len(remaining)}
+
+
 def delete_embedding(store: Store, node_id: str) -> bool:
     """Remove a node's stored embedding (best-effort).
 
