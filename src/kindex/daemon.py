@@ -103,6 +103,19 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     except Exception:
         results["attention_reviewed"] = 0
 
+    # Drain queued node embeddings. Enqueued cheaply on the add/edit/supersede
+    # hot path; the (possibly networked) embedding cost runs here, off the
+    # agent's critical path.
+    try:
+        from .vectors import drain_embedding_queue
+        if verbose:
+            print("Embedding queued nodes...")
+        embed_drained = drain_embedding_queue(store, config)
+        results["embedded"] = embed_drained.get("embedded", 0)
+        results["embed_pending"] = embed_drained.get("pending", 0)
+    except Exception:
+        results["embedded"] = 0
+
     # 5. Run doctor checks
     if verbose:
         print("Running health checks...")

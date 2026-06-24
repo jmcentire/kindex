@@ -586,15 +586,13 @@ class Store:
                                   provenance="auto-linked from prov_who",
                                   bidirectional=False)
 
-        # Auto-embed for vector search (best-effort, no failure propagation)
+        # Queue for vector embedding — deferred to the daemon so a slow
+        # embedding provider never stalls the add hot path (best-effort).
         try:
-            from .vectors import is_available, upsert_embedding
-            if is_available():
-                embed_text = f"{title} {content}".strip()
-                if embed_text:
-                    upsert_embedding(self, nid, embed_text)
+            from .vectors import enqueue_embedding
+            enqueue_embedding(self, nid)
         except Exception:
-            pass  # vectors not installed or embed failed — node still created
+            pass  # vectors not installed — node still created
 
         return nid
 
@@ -913,15 +911,14 @@ class Store:
             self._log("edit_node", node_id, updates.get("title", old_title),
                       actor or "", {"diffs": diffs, "type": node_type})
             if "title" in updates or "content" in updates:
-                # Re-embed for vector search (best-effort, like add_node)
+                # Queue re-embedding — deferred to the daemon so a slow
+                # embedding provider never stalls the edit hot path
+                # (best-effort, like add_node).
                 try:
-                    from .vectors import is_available, upsert_embedding
-                    if is_available():
-                        embed_text = f"{new_title} {new_content}".strip()
-                        if embed_text:
-                            upsert_embedding(self, node_id, embed_text)
+                    from .vectors import enqueue_embedding
+                    enqueue_embedding(self, node_id)
                 except Exception:
-                    pass  # vectors not installed or embed failed — edit persisted
+                    pass  # vectors not installed — edit persisted
 
         return self.get_node(node_id)
 
@@ -1057,15 +1054,13 @@ class Store:
         except Exception:
             pass
 
-        # Embed the replacement for vector search (best-effort, like add_node)
+        # Queue the replacement for embedding — deferred to the daemon
+        # (best-effort, like add_node).
         try:
-            from .vectors import is_available, upsert_embedding
-            if is_available():
-                embed_text = f"{title} {text}".strip()
-                if embed_text:
-                    upsert_embedding(self, new_id, embed_text)
+            from .vectors import enqueue_embedding
+            enqueue_embedding(self, new_id)
         except Exception:
-            pass  # vectors not installed or embed failed — node still created
+            pass  # vectors not installed — node still created
 
         return self.get_node(new_id)
 
