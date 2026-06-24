@@ -169,6 +169,32 @@ class TestMCPLearn:
                        "This connects to our Distributed Systems architecture.")
         assert "Extracted" in result
 
+    def test_learn_creates_no_orphans(self, patch_store):
+        """Regression: mcp-learn must not create unlinked title-only concepts.
+
+        Every concept the extractor surfaces with real content gets grounded to
+        a source node, so the orphan count must not grow after a learn() call.
+        """
+        from kindex.mcp_server import learn
+        store, _ = patch_store
+        before = len(store.orphans())
+        learn("We discovered that the cache layer leaks memory under load. "
+              "This relates to our Distributed Systems architecture and the "
+              "garbage collection tuning we did last quarter.")
+        after = len(store.orphans())
+        assert after <= before, f"learn() created orphans: {before} -> {after}"
+
+    def test_learn_rejects_low_information_concepts(self, patch_store):
+        """Title-only concepts (no content, no domains) must be rejected."""
+        from kindex.mcp_server import _is_substantive_concept
+        assert not _is_substantive_concept({"title": "Distributed Systems"})
+        assert not _is_substantive_concept({"title": "Distributed Systems",
+                                            "content": "", "domains": []})
+        assert not _is_substantive_concept({"title": "x", "content": "real"})
+        assert _is_substantive_concept({"title": "Cache leak",
+                                        "content": "leaks under load"})
+        assert _is_substantive_concept({"title": "Cache leak", "domains": ["perf"]})
+
 
 class TestMCPGraphStats:
     def test_graph_stats(self, patch_store):

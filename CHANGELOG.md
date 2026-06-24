@@ -2,6 +2,12 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.4] - 2026-06-23
+
+### Fixed
+- `learn` (MCP) no longer creates unlinked, title-only concept nodes that inflated the orphan count. The keyword-extraction fallback emits content-less concepts whose connections never resolve to edges; these accumulated as orphans on repeated ingestion. `learn` now rejects low-information concepts (no content and no domains) and grounds every surviving concept to a freshly created source node via `context_of` edges, so extracted concepts can never orphan.
+- Flaky test `test_capture_session_end_with_existing_nodes` is now deterministic — it mocks extraction to exercise the dedup path instead of depending on live LLM output.
+
 ## [0.25.3] - 2026-06-14
 
 ### Fixed

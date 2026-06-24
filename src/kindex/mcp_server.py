@@ -621,6 +621,23 @@ def suggest(limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+def _is_substantive_concept(concept: dict) -> bool:
+    """Reject empty or title-only extraction results.
+
+    The keyword-extraction fallback emits bare capitalized phrases / quoted
+    terms with no content and no domains. Historically these were created as
+    title-only concept nodes that linked to nothing and steadily inflated the
+    orphan count (the mcp-learn orphan bug). A concept is only worth a node if
+    it carries some information beyond a short title.
+    """
+    title = (concept.get("title") or "").strip()
+    if len(title) < 3:
+        return False
+    content = (concept.get("content") or "").strip()
+    domains = concept.get("domains") or []
+    return bool(content) or bool(domains)
+
+
 @mcp.tool()
 def learn(text: str) -> str:
     """Extract knowledge from text and add it to the graph.
@@ -630,7 +647,8 @@ def learn(text: str) -> str:
     for automatic concept extraction and linking.
 
     Analyzes the text for concepts, decisions, questions, and connections.
-    Creates nodes and links automatically.
+    Creates nodes and links automatically. Every extracted concept is grounded
+    to a source node so it can never orphan.
 
     Args:
         text: Text to extract knowledge from (session notes, documentation, etc.).
@@ -644,21 +662,51 @@ def learn(text: str) -> str:
 
     extraction = extract(text, existing, config, ledger)
 
-    created = 0
     linked = 0
 
-    for concept in extraction.get("concepts", [])[:10]:
+    # Reject low-information / empty extraction results before creating nodes.
+    concepts = [c for c in extraction.get("concepts", [])[:10]
+                if _is_substantive_concept(c)]
+    rejected = len(extraction.get("concepts", [])[:10]) - len(concepts)
+
+    created_ids: list[str] = []
+    grounded_ids: list[str] = []  # created + matched-existing, all linked to source
+
+    for concept in concepts:
         existing_node = store.get_node_by_title(concept["title"])
         if existing_node:
+            grounded_ids.append(existing_node["id"])
             continue
-        store.add_node(
+        nid = store.add_node(
             title=concept["title"],
             content=concept.get("content", ""),
             node_type=concept.get("type", "concept"),
             domains=concept.get("domains", []),
             prov_activity="mcp-learn",
         )
-        created += 1
+        created_ids.append(nid)
+        grounded_ids.append(nid)
+
+    created = len(created_ids)
+
+    # Ground every concept to a source node so newly created concepts never
+    # orphan, even when no connections are extracted. This is the structural
+    # fix for the mcp-learn orphan bug: provenance lives in the graph, not just
+    # in prov_activity.
+    if created_ids:
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        source_id = store.add_node(
+            title=f"Learned: {first_line[:72]}" if first_line else "Learned note",
+            content=text.strip()[:500],
+            node_type="document",
+            prov_activity="mcp-learn-source",
+            prov_why="source text passed to learn()",
+        )
+        for cid in grounded_ids:
+            store.add_edge(source_id, cid,
+                           edge_type="context_of",
+                           weight=0.4,
+                           provenance="extracted via learn()")
 
     for conn in extraction.get("connections", []):
         a = store.get_node_by_title(conn.get("from_title", ""))
@@ -684,6 +732,8 @@ def learn(text: str) -> str:
         )
 
     parts = [f"Extracted: {created} concept(s), {linked} link(s)"]
+    if rejected:
+        parts.append(f"{rejected} low-info concept(s) rejected")
     if decisions:
         parts.append(f"{len(decisions)} decision(s)")
     if questions:

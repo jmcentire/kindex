@@ -123,13 +123,35 @@ class TestCaptureSessionEnd:
         count = capture_session_end(store, config, ledger, session_text="hello")
         assert count == 0
 
-    def test_capture_session_end_with_existing_nodes(self, store, config, ledger):
-        """Should link to existing nodes rather than duplicate."""
+    def test_capture_session_end_with_existing_nodes(self, store, config, ledger, monkeypatch):
+        """Should link to existing nodes rather than duplicate.
+
+        Extraction is mocked to deterministically return a concept whose title
+        exactly matches the pre-existing node. A live LLM would return arbitrary
+        title variants ("GNNs", "Graph Neural Networks (GNN)"), making the
+        dedup-vs-duplicate outcome nondeterministic — this test exercises the
+        dedup logic, not the extractor.
+        """
+        import kindex.extract as extract_mod
         from kindex.hooks import capture_session_end
 
         # Pre-populate store
         store.add_node("Graph Neural Networks", content="ML on graphs",
                         node_type="concept", node_id="gnn")
+
+        def fake_extract(text, existing_titles, cfg, led):
+            return {
+                "concepts": [
+                    {"title": "Graph Neural Networks", "content": "ML on graphs",
+                     "domains": [], "type": "concept"},
+                    {"title": "Bridge Pattern", "content": "connects domains",
+                     "domains": [], "type": "concept"},
+                ],
+                "decisions": [], "questions": [],
+                "connections": [], "bridge_opportunities": [],
+            }
+
+        monkeypatch.setattr(extract_mod, "extract", fake_extract)
 
         session_text = (
             "We explored how Graph Neural Networks can improve knowledge graph completion. "
@@ -137,7 +159,7 @@ class TestCaptureSessionEnd:
             "We decided to use a message passing approach because it handles heterogeneous graphs."
         )
 
-        count = capture_session_end(store, config, ledger, session_text=session_text)
+        capture_session_end(store, config, ledger, session_text=session_text)
 
         # The pre-existing "Graph Neural Networks" should not be duplicated
         gnn_nodes = [n for n in store.all_nodes() if "graph neural" in n["title"].lower()]
