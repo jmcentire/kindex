@@ -34,6 +34,47 @@ def populated_store(tmp_path):
     s.close()
 
 
+class TestOperationalScoping:
+    def test_format_context_block_scopes_operational_by_adapter(self, tmp_path):
+        cfg = Config(data_dir=str(tmp_path))
+        store = Store(cfg)
+        store.add_node("Stigmergy", content="Coordination through environmental traces",
+                       node_id="stig", domains=["systems"], weight=1.0)
+        # An Antigravity-scoped constraint — an operational node that _append_operational
+        # always renders in the full/abridged tiers, regardless of the search results.
+        store.add_node(
+            "Antigravity hook must return decision JSON",
+            node_type="constraint",
+            node_id="ag-con",
+            content="Antigravity PreToolUse stdout must be decision JSON.",
+            domains=["antigravity"],
+            extra={"action": "warn"},
+        )
+        results = hybrid_search(store, "stigmergy", top_k=5)
+        marker = "Antigravity hook must return decision JSON"
+
+        # No adapter: every operational node surfaces (human-facing kin context).
+        assert marker in format_context_block(store, results, query="stigmergy", level="full")
+        # Claude / Codex: the Antigravity-scoped constraint is dropped.
+        assert marker not in format_context_block(
+            store, results, query="stigmergy", level="full", adapter="claude")
+        assert marker not in format_context_block(
+            store, results, query="stigmergy", level="abridged", adapter="codex")
+        # Antigravity itself still sees it.
+        assert marker in format_context_block(
+            store, results, query="stigmergy", level="full", adapter="antigravity")
+        store.close()
+
+    def test_mcp_scope_results_filters_foreign_client(self):
+        from kindex.mcp_server import _scope_results
+        rows = [{"id": "a", "tags": ["antigravity"]}, {"id": "b", "tags": ["systems"]}]
+        # A client-scoped search hit is dropped for a foreign client...
+        assert [r["id"] for r in _scope_results(rows, "claude")] == ["b"]
+        # ...kept for its own client, and unfiltered when no client is set.
+        assert [r["id"] for r in _scope_results(rows, "antigravity")] == ["a", "b"]
+        assert [r["id"] for r in _scope_results(rows, None)] == ["a", "b"]
+
+
 class TestAutoSelectTier:
     def test_default_is_abridged(self):
         assert auto_select_tier(None) == "abridged"

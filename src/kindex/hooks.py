@@ -151,15 +151,25 @@ def prime_context(
     recent = store.activity_since(yesterday)
     if recent:
         lines.append("### Recent activity (last 24h)")
-        # Group by action
+        # Group by action. Notable titles for nodes scoped to a different client
+        # are dropped so their titles don't echo into the wrong session (the
+        # aggregate counts stay complete — they reveal no titles).
+        scoping = bool(adapter) and adapter != "plain"
         action_counts: dict[str, int] = {}
         notable: list[str] = []
         for entry in recent:
             action = entry.get("action", "unknown")
             action_counts[action] = action_counts.get(action, 0) + 1
+            if len(notable) >= 5:
+                continue
             target = entry.get("target_title") or entry.get("target_id", "")
-            if target and len(notable) < 5:
-                notable.append(f"{action}: {target}")
+            if not target:
+                continue
+            if scoping:
+                domains = store.get_node_domains(str(entry.get("target_id") or ""))
+                if adapter_scoped_out(domains, adapter):
+                    continue
+            notable.append(f"{action}: {target}")
 
         summary_parts = [f"{count} {action}" for action, count in action_counts.items()]
         lines.append(f"- Activity: {', '.join(summary_parts)}")

@@ -16,7 +16,10 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING
+
+from .agent_adapters import adapter_scoped_out
 
 if TYPE_CHECKING:
     from .store import Store
@@ -414,6 +417,7 @@ def format_context_block(
     query: str = "",
     level: str | None = None,
     max_tokens_approx: int | None = None,
+    adapter: str | None = None,
 ) -> str:
     """Format search results as a context block for CLAUDE.md injection.
 
@@ -421,6 +425,10 @@ def format_context_block(
     Auto-selects tier based on max_tokens_approx if level is not specified.
     Enforces token budget: if output exceeds the tier budget, progressively
     drops results until it fits.
+
+    When ``adapter`` names a client, operational nodes scoped to a different
+    client are dropped from the full/abridged tiers; with no adapter every node
+    surfaces (the right default for human-facing ``kin context``).
     """
     if not results:
         return "## Kindex: No relevant context found.\n"
@@ -429,7 +437,7 @@ def format_context_block(
         level = auto_select_tier(max_tokens_approx)
 
     budget = max_tokens_approx or TIER_BUDGETS.get(level, 1500)
-    formatter = _TIER_FORMATTERS.get(level, _format_abridged)
+    formatter = partial(_TIER_FORMATTERS.get(level, _format_abridged), adapter=adapter)
 
     # Try with all results, then progressively trim until within budget
     for n in range(len(results), 0, -1):
@@ -453,9 +461,22 @@ def _gather_domains(results: list[dict]) -> set[str]:
     return domains
 
 
-def _append_operational(store: Store, lines: list[str], verbose: bool = False) -> None:
-    """Append active operational nodes (constraints, watches, etc.) to output."""
+def _append_operational(
+    store: Store, lines: list[str], verbose: bool = False, adapter: str | None = None
+) -> None:
+    """Append active operational nodes (constraints, watches, etc.) to output.
+
+    When ``adapter`` names a client, nodes scoped to a different client (e.g. an
+    Antigravity hook-protocol directive) are dropped, mirroring the attention and
+    prime injection paths. With no adapter, every operational node surfaces — the
+    right default for human-facing ``kin context``/``kin status``.
+    """
     ops = store.operational_summary()
+    if adapter is not None:
+        ops = {
+            k: [n for n in v if not adapter_scoped_out(n.get("tags"), adapter)]
+            for k, v in ops.items()
+        }
 
     if ops["constraints"]:
         lines.append("\n### Active constraints")
@@ -492,7 +513,9 @@ def _append_operational(store: Store, lines: list[str], verbose: bool = False) -
 
 # ── Full tier ─────────────────────────────────────────────────────────
 
-def _format_full(store: Store, results: list[dict], query: str) -> str:
+def _format_full(
+    store: Store, results: list[dict], query: str, adapter: str | None = None
+) -> str:
     """Full context — everything Kindex knows about the active domain."""
     all_domains = _gather_domains(results)
 
@@ -556,14 +579,16 @@ def _format_full(store: Store, results: list[dict], query: str) -> str:
                 lines.append(f"  Rationale: {_strip_frontmatter(d['content'])[:200]}")
 
     # Operational nodes
-    _append_operational(store, lines, verbose=True)
+    _append_operational(store, lines, verbose=True, adapter=adapter)
 
     return "\n".join(lines) + "\n"
 
 
 # ── Abridged tier ─────────────────────────────────────────────────────
 
-def _format_abridged(store: Store, results: list[dict], query: str) -> str:
+def _format_abridged(
+    store: Store, results: list[dict], query: str, adapter: str | None = None
+) -> str:
     """Abridged — key nodes, trimmed content, edges preserved."""
     all_domains = _gather_domains(results)
 
@@ -613,14 +638,16 @@ def _format_abridged(store: Store, results: list[dict], query: str) -> str:
             lines.append(f"- {when}: {d['title']}")
 
     # Active constraints and watches (brief)
-    _append_operational(store, lines, verbose=False)
+    _append_operational(store, lines, verbose=False, adapter=adapter)
 
     return "\n".join(lines) + "\n"
 
 
 # ── Summarized tier ───────────────────────────────────────────────────
 
-def _format_summarized(store: Store, results: list[dict], query: str) -> str:
+def _format_summarized(
+    store: Store, results: list[dict], query: str, adapter: str | None = None
+) -> str:
     """Summarized — paragraph-form narrative per domain cluster."""
     all_domains = _gather_domains(results)
 
@@ -660,7 +687,9 @@ def _format_summarized(store: Store, results: list[dict], query: str) -> str:
 
 # ── Executive tier ────────────────────────────────────────────────────
 
-def _format_executive(store: Store, results: list[dict], query: str) -> str:
+def _format_executive(
+    store: Store, results: list[dict], query: str, adapter: str | None = None
+) -> str:
     """Executive — 2-3 sentences per active thread. Minimum to orient."""
     all_domains = _gather_domains(results)
     domain_str = ", ".join(sorted(all_domains)[:4])
@@ -686,7 +715,9 @@ def _format_executive(store: Store, results: list[dict], query: str) -> str:
 
 # ── Index tier ────────────────────────────────────────────────────────
 
-def _format_index(store: Store, results: list[dict], query: str) -> str:
+def _format_index(
+    store: Store, results: list[dict], query: str, adapter: str | None = None
+) -> str:
     """Index — node titles and edge types only. Just the map."""
     titles = []
     for r in results:

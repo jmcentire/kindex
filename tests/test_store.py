@@ -33,6 +33,19 @@ class TestNodeOperations:
         assert node["id"] == "ut1"
         assert store.get_node_by_title("unique title") is not None  # case insensitive
 
+    def test_get_node_domains_is_non_mutating(self, store):
+        nid = store.add_node("Tagged", domains=["antigravity", "hooks"])
+        # Returns the node's domains without touching last_accessed (non-mutating).
+        before = store.conn.execute(
+            "SELECT last_accessed FROM nodes WHERE id = ?", (nid,)).fetchone()[0]
+        assert store.get_node_domains(nid) == ["antigravity", "hooks"]
+        after = store.conn.execute(
+            "SELECT last_accessed FROM nodes WHERE id = ?", (nid,)).fetchone()[0]
+        assert before == after
+        # Missing node / empty id -> empty list, never raises.
+        assert store.get_node_domains("does-not-exist") == []
+        assert store.get_node_domains("") == []
+
     def test_update_node(self, store):
         nid = store.add_node("Original")
         store.update_node(nid, title="Updated", weight=0.9)

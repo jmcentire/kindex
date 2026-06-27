@@ -124,6 +124,27 @@ def _default_agent(agent: str = "") -> str:
     return resolve_agent_id(_get_config())
 
 
+def _mcp_client() -> str | None:
+    """Client identity used to scope pulled context, from the KIN_CLIENT env.
+
+    A per-client MCP config (this server runs one instance per client) can set
+    KIN_CLIENT so context tools drop nodes scoped to a different client. Unset
+    means no scoping — the unchanged default.
+    """
+    from .agent_adapters import normalize_adapter
+    raw = os.environ.get("KIN_CLIENT") or os.environ.get("KINDEX_CLIENT")
+    return normalize_adapter(raw) if raw else None
+
+
+def _scope_results(results: list[dict], client: str | None) -> list[dict]:
+    """Drop search hits scoped to a different client, mirroring prime's retrieval
+    filter so context tools scope both search hits and operational nodes."""
+    if not client:
+        return results
+    from .agent_adapters import adapter_scoped_out
+    return [r for r in results if not adapter_scoped_out(r.get("tags"), client)]
+
+
 def _json(obj: Any, **kw) -> str:
     """JSON serialize with date/path handling."""
     import datetime
@@ -417,11 +438,13 @@ def context(
     from .retrieve import format_context_block, hybrid_search
     from .store import node_expired
 
+    client = _mcp_client()
     if topic:
         results = hybrid_search(store, topic, top_k=15)
     else:
         # Fall back to recent high-weight nodes (skip expired knowledge)
         results = [r for r in store.recent_nodes(n=15) if not node_expired(r)]
+    results = _scope_results(results, client)
 
     if not results:
         return "No relevant knowledge found."
@@ -430,7 +453,7 @@ def context(
     if max_tokens > 0:
         kwargs = {"max_tokens_approx": max_tokens}
 
-    return format_context_block(store, results, query=topic, **kwargs)
+    return format_context_block(store, results, query=topic, adapter=client, **kwargs)
 
 
 @mcp.tool()
@@ -588,13 +611,14 @@ def ask(question: str) -> str:
         qtype = "exploratory"
 
     top_k = {"factual": 5, "procedural": 8, "decision": 10, "exploratory": 12}.get(qtype, 10)
-    results = hybrid_search(store, question, top_k=top_k)
+    client = _mcp_client()
+    results = _scope_results(hybrid_search(store, question, top_k=top_k), client)
 
     if not results:
         return f"[{qtype}] No relevant knowledge found for: {question}"
 
     level = "full" if qtype in ("procedural", "decision") else "abridged"
-    block = format_context_block(store, results, query=question, level=level)
+    block = format_context_block(store, results, query=question, level=level, adapter=client)
     return f"[{qtype} question]\n\n{block}"
 
 
@@ -1135,10 +1159,12 @@ def prime(topic: str = "") -> str:
     from .retrieve import format_context_block, hybrid_search
     from .store import node_expired
 
+    client = _mcp_client()
     if topic:
         results = hybrid_search(store, topic, top_k=15)
     else:
         results = [r for r in store.recent_nodes(n=15) if not node_expired(r)]
+    results = _scope_results(results, client)
 
     if not results:
         return "No knowledge available for priming."
@@ -1148,7 +1174,7 @@ def prime(topic: str = "") -> str:
         f"# Kindex Context\n\n"
         f"Graph: {stats.get('node_count', 0)} nodes, {stats.get('edge_count', 0)} edges\n\n"
     )
-    block = format_context_block(store, results, query=topic, level="full")
+    block = format_context_block(store, results, query=topic, level="full", adapter=client)
     return header + block
 
 
