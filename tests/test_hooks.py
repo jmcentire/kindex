@@ -67,6 +67,31 @@ class TestPrimeContext:
         assert "constraint" in output.lower() or "Friday" in output
         assert "watch" in output.lower() or "Monitor" in output or "latency" in output
 
+    def test_prime_context_scopes_nodes_by_adapter(self, store):
+        """An Antigravity-scoped directive must not surface when priming Claude."""
+        from kindex.hooks import prime_context
+
+        store.add_node("Test Domain Concept", content="Test domain content",
+                        node_type="concept", node_id="pc-concept")
+        store.add_node(
+            "Antigravity PreToolUse hook protocol",
+            node_type="directive",
+            node_id="ag-dir",
+            content="Antigravity PreToolUse stdin is nested camelCase JSON.",
+            domains=["antigravity"],
+        )
+
+        # Assert on the directive's content (carried only by the scoped retrieval /
+        # operational sections); the title also appears in the transient 24h "Recent
+        # activity" changelog, which is intentionally not adapter-scoped. The topic
+        # matches the directive so it surfaces into the content-bearing Key concepts.
+        topic = "Antigravity PreToolUse hook protocol"
+        claude_out = prime_context(store, topic=topic, max_tokens=1500, adapter="claude")
+        assert "nested camelCase JSON" not in claude_out
+
+        ag_out = prime_context(store, topic=topic, max_tokens=1500, adapter="antigravity")
+        assert "nested camelCase JSON" in ag_out
+
     def test_prime_context_empty_store(self, store):
         """Prime context on empty store should not crash."""
         from kindex.hooks import prime_context

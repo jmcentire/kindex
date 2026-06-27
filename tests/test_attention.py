@@ -6,7 +6,11 @@ import json
 import time
 from types import SimpleNamespace
 
-from kindex.agent_adapters import permission_gate_output, render_hook_context
+from kindex.agent_adapters import (
+    adapter_scoped_out,
+    permission_gate_output,
+    render_hook_context,
+)
 from kindex.cli import build_parser
 from kindex.attention import (
     ATTENTION_PENDING_META,
@@ -90,6 +94,101 @@ def test_select_candidates_matches_explicit_trigger(tmp_path):
     assert candidates
     assert candidates[0].id == f"node:{node_id}"
     assert "trigger:deploy" in candidates[0].reason
+    store.close()
+
+
+def test_adapter_scoped_out_filters_foreign_client():
+    ag_tags = ["antigravity", "hooks"]
+    # A bare coined client name (antigravity) IS a scoping signal: noise for Claude/Codex...
+    assert adapter_scoped_out(ag_tags, "claude") is True
+    assert adapter_scoped_out(ag_tags, "codex") is True
+    assert adapter_scoped_out("antigravity, hooks", "claude") is True
+    # ...but in scope for Antigravity (incl. the "ag" alias as the running client)...
+    assert adapter_scoped_out(ag_tags, "antigravity") is False
+    assert adapter_scoped_out(ag_tags, "ag") is False
+    # ...nodes with no client tag apply everywhere...
+    assert adapter_scoped_out(["deploy", "release"], "claude") is False
+    assert adapter_scoped_out([], "antigravity") is False
+    # ...and an unknown / plain caller can't scope, so it never filters.
+    assert adapter_scoped_out(ag_tags, "plain") is False
+    assert adapter_scoped_out(ag_tags, None) is False
+
+
+def test_adapter_scoped_out_does_not_overfilter_topical_tags():
+    # Bare AMBIGUOUS client names are NOT inferred as scope — they are routinely
+    # topical (a `gemini` task about the Gemini API, a `cursor` text cursor, the
+    # `ag` 2-char alias colliding with silver/agriculture/Attorney-General).
+    assert adapter_scoped_out(["gemini"], "claude") is False
+    assert adapter_scoped_out(["gemini", "research"], "antigravity") is False
+    assert adapter_scoped_out(["cursor"], "claude") is False
+    assert adapter_scoped_out(["codex"], "claude") is False
+    assert adapter_scoped_out(["ag"], "claude") is False
+    # Explicit markers ARE authoritative for any client (alias-resolved).
+    assert adapter_scoped_out(["client:gemini"], "claude") is True
+    assert adapter_scoped_out(["client:gemini"], "gemini") is False
+    assert adapter_scoped_out(["agent:codex"], "claude") is True
+    assert adapter_scoped_out(["client:ag"], "claude") is True  # ag -> antigravity
+    assert adapter_scoped_out(["client:ag"], "antigravity") is False
+
+
+def test_select_candidates_excludes_other_adapter_scoped_nodes(tmp_path):
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    ag_id = store.add_node(
+        "Antigravity PreToolUse schema",
+        node_type="directive",
+        content="Antigravity PreToolUse stdin is nested camelCase JSON: toolCall.name / toolCall.args.",
+        domains=["antigravity", "hooks"],
+        extra={"attention_triggers": ["pretooluse", "toolcall"]},
+    )
+    snippet = "tool_name: Bash\ntool_input: PreToolUse toolCall run command"
+
+    # The Antigravity directive must not surface for Claude or Codex sessions.
+    claude = select_candidates(store, snippet, cfg, adapter="claude")
+    assert all(c.id != f"node:{ag_id}" for c in claude)
+    codex = select_candidates(store, snippet, cfg, adapter="codex")
+    assert all(c.id != f"node:{ag_id}" for c in codex)
+
+    # But it is in scope when Antigravity itself is the running client.
+    ag = select_candidates(store, snippet, cfg, adapter="antigravity")
+    assert any(c.id == f"node:{ag_id}" for c in ag)
+    store.close()
+
+
+def test_select_candidates_keeps_unscoped_nodes_for_every_adapter(tmp_path):
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    node_id = store.add_node(
+        "Deploy checklist",
+        node_type="directive",
+        content="Any time you deploy, verify tests and live endpoint.",
+        extra={"attention_triggers": ["deploy"]},
+    )
+    for adapter in ("claude", "codex", "antigravity", None):
+        candidates = select_candidates(
+            store, "Let's deploy this now.", cfg, adapter=adapter
+        )
+        assert any(c.id == f"node:{node_id}" for c in candidates), adapter
+    store.close()
+
+
+def test_select_candidates_keeps_topically_tagged_client_name(tmp_path):
+    """A node tagged with an ambiguous client name for TOPICAL reasons must not be dropped."""
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    # Real-world shape: a directive about the Gemini API, tagged `gemini` topically.
+    node_id = store.add_node(
+        "Gemini API safety settings",
+        node_type="directive",
+        content="When calling the Gemini API, always set safety settings.",
+        domains=["gemini", "api"],
+        extra={"attention_triggers": ["gemini"]},
+    )
+    # It is not client-scoped, so it must still surface in a Claude session.
+    candidates = select_candidates(
+        store, "calling the gemini api now", cfg, adapter="claude"
+    )
+    assert any(c.id == f"node:{node_id}" for c in candidates)
     store.close()
 
 
@@ -344,6 +443,45 @@ def test_async_attention_delivers_fast_result_immediately(tmp_path, monkeypatch)
     assert len(injections) == 1
     assert injections[0].id == f"node:{node_id}"
     assert store.get_meta(ATTENTION_PENDING_META) == "[]"
+    store.close()
+
+
+def test_async_drain_scopes_candidates_by_adapter(tmp_path, monkeypatch):
+    """End-to-end: the drain must not deliver another client's scoped node."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg = _config(tmp_path)
+    store = Store(cfg)
+    ag_id = store.add_node(
+        "Antigravity PreToolUse schema",
+        node_type="directive",
+        content="Antigravity PreToolUse stdin is nested camelCase JSON: toolCall.name / toolCall.args.",
+        domains=["antigravity", "hooks"],
+        extra={"attention_triggers": ["pretooluse", "toolcall"]},
+    )
+    snippet = "tool_name: Bash\ntool_input: PreToolUse toolCall run command"
+
+    def _drain_for(adapter: str, conv: str):
+        job = {
+            "job_id": f"job-{adapter}",
+            "conversation_id": conv,
+            "snippet": snippet,
+            "force": True,
+            "adapter": adapter,
+            "at": "2099-01-01T00:00:00",
+            "attempts": 0,
+        }
+        assert enqueue_attention_review(store, cfg, job) is True
+        drain_attention_queue(store, cfg, client=_MockClient(f"node:{ag_id}"))
+        return pop_pending_attention_injections(
+            store, cfg, conv, snippet, tick=1, job_id=f"job-{adapter}"
+        )
+
+    # The Antigravity-scoped directive is filtered out of candidate selection for
+    # Claude, so the judge can never inject it — nothing is delivered.
+    assert _drain_for("claude", "conv-claude") == []
+    # Antigravity itself keeps the directive in scope and receives it.
+    ag_injections = _drain_for("antigravity", "conv-ag")
+    assert any(inj.id == f"node:{ag_id}" for inj in ag_injections)
     store.close()
 
 

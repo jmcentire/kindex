@@ -1501,7 +1501,7 @@ def cmd_prime(args):
         store.close()
         return
 
-    from .agent_adapters import normalize_adapter
+    from .agent_adapters import normalize_adapter, scope_adapter
     from .agent_settings import (
         agent_setting_value,
         apply_agent_overrides,
@@ -1545,6 +1545,7 @@ def cmd_prime(args):
         max_tokens=tokens,
         config=cfg,
         conversation_id=conversation_id,
+        adapter=scope_adapter(adapter),
     )
 
     if output_for == "hook":
@@ -1592,7 +1593,7 @@ def cmd_prime(args):
 
 def cmd_agent_prime_hook(args):
     """Prime-once hook for clients that do not have a SessionStart event."""
-    from .agent_adapters import normalize_adapter
+    from .agent_adapters import normalize_adapter, scope_adapter
     from .agent_settings import (
         agent_setting_value,
         apply_agent_overrides,
@@ -1640,6 +1641,7 @@ def cmd_agent_prime_hook(args):
         max_tokens=tokens,
         config=cfg,
         conversation_id=conversation_id,
+        adapter=scope_adapter(client),
     )
     store.set_meta(meta_key, datetime.datetime.now().isoformat(timespec="seconds"))
     rendered = _hook_context_output(
@@ -3957,7 +3959,7 @@ def cmd_prompt_check(args):
     store = _store(args)
     cfg = _config(args)
 
-    from .agent_adapters import normalize_adapter
+    from .agent_adapters import normalize_adapter, scope_adapter
     from .agent_settings import apply_agent_overrides, resolve_agent_instance_key
 
     adapter = normalize_adapter(getattr(args, "adapter", "plain"))
@@ -4038,6 +4040,7 @@ def cmd_prompt_check(args):
                 conversation_text,
                 conversation_id,
                 force=getattr(args, "force_attention", False),
+                adapter=scope_adapter(adapter),
             )
             attention_lines = format_attention_injections(
                 attention_result, display=cfg.attention.display
@@ -4218,6 +4221,7 @@ def cmd_attention_hook(args):
         antigravity_allow,
         normalize_adapter,
         permission_gate_output,
+        scope_adapter,
     )
     from .agent_settings import apply_agent_overrides, resolve_agent_instance_key
     from .attention import (
@@ -4298,6 +4302,7 @@ def cmd_attention_hook(args):
             text,
             conversation_id,
             force=getattr(args, "force", False),
+            adapter=scope_adapter(adapter),
         )
         job = prepared.get("job") or {}
         if job and time.monotonic() < deadline:

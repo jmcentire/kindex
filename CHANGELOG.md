@@ -2,6 +2,15 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.5] - 2026-06-27
+
+### Fixed
+- **Attention and context injections are now scoped to the running agent client.** A graph node tagged for a specific client — e.g. an `antigravity` directive documenting Antigravity's nested `toolCall`/`toolCall.args` PreToolUse hook protocol — previously surfaced as a tool-boundary advisory and as SessionStart context in *every* client, so Claude and Codex received instructions about a hook schema they do not use. The running client is now threaded from the hook through both the synchronous and asynchronous (queue → drain, including the status-retry hop) attention pipeline into candidate selection, and through `prime` / `agent-prime-hook` SessionStart context, so any node scoped to a different client is dropped.
+- Client scope is declared with an explicit `client:<name>` / `agent:<name>` tag (authoritative for any known client) or a bare tag for a coined client name (`antigravity`, `opencode`). Names that double as topical subjects — `claude`, `codex`, `gemini`, `cursor`, and the 2-char `ag` alias — are **not** inferred from a bare tag, so a node tagged `gemini` about the Gemini API is never hidden from a Claude session. Nodes that name no client are unaffected and surface everywhere. A `plain`/unlabeled hook caller scopes as Claude (the default install).
+
+### Performance
+- Node embedding is deferred off the `add`/`edit`/`supersede` hot path, so those operations return without blocking on vector generation (#9).
+
 ## [0.25.4] - 2026-06-23
 
 ### Fixed

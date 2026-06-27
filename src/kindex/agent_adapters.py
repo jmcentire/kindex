@@ -30,6 +30,92 @@ def normalize_adapter(adapter: str | None) -> str:
     return ADAPTER_ALIASES.get(value, value)
 
 
+# Canonical client names Kindex can scope a node to.
+ADAPTER_SCOPE_NAMES = frozenset(
+    {"claude", "codex", "gemini", "opencode", "cursor", "antigravity"}
+)
+
+# A BARE tag (no `client:`/`agent:` prefix) is treated as a client-scoping signal
+# only for coined client names that have no everyday or vendor meaning. Names that
+# double as topical subjects — `claude`, `codex`, `gemini`, `cursor`, and the
+# 2-char `ag` alias — are NOT inferred from a bare tag, because nodes are routinely
+# tagged with them for SUBJECT reasons (e.g. a task tagged `gemini` about the Gemini
+# API, which a Claude session may well need). Scope a node to one of those clients
+# with an explicit `client:<name>` / `agent:<name>` tag instead.
+_BARE_SCOPE_NAMES = frozenset({"antigravity", "opencode"})
+_SCOPE_TAG_PREFIXES = ("client:", "agent:")
+
+
+def _iter_tag_strings(tags: Any) -> list[str]:
+    """Normalize a tags value (list/tuple/set or comma/space string) to a list."""
+    if isinstance(tags, str):
+        return [t for t in re.split(r"[\s,]+", tags) if t]
+    if isinstance(tags, (list, tuple, set)):
+        return [str(t) for t in tags]
+    return []
+
+
+def node_scope_clients(tags: Any) -> set[str]:
+    """Canonical client names a node is scoped to via its tags.
+
+    Recognizes explicit `client:<name>` / `agent:<name>` markers (authoritative for
+    any known client, alias-resolved) and bare tags for the coined client names in
+    `_BARE_SCOPE_NAMES`. Returns an empty set when the node names no client — i.e.
+    it is not client-scoped and applies everywhere.
+    """
+    clients: set[str] = set()
+    for raw in _iter_tag_strings(tags):
+        tag = raw.strip().lower()
+        if not tag:
+            continue
+        marker = next(
+            (tag[len(p):] for p in _SCOPE_TAG_PREFIXES if tag.startswith(p)),
+            None,
+        )
+        if marker is not None:
+            norm = normalize_adapter(marker)
+            if norm in ADAPTER_SCOPE_NAMES:
+                clients.add(norm)
+        elif tag in _BARE_SCOPE_NAMES:
+            clients.add(normalize_adapter(tag))
+    return clients
+
+
+def adapter_scoped_out(tags: Any, adapter: str | None) -> bool:
+    """True when a node's tags scope it to a different agent client than ``adapter``.
+
+    Some graph nodes are advisory only for one client — e.g. a directive tagged
+    ``antigravity`` documents Antigravity's nested ``toolCall`` hook protocol.
+    Surfacing it to Claude or Codex (which use the flat ``tool_name``/``tool_input``
+    schema) is noise and actively misleading. A node is scoped out when it names one
+    or more known clients (see `node_scope_clients`) and the running client is not
+    among them. Nodes that name no client apply everywhere and are never scoped out.
+
+    ``tags`` accepts a list/tuple/set of tag strings or a comma/space-separated
+    string. ``adapter`` is any adapter name/alias; an unknown or ``plain`` caller
+    cannot make a scoping decision and never scopes anything out.
+    """
+    canonical = normalize_adapter(adapter)
+    if canonical not in ADAPTER_SCOPE_NAMES:
+        return False
+    clients = node_scope_clients(tags)
+    if not clients:
+        return False
+    return canonical not in clients
+
+
+def scope_adapter(adapter: str | None) -> str:
+    """Resolve the client name to use for attention/context scoping.
+
+    A ``plain`` or unknown hook caller is the default (unlabeled) Claude install,
+    so it scopes as Claude: it should not see Antigravity/OpenCode-scoped nodes,
+    and it should see Claude-scoped ones. Explicit clients pass through unchanged.
+    Rendering still uses the caller's original adapter; only scoping is resolved here.
+    """
+    canonical = normalize_adapter(adapter)
+    return canonical if canonical in ADAPTER_SCOPE_NAMES else "claude"
+
+
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
