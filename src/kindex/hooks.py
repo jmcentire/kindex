@@ -25,6 +25,7 @@ def prime_context(
     max_tokens: int = 750,
     config: Config | None = None,
     conversation_id: str | None = None,
+    adapter: str | None = None,
 ) -> str:
     """Generate compact context injection (~500-750 tokens) for SessionStart hook.
 
@@ -36,6 +37,7 @@ def prime_context(
 
     Returns a string suitable for CLAUDE.md injection.
     """
+    from .agent_adapters import adapter_scoped_out
     from .retrieve import detect_domain_from_path, hybrid_search
     from .store import node_expired
 
@@ -49,9 +51,9 @@ def prime_context(
             # Use the directory name as a fallback search term
             topic = os.path.basename(cwd)
 
-    # Search for relevant nodes (expired nodes never surface)
+    # Search for relevant nodes (expired and other-client nodes never surface)
     results = [r for r in hybrid_search(store, topic, top_k=8)
-               if not node_expired(r)]
+               if not node_expired(r) and not adapter_scoped_out(r.get("tags"), adapter)]
 
     lines: list[str] = []
     lines.append("## Kindex Context (auto-primed)")
@@ -85,8 +87,16 @@ def prime_context(
         lines.append("")
 
     # -- Active operational nodes (expired ones are skipped in every section) --
+    # Client-scoped nodes (e.g. an Antigravity hook-protocol directive) are dropped
+    # when a different client is priming, mirroring the attention-hook scoping.
     ops = store.operational_summary()
-    ops = {k: [n for n in v if not node_expired(n)] for k, v in ops.items()}
+    ops = {
+        k: [
+            n for n in v
+            if not node_expired(n) and not adapter_scoped_out(n.get("tags"), adapter)
+        ]
+        for k, v in ops.items()
+    }
 
     if ops["constraints"]:
         lines.append("### Active constraints")

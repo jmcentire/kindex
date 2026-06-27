@@ -17,7 +17,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .agent_adapters import extract_shell_command, extract_tool_call
+from .agent_adapters import (
+    adapter_scoped_out,
+    extract_shell_command,
+    extract_tool_call,
+)
 from .budget import BudgetLedger
 from .config import Config
 
@@ -601,8 +605,14 @@ def select_candidates(
     config: Config,
     *,
     conversation_id: str | None = None,
+    adapter: str | None = None,
 ) -> list[AttentionCandidate]:
-    """Select a compact candidate set before asking the LLM."""
+    """Select a compact candidate set before asking the LLM.
+
+    ``adapter`` is the running agent client. Nodes whose tags scope them to a
+    different client are dropped so, e.g., Antigravity hook-protocol directives
+    never surface in Claude or Codex sessions.
+    """
     snippet = snippet.strip()[: config.attention.max_context_chars]
     if not snippet:
         return []
@@ -619,6 +629,8 @@ def select_candidates(
             continue
         if node_expired(node):
             continue
+        if adapter_scoped_out(node.get("tags"), adapter):
+            continue
         if node.get("type") == "task" and not item_matches_conversation(
             node,
             conversation_id,
@@ -633,6 +645,8 @@ def select_candidates(
     for node_type in ("constraint", "directive", "checkpoint", "task"):
         for node in store.all_nodes(node_type=node_type, status="active", limit=100):
             if node_expired(node):
+                continue
+            if adapter_scoped_out(node.get("tags"), adapter):
                 continue
             if node_type == "task" and not item_matches_conversation(
                 node,
@@ -650,6 +664,8 @@ def select_candidates(
     for node in store.active_watches()[:100]:
         if node_expired(node):  # active_watches already filters; keep the invariant local
             continue
+        if adapter_scoped_out(node.get("tags"), adapter):
+            continue
         candidate = _node_to_candidate(node, snippet, config)
         if candidate and (
             candidate.id not in by_id or candidate.score > by_id[candidate.id].score
@@ -658,6 +674,8 @@ def select_candidates(
 
     for status in ("active", "fired"):
         for reminder in store.list_reminders(status=status, limit=100):
+            if adapter_scoped_out(reminder.get("tags"), adapter):
+                continue
             if not reminder_matches_conversation(
                 reminder,
                 conversation_id,
@@ -920,6 +938,7 @@ def _prepare_attention_job(
     conversation_id: str,
     *,
     force: bool = False,
+    adapter: str | None = None,
 ) -> dict:
     """Advance one attention tick and return a judge-ready job when needed."""
     if not conversation_id:
@@ -946,7 +965,9 @@ def _prepare_attention_job(
             "ticks": state["ticks"],
         }
 
-    candidates = select_candidates(store, snippet, config, conversation_id=conversation_id)
+    candidates = select_candidates(
+        store, snippet, config, conversation_id=conversation_id, adapter=adapter
+    )
     candidates = _filter_cooldown(candidates, state, config)
     _save_state(store, conversation_id, state)
 
@@ -1015,6 +1036,7 @@ def run_attention_check(
     *,
     force: bool = False,
     client: Any | None = None,
+    adapter: str | None = None,
 ) -> dict:
     """Run one attention tick synchronously and return selected injections."""
     prepared = _prepare_attention_job(
@@ -1023,6 +1045,7 @@ def run_attention_check(
         snippet,
         conversation_id,
         force=force,
+        adapter=adapter,
     )
     job = prepared.get("job")
     if not job:
@@ -1213,6 +1236,7 @@ def drain_attention_queue(
                 str(job.get("snippet") or ""),
                 str(job.get("conversation_id") or ""),
                 force=bool(job.get("force", False)),
+                adapter=job.get("adapter"),
             )
             judge_job = prepared.get("job") or {}
             if not judge_job:
@@ -1223,6 +1247,8 @@ def drain_attention_queue(
             judge_job["attempts"] = int(job.get("attempts", 0) or 0)
             judge_job["at"] = job.get("at") or judge_job.get("at")
             judge_job["force"] = bool(job.get("force", False))
+            # Carry the originating client so a retried job keeps adapter scoping.
+            judge_job["adapter"] = job.get("adapter")
             candidates = [AttentionCandidate(**item) for item in judge_job.get("candidates") or []]
             injections, judge = judge_candidates(
                 config,
@@ -1371,8 +1397,13 @@ def prepare_async_attention_review(
     conversation_id: str,
     *,
     force: bool = False,
+    adapter: str | None = None,
 ) -> dict:
-    """Queue raw hook context; the responder does selection + LLM arbitration."""
+    """Queue raw hook context; the responder does selection + LLM arbitration.
+
+    ``adapter`` is persisted on the job so the background drain can scope
+    candidate selection to the client that originated the request.
+    """
     if not conversation_id:
         return {"status": "missing_conversation_id", "injections": []}
     status = runtime_status(store, config, conversation_id)
@@ -1385,6 +1416,7 @@ def prepare_async_attention_review(
         "conversation_id": conversation_id,
         "snippet": snippet[: config.attention.max_context_chars],
         "force": force,
+        "adapter": adapter,
         "at": _now(),
         "attempts": 0,
     }
