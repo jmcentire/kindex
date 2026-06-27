@@ -2,6 +2,12 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.6] - 2026-06-27
+
+### Fixed
+- Client scoping now also covers the pull-based context surfaces. `format_context_block`'s full/abridged tiers drop operational nodes — constraints, watches, directives — scoped to a different client when a client is known, so the MCP `context`/`ask` tools no longer surface (for example) an Antigravity-scoped constraint to a Claude session. The MCP server resolves its client from the `KIN_CLIENT` environment variable (a per-client MCP config can set it); unset means no scoping — the unchanged default. Human-facing `kin context` / `kin status` continue to show every node.
+- `prime`'s 24h "Recent activity" section no longer echoes the titles of nodes scoped to a different client; the aggregate activity counts remain complete.
+
 ## [0.25.5] - 2026-06-27
 
 ### Fixed

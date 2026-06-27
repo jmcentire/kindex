@@ -606,6 +606,23 @@ class Store:
         self.conn.commit()
         return self._row_to_dict(row)
 
+    def get_node_domains(self, node_id: str) -> list[str]:
+        """Read a node's domains/tags without touching last_accessed (non-mutating).
+
+        Used on hot paths (e.g. prime) that only need a node's client scope and
+        must not bump the freshness-decay signal or commit per lookup.
+        """
+        if not node_id:
+            return []
+        row = self.conn.execute(
+            "SELECT domains FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        if not row or not row[0]:
+            return []
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return []
+
     def get_node_by_title(self, title: str) -> dict | None:
         """Match by title or AKA (case-insensitive)."""
         # Exact title match

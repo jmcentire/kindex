@@ -81,13 +81,13 @@ class TestPrimeContext:
             domains=["antigravity"],
         )
 
-        # Assert on the directive's content (carried only by the scoped retrieval /
-        # operational sections); the title also appears in the transient 24h "Recent
-        # activity" changelog, which is intentionally not adapter-scoped. The topic
-        # matches the directive so it surfaces into the content-bearing Key concepts.
+        # The directive's CONTENT (Key concepts / Directives) and its TITLE (the now
+        # also-scoped 24h "Recent activity" changelog) must both stay out of a Claude
+        # session. The topic matches so it would otherwise surface into Key concepts.
         topic = "Antigravity PreToolUse hook protocol"
         claude_out = prime_context(store, topic=topic, max_tokens=1500, adapter="claude")
         assert "nested camelCase JSON" not in claude_out
+        assert "Antigravity PreToolUse hook protocol" not in claude_out
 
         ag_out = prime_context(store, topic=topic, max_tokens=1500, adapter="antigravity")
         assert "nested camelCase JSON" in ag_out
