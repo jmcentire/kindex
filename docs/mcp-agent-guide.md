@@ -67,6 +67,13 @@ codebase contract, not private scratch space.
 - `.kin/.gitignore`: ignores only local/private subdirectories such as
   `.kin/local`, `.kin/cache`, `.kin/tmp`, and `.kin/private`.
 
+`.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots:
+never hand-resolve a git conflict in them. `kin index` auto-registers a
+structured merge driver (`kin merge-kin`) on first run that unions them
+losslessly across branches (run `kin setup-merge` to re-install it in a fresh
+clone). If you do need a clean copy, regenerate with `kin index` /
+`kin export code-map` rather than hand-editing the JSON.
+
 Never put secrets, API keys, private transcripts, or machine-local cache in
 tracked `.kin` files. Tracked task/report metadata must not point at a local
 filesystem path outside the repo; if the evidence matters, ship a repo-local

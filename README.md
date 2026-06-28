@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.26.0](https://img.shields.io/badge/version-0.26.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.26.1](https://img.shields.io/badge/version-0.26.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1540%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1542%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -541,12 +541,13 @@ preferences remain local while the repo's work contract travels with the repo.
 Generated `.kin/` snapshots use canonical, id-keyed ordering and omit volatile
 timestamps so repeated exports of unchanged source do not churn Git diffs.
 Concurrent branches merge them without manual conflicts via a structured merge
-driver: run `kin setup-merge` once per clone to register it. `.kin/index.json`
-is then unioned by node id (newer `updated_at` wins) and `.kin/code-map.json` by
-node/edge/layer — lossless across machines (regenerating from one machine's local
-DB would drop the other branch's nodes), with output byte-identical to a fresh
-`kin index`. `kin merge-kin` is the driver git invokes; repos without it
-registered fall back to git's default merge.
+driver that `kin index` registers automatically on first run (or `kin setup-merge`
+to (re)install it in a fresh clone). `.kin/index.json` is then unioned by node id
+(newer `updated_at` wins) and `.kin/code-map.json` by node/edge/layer — lossless
+across machines (regenerating from one machine's local DB would drop the other
+branch's nodes), with output byte-identical to a fresh `kin index`. `kin merge-kin`
+is the driver git invokes; repos without it registered fall back to git's default
+merge. Never hand-resolve a generated `.kin` snapshot.
 Tracked `.kin` artifacts must be self-contained and machine-portable: code-map
 paths are repo-relative POSIX paths, and task/report metadata must not point at
 `$HOME`, `/Users/...`, `/tmp/...`, or another developer-local filesystem

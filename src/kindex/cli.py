@@ -2125,6 +2125,23 @@ def cmd_index(args):
     print(f"Wrote {path}")
     print(f"  ({path.stat().st_size} bytes)")
 
+    # Default: register the structured merge driver so this freshly written,
+    # git-tracked artifact is conflict-safe from the start. Guarded + idempotent
+    # (only when inside a git repo and not already registered in this clone).
+    # Best-effort: a merge-driver hiccup must never fail the index write itself.
+    if not getattr(args, "no_merge_driver", False):
+        try:
+            from .setup import (
+                git_repo_root, install_merge_driver, merge_driver_registered,
+            )
+            root = git_repo_root(output_dir)
+            if root is not None and not merge_driver_registered(root):
+                for a in install_merge_driver(root):
+                    print(f"  merge-driver: {a}")
+                print("  (registered .kin structured merge; opt out with --no-merge-driver)")
+        except Exception as e:
+            print(f"  merge-driver: skipped ({e})", file=sys.stderr)
+
     store.close()
 
 
@@ -5175,6 +5192,10 @@ summarizing what was done
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not \
 private cache.
+- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: \
+never hand-resolve git conflicts in them. `kin index` auto-registers a structured \
+merge driver (`kin merge-kin`) on first run that unions them losslessly; run \
+`kin setup-merge` to (re)install it in a fresh clone.
 - Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, \
 `.kin/tmp`, `.kin/private`.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` \
@@ -5240,6 +5261,7 @@ a concise summary.
 
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not private cache.
+- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: never hand-resolve git conflicts in them. `kin index` auto-registers a structured merge driver (`kin merge-kin`) that unions them losslessly; run `kin setup-merge` to (re)install it in a fresh clone.
 - Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, `.kin/tmp`, `.kin/private`.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` sets `work_policy.linear.enabled: true`.
 - If no work policy is present, continue normally and still use kindex for search/capture.
@@ -6097,6 +6119,8 @@ def build_parser() -> argparse.ArgumentParser:
     # index
     s = sub.add_parser("index", help="Write .kin/index.json for git tracking")
     s.add_argument("--output-dir", type=str, help="Output directory (default: current dir)")
+    s.add_argument("--no-merge-driver", action="store_true",
+                   help="Skip auto-registering the .kin structured merge driver")
     _common(s)
     s.set_defaults(func=cmd_index)
 
