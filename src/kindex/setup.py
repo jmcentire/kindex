@@ -993,3 +993,96 @@ def _find_kin_path() -> str:
     # Fallback to python -m
     import sys
     return f"{sys.executable} -m kindex.cli"
+
+
+# ── .kin structured merge driver (project-level) ─────────────────────────
+
+_KIN_MERGE_ATTRS = (
+    ".kin/index.json merge=kindex",
+    ".kin/code-map.json merge=kindex",
+)
+_KIN_MERGE_ATTR_HEADER = "# Kindex generated artifacts: structured union merge"
+
+
+def git_repo_root(start: "str | Path | None" = None) -> "Path | None":
+    """Repo top-level for ``start`` (cwd by default), or None if not a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(start or Path.cwd()),
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip())
+
+
+def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
+    """Register the ``kin merge-kin`` git merge driver + ``.gitattributes``.
+
+    The driver definition lives in the repo's local ``.git/config`` (not shared),
+    while ``.gitattributes`` (committed) points the ``.kin`` artifacts at it. Repos
+    without the driver registered fall back to git's default merge gracefully.
+    """
+    actions: list[str] = []
+    driver_cmd = f"{_find_kin_path()} merge-kin %O %A %B %P"
+    for key, value in (
+        ("merge.kindex.name", "Kindex .kin artifact structured merge"),
+        ("merge.kindex.driver", driver_cmd),
+    ):
+        if dry_run:
+            actions.append(f"[dry-run] git config {key} = {value}")
+            continue
+        subprocess.run(["git", "-C", str(root), "config", key, value],
+                       capture_output=True, text=True, timeout=5)
+        actions.append(f"git config {key} = {value}")
+
+    attrs_path = root / ".gitattributes"
+    existing = attrs_path.read_text().splitlines() if attrs_path.exists() else []
+    have = {line.strip() for line in existing}
+    missing = [a for a in _KIN_MERGE_ATTRS if a not in have]
+    if not missing:
+        actions.append(f".gitattributes already current ({attrs_path})")
+        return actions
+    if dry_run:
+        actions.append(f"[dry-run] add to .gitattributes: {missing}")
+        return actions
+    lines = list(existing)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append(_KIN_MERGE_ATTR_HEADER)
+    lines.extend(missing)
+    attrs_path.write_text("\n".join(lines) + "\n")
+    actions.append(f"updated {attrs_path} (+{len(missing)} entries)")
+    return actions
+
+
+def uninstall_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
+    """Remove the merge driver config and ``.gitattributes`` entries."""
+    actions: list[str] = []
+    if dry_run:
+        actions.append("[dry-run] git config --remove-section merge.kindex")
+    else:
+        r = subprocess.run(
+            ["git", "-C", str(root), "config", "--remove-section", "merge.kindex"],
+            capture_output=True, text=True, timeout=5,
+        )
+        actions.append(
+            "removed git config section merge.kindex" if r.returncode == 0
+            else "git config section merge.kindex not present"
+        )
+    attrs_path = root / ".gitattributes"
+    if attrs_path.exists():
+        drop = set(_KIN_MERGE_ATTRS) | {_KIN_MERGE_ATTR_HEADER}
+        kept = [ln for ln in attrs_path.read_text().splitlines() if ln.strip() not in drop]
+        if dry_run:
+            actions.append(f"[dry-run] strip kindex entries from {attrs_path}")
+        elif any(ln.strip() for ln in kept):
+            attrs_path.write_text("\n".join(kept).rstrip() + "\n")
+            actions.append(f"stripped kindex entries from {attrs_path}")
+        else:
+            attrs_path.write_text("")
+            actions.append(f"cleared {attrs_path}")
+    return actions

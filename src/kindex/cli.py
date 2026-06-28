@@ -2128,6 +2128,28 @@ def cmd_index(args):
     store.close()
 
 
+def cmd_merge_kin(args):
+    """Git merge driver for .kin artifacts — structured union, no manual conflicts.
+
+    Invoked by git as ``kin merge-kin %O %A %B %P``. Writes the merged result to
+    the ours/%A file and exits 0 when resolved; exits 1 (declining) for an
+    unrecognized file or invalid JSON, leaving the conflict for git to record
+    so it can be resolved manually.
+    """
+    from .kin_merge import merge_kin_files
+
+    merged = merge_kin_files(
+        getattr(args, "path", "") or "",
+        getattr(args, "base", "") or "",
+        getattr(args, "ours", "") or "",
+        getattr(args, "theirs", "") or "",
+    )
+    if merged is None:
+        sys.exit(1)
+    Path(args.ours).write_text(merged)
+    print(f"merge-kin: resolved {args.path}", file=sys.stderr)
+
+
 # ── sync-links ────────────────────────────────────────────────────────
 
 def cmd_sync_links(args):
@@ -5107,6 +5129,29 @@ def cmd_setup_cursor_rules(args):
         print(block)
 
 
+def cmd_setup_merge(args):
+    """Install/uninstall the .kin structured merge driver in the current git repo."""
+    from .setup import git_repo_root, install_merge_driver, uninstall_merge_driver
+
+    root = git_repo_root(getattr(args, "project_path", None) or os.getcwd())
+    if root is None:
+        print("Error: setup-merge must run inside a git repository", file=sys.stderr)
+        sys.exit(1)
+    dry_run = getattr(args, "dry_run", False)
+    uninstall = getattr(args, "uninstall", False)
+    actions = (uninstall_merge_driver if uninstall else install_merge_driver)(
+        root, dry_run=dry_run
+    )
+    for a in actions:
+        print(f"  {a}")
+    if not uninstall and not dry_run:
+        print(
+            "\n.kin/index.json and .kin/code-map.json now merge via `kin merge-kin`.\n"
+            "Commit the updated .gitattributes so collaborators inherit it; each\n"
+            "clone runs `kin setup-merge` once to register the local driver."
+        )
+
+
 def _kindex_claude_md_block() -> str:
     """Generate the recommended CLAUDE.md block for kindex integration."""
     return """\
@@ -6054,6 +6099,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--output-dir", type=str, help="Output directory (default: current dir)")
     _common(s)
     s.set_defaults(func=cmd_index)
+
+    # merge-kin (git merge driver for .kin artifacts)
+    s = sub.add_parser(
+        "merge-kin",
+        help="Git merge driver for .kin artifacts (structured union; called by git)",
+    )
+    s.add_argument("base", help="Ancestor/base version (git %%O)")
+    s.add_argument("ours", help="Current/ours version + output target (git %%A)")
+    s.add_argument("theirs", help="Other/theirs version (git %%B)")
+    s.add_argument("path", help="In-repo pathname (git %%P)")
+    s.set_defaults(func=cmd_merge_kin)
+
+    # setup-merge (install the merge driver into the current repo)
+    s = sub.add_parser(
+        "setup-merge",
+        help="Install the .kin structured merge driver into the current git repo",
+    )
+    s.add_argument("--project-path", help="Repo path (default: current directory)")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    s.add_argument("--uninstall", action="store_true", help="Remove the merge driver")
+    s.set_defaults(func=cmd_setup_merge)
 
     # sync-links
     s = sub.add_parser("sync-links", help="Update node content with connection references")
