@@ -373,9 +373,10 @@ class TestKinIndex:
         assert node_ids == sorted(node_ids)
         assert data["domains"] == sorted(data["domains"])
         assert "generated_at" not in data
-        assert data["source_updated_at"] == max(
-            node["updated_at"] for node in data["nodes"]
-        )
+        # No volatile timestamp in the committed snapshot (would churn git history
+        # and conflict on every concurrent merge); per-node updated_at is enough.
+        assert "source_updated_at" not in data
+        assert all("updated_at" in node for node in data["nodes"])
 
 
 # ── 6. Analytics module ──────────────────────────────────────────────

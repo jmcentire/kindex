@@ -936,10 +936,6 @@ def _node_time(node: dict) -> str:
     )
 
 
-def _latest_node_time(nodes: list[dict]) -> str:
-    return max((_node_time(n) for n in nodes), default="")
-
-
 def _kin_index_node(node: dict) -> dict:
     return {
         "domains": sorted(node.get("domains") or []),
@@ -1064,12 +1060,15 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
         ).fetchall()
         nodes = [store._row_to_dict(r) for r in rows]
 
+    # NB: no volatile timestamp here (e.g. source_updated_at). It would change on
+    # every regeneration, churning git history and conflicting on every concurrent
+    # merge; the commit time already records snapshot freshness. The file is a pure
+    # function of the node set so a structured union merge stays lossless.
     index = {
         "domains": sorted(set(d for n in nodes for d in (n.get("domains") or []))),
         "node_count": len(nodes),
         "nodes": [_kin_index_node(n) for n in nodes],
         "repo": repo_slug,
-        "source_updated_at": _latest_node_time(nodes),
         "version": 1,
     }
 

@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.25.6](https://img.shields.io/badge/version-0.25.6-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.26.0](https://img.shields.io/badge/version-0.26.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1525%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1540%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -538,8 +538,15 @@ Kindex resolves project config from `--project-path`, then `KIN_PROJECT`, then
 the git worktree root, then the current directory. User config still lives in
 `~/.config/kindex/kin.yaml` and deep-merges below project config, so user
 preferences remain local while the repo's work contract travels with the repo.
-Generated `.kin/` snapshots use canonical ordering and source-derived time
-metadata so repeated exports of unchanged source do not churn Git diffs.
+Generated `.kin/` snapshots use canonical, id-keyed ordering and omit volatile
+timestamps so repeated exports of unchanged source do not churn Git diffs.
+Concurrent branches merge them without manual conflicts via a structured merge
+driver: run `kin setup-merge` once per clone to register it. `.kin/index.json`
+is then unioned by node id (newer `updated_at` wins) and `.kin/code-map.json` by
+node/edge/layer — lossless across machines (regenerating from one machine's local
+DB would drop the other branch's nodes), with output byte-identical to a fresh
+`kin index`. `kin merge-kin` is the driver git invokes; repos without it
+registered fall back to git's default merge.
 Tracked `.kin` artifacts must be self-contained and machine-portable: code-map
 paths are repo-relative POSIX paths, and task/report metadata must not point at
 `$HOME`, `/Users/...`, `/tmp/...`, or another developer-local filesystem
@@ -705,6 +712,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin watch` | Watch for new sessions and ingest them (--interval) |
 | `kin analytics` | Archive session analytics and activity heatmap |
 | `kin index` | Write .kin/index.json for git tracking |
+| `kin merge-kin` | Git merge driver: structured union merge of `.kin` artifacts (invoked by git) |
 
 ### Infrastructure
 | Command | Description |
@@ -713,6 +721,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin config [show\|get\|set]` | View or edit configuration |
 | `kin agent-config [show\|set]` | View or tune per-client/per-instance agent behavior overrides |
 | `kin policy [show\|check]` | Show or enforce project work policy from `.kin/config` |
+| `kin setup-merge` | Register the `.kin` structured merge driver in the current git repo |
 | `kin setup-hooks` | Install lifecycle hooks into Claude Code |
 | `kin setup-codex-hooks` | Install prompt-time attention hook into Codex |
 | `kin setup-codex-mcp` | Install kindex MCP server into Codex |
