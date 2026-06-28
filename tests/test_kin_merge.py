@@ -269,3 +269,53 @@ def test_setup_merge_driver_install_is_idempotent_and_reversible(tmp_path):
     uninstall_merge_driver(root)
     assert _git(repo, "config", "merge.kindex.driver").returncode != 0
     assert "merge=kindex" not in (repo / ".gitattributes").read_text()
+
+
+def _init_repo(repo):
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t.t")
+    _git(repo, "config", "user.name", "T")
+
+
+@pytest.mark.skipif(
+    subprocess.run(["which", "git"], capture_output=True).returncode != 0,
+    reason="git not available",
+)
+def test_kin_index_auto_registers_merge_driver(tmp_path):
+    repo = tmp_path / "repo"; _init_repo(repo)
+    data = tmp_path / "data"
+
+    def run_index(*extra):
+        return subprocess.run(
+            [sys.executable, "-m", "kindex.cli", "index",
+             "--output-dir", str(repo), "--data-dir", str(data), *extra],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    r = run_index()
+    assert r.returncode == 0, r.stderr
+    assert "merge-kin %O %A %B %P" in _git(repo, "config", "merge.kindex.driver").stdout
+    assert "merge=kindex" in (repo / ".gitattributes").read_text()
+    # Idempotent: a second index is guarded (already registered) — no re-announce / dup.
+    r2 = run_index()
+    assert r2.returncode == 0
+    assert "merge-driver:" not in r2.stdout
+    assert (repo / ".gitattributes").read_text().count("index.json merge=kindex") == 1
+
+
+@pytest.mark.skipif(
+    subprocess.run(["which", "git"], capture_output=True).returncode != 0,
+    reason="git not available",
+)
+def test_kin_index_respects_no_merge_driver_flag(tmp_path):
+    repo = tmp_path / "repo"; _init_repo(repo)
+    data = tmp_path / "data"
+    r = subprocess.run(
+        [sys.executable, "-m", "kindex.cli", "index", "--output-dir", str(repo),
+         "--data-dir", str(data), "--no-merge-driver"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert _git(repo, "config", "merge.kindex.driver").returncode != 0
+    assert not (repo / ".gitattributes").exists()

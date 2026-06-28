@@ -2,6 +2,14 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.1] - 2026-06-27
+
+### Changed
+- `kin index` now registers the `.kin` structured merge driver automatically on first run — when inside a git repo and not already registered in that clone — so a freshly written `.kin/index.json` is conflict-safe without a separate setup step. Idempotent and guarded; opt out with `kin index --no-merge-driver`. `kin setup-merge` remains the explicit (re)install path.
+
+### Documentation
+- The AI-usage instruction files (`kin setup-claude-md` / `setup-agents-md`), the README, the website, and the project `CLAUDE.md` now document the `.kin` merge driver in the `.kin/` contract: generated `.kin/index.json` and `.kin/code-map.json` are never hand-resolved — `kin index` wires the union merge driver that resolves them.
+
 ## [0.26.0] - 2026-06-27
 
 ### Added

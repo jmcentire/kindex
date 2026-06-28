@@ -1019,6 +1019,32 @@ def git_repo_root(start: "str | Path | None" = None) -> "Path | None":
     return Path(result.stdout.strip())
 
 
+def merge_driver_registered(root: "Path") -> bool:
+    """True when this clone is FULLY set up for the kindex merge driver.
+
+    Requires BOTH the local .git/config driver definition (per-clone, not shared)
+    AND the .gitattributes entries that point the artifacts at it. Requiring both
+    means a half-applied install (config written but the .gitattributes write
+    failed) reports False and self-heals on the next ``kin index``; and a fresh
+    clone whose committed .gitattributes references the driver still registers the
+    missing local config.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "config", "--get", "merge.kindex.driver"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if not (r.returncode == 0 and r.stdout.strip()):
+        return False
+    attrs_path = root / ".gitattributes"
+    if not attrs_path.exists():
+        return False
+    have = {line.strip() for line in attrs_path.read_text().splitlines()}
+    return all(attr in have for attr in _KIN_MERGE_ATTRS)
+
+
 def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
     """Register the ``kin merge-kin`` git merge driver + ``.gitattributes``.
 
