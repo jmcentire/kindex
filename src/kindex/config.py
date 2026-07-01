@@ -67,6 +67,12 @@ class EmbeddingConfig(BaseModel):
     model: str = ""              # empty = provider default
     api_key_env: str = ""        # empty = provider default env var
     dimensions: int = 0          # 0 = provider default
+    strategy: str = ""           # empty/auto, single, or contextual
+    chunk_chars: int = 6000      # local chunk target for contextual strategies
+    chunk_overlap_chars: int = 600
+    max_group_chunks: int = 20   # chunks sent together for contextual embedding
+    reindex_max_jobs: int = 200  # cron drain cap for queued embedding work
+    reindex_max_queue: int = 100000
 
 
 class LLMConfig(BaseModel):

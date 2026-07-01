@@ -2,6 +2,12 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.27.0] - 2026-07-01
+
+### Changed
+- Voyage embeddings now default to `voyage-context-4` (1024 dimensions) for users configured with `embedding.provider: voyage`. Contextual Voyage models use the `/v1/contextualizedembeddings` endpoint with document/query `input_type`; explicitly configured standard Voyage models such as `voyage-3.5` continue to use the regular `/v1/embeddings` endpoint.
+- Embedding maintenance now tracks provider/model/strategy fingerprints, supports provider-gated contextual chunk groups for Voyage context models, stores multiple chunk vectors per node, and aggregates chunk hits back to parent nodes during vector search. `kin embed` gained `status`, `plan`, `enqueue`, `drain`, and `reindex` subcommands with tag/type/project/`.kin`/stale selectors so large graphs can be updated gradually instead of one all-or-nothing run. Cron auto-enqueues bounded stale batches only when the configured model supports contextual embeddings.
+
 ## [0.26.1] - 2026-06-27
 
 ### Changed

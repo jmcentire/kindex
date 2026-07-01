@@ -38,7 +38,7 @@ pytest tests/ --cov=kindex --cov-report=term-missing
 | `src/kindex/kin_merge.py` | Structured 3-way union merge for `.kin/index.json` + `.kin/code-map.json` (`kin merge-kin` git driver) |
 | `src/kindex/daemon.py` | Background daemon and cron cycle |
 | `src/kindex/budget.py` | LLM spend tracking and budget enforcement |
-| `src/kindex/vectors.py` | Vector embedding and similarity search |
+| `src/kindex/vectors.py` | Vector embedding, contextual chunk indexing, reindex maintenance, and similarity search |
 | `src/kindex/vault.py` | Markdown vault import/export |
 | `src/kindex/models.py` | Core data models |
 | `src/kindex/schema.py` | Database schema and migrations |
@@ -99,6 +99,7 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
 
 - Storage: SQLite with FTS5 full-text search, triggers for index sync
 - Search: Hybrid retrieval combining FTS5 BM25 scores, graph BFS traversal, and optional vector similarity, merged via Reciprocal Rank Fusion (RRF)
+- Embeddings: Voyage defaults to `voyage-context-4`; contextual chunking activates only for provider/model support. Use `kin embed plan/enqueue/drain/reindex/status` for scoped or gradual reindexing.
 - Context tiers: full (~4000 tokens), abridged (~1500), summarized (~750), executive (~200), index (~100) -- auto-selected by budget
 - Node types: concept, document, session, person, project, decision, question, artifact, skill, constraint, directive, checkpoint, watch
 - Edge types: relates_to, depends_on, derived_from, contradicts, etc. with weights and provenance

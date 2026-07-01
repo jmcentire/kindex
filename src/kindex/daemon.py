@@ -107,9 +107,23 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     # hot path; the (possibly networked) embedding cost runs here, off the
     # agent's critical path.
     try:
-        from .vectors import drain_embedding_queue
+        from .vectors import (
+            contextual_embeddings_supported,
+            drain_embedding_queue,
+            embedding_status,
+            enqueue_reindex,
+        )
         if verbose:
             print("Embedding queued nodes...")
+        # Contextual chunk indexes need a one-time rebuild when the model or
+        # strategy changes. Trickle stale nodes into the normal queue so large
+        # graphs converge over cron cycles instead of blocking one run.
+        status = embedding_status(store)
+        if (contextual_embeddings_supported(config)
+                and int(status.get("queue_pending") or 0) == 0):
+            limit = max(1, int(getattr(config.embedding, "reindex_max_jobs", 200) or 200))
+            queued = enqueue_reindex(store, stale=True, status="active", limit=limit)
+            results["embed_enqueued_stale"] = queued.get("enqueued", 0)
         embed_drained = drain_embedding_queue(store, config)
         results["embedded"] = embed_drained.get("embedded", 0)
         results["embed_pending"] = embed_drained.get("pending", 0)

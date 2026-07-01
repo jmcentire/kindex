@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.26.1](https://img.shields.io/badge/version-0.26.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.27.0](https://img.shields.io/badge/version-0.27.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1542%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1551%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -599,7 +599,7 @@ Retrieval pipeline:
       |                   full | abridged | summarized | executive | index
       |
   Embedding providers (configurable):
-      local (sentence-transformers) | openai | gemini
+      voyage-context-4 (contextual chunks) | openai | gemini | local
 
 LLM cache tiers (kin ask):
   Tier 1: codebook (stable node index)     <- cached @ 10% cost
@@ -683,7 +683,17 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin graph [mode]` | Dashboard: stats, centrality, communities, bridges, trailheads |
 | `kin suggest` | Bridge opportunity suggestions (--accept, --reject) |
 | `kin skills [person]` | Skill profile and expertise for a person |
-| `kin embed` | Index all nodes for vector similarity search |
+| `kin embed` | Index nodes for vector similarity search |
+| `kin embed plan/enqueue/reindex/drain/status` | Scoped embedding maintenance for full or gradual reindexing |
+
+`embedding.provider: voyage` uses `voyage-context-4` by default. When the
+configured model supports contextual chunk embeddings, Kindex stores stable
+overlapping chunk vectors and aggregates chunk hits back to the parent node. Use
+`kin embed plan --stale --kin ./path/.kin` to estimate a targeted update,
+`kin embed enqueue --stale --tags mea` to trickle selected work through cron, or
+`kin embed reindex --target ./repo --limit 100` for a bounded foreground pass.
+Unsupported providers/models keep the single-vector strategy unless they later
+gain explicit contextual support.
 
 ### Operational
 | Command | Description |
@@ -810,9 +820,15 @@ llm:
 
 embedding:
   provider: voyage                 # voyage, openai, gemini, or local
-  # model: ""                      # empty = provider default
+  # model: ""                      # empty = provider default (voyage-context-4 for Voyage)
   # api_key_env: ""                # empty = provider default (VOYAGE_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)
   # dimensions: 0                  # 0 = provider default (1024 / 1536 / 3072 / 384)
+  # strategy: ""                   # empty/auto; contextual only when the model supports it
+  # chunk_chars: 6000              # stable local chunks for contextual embedding models
+  # chunk_overlap_chars: 600
+  # max_group_chunks: 20
+  # reindex_max_jobs: 200          # cron drain cap for queued embedding work
+  # reindex_max_queue: 100000
 
 budget:
   daily: 0.50

@@ -20,6 +20,19 @@ llm:
   model: claude-haiku-4-5-20251001
   api_key_env: ANTHROPIC_API_KEY
 
+# Vector embeddings (optional -- improves semantic search)
+embedding:
+  provider: voyage
+  # model: ""                      # empty = provider default (voyage-context-4 for Voyage)
+  # api_key_env: ""                # empty = provider default (VOYAGE_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)
+  # dimensions: 0                  # 0 = provider default (1024 / 1536 / 3072 / 384)
+  # strategy: ""                   # empty/auto; contextual only when the model supports it
+  # chunk_chars: 6000              # stable local chunks for contextual embedding models
+  # chunk_overlap_chars: 600
+  # max_group_chunks: 20
+  # reindex_max_jobs: 200          # cron drain cap for queued embedding work
+  # reindex_max_queue: 100000
+
 # Budget limits for LLM calls (USD)
 budget:
   daily: 0.50

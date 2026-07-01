@@ -1,11 +1,32 @@
 """Tests for optional vector search module."""
 
-from unittest.mock import patch, MagicMock
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from kindex import vectors
 from kindex.vectors import (
-    _check_vec, _resolve_embedding_config, embed_text, is_available,
-    PROVIDER_DEFAULTS,
+    _check_vec, _chunk_text, _embed_voyage, _resolve_embedding_config,
+    contextual_embeddings_supported, embed_document_chunks, embed_text,
+    embedding_strategy, enqueue_reindex, estimate_reindex_cost, is_available,
+    PROVIDER_DEFAULTS, select_reindex_nodes, upsert_embedding, vector_search,
 )
 from kindex.config import Config, EmbeddingConfig
+from kindex.store import Store
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 class TestVectorAvailability:
@@ -29,7 +50,7 @@ class TestProviderConfigResolution:
     def test_none_config_defaults_to_voyage(self):
         provider, model, dims, key_env = _resolve_embedding_config(None)
         assert provider == "voyage"
-        assert model == "voyage-3.5"
+        assert model == "voyage-context-4"
         assert dims == 1024
         assert key_env == "VOYAGE_API_KEY"
 
@@ -37,7 +58,7 @@ class TestProviderConfigResolution:
         config = Config()
         provider, model, dims, key_env = _resolve_embedding_config(config)
         assert provider == "voyage"
-        assert model == "voyage-3.5"
+        assert model == "voyage-context-4"
         assert dims == 1024
         assert key_env == "VOYAGE_API_KEY"
 
@@ -61,7 +82,7 @@ class TestProviderConfigResolution:
         config = Config(embedding=EmbeddingConfig(provider="voyage"))
         provider, model, dims, key_env = _resolve_embedding_config(config)
         assert provider == "voyage"
-        assert model == "voyage-3.5"
+        assert model == "voyage-context-4"
         assert dims == 1024
         assert key_env == "VOYAGE_API_KEY"
 
@@ -93,6 +114,18 @@ class TestProviderConfigResolution:
         assert model == "all-MiniLM-L6-v2"
         assert dims == 384
 
+    def test_contextual_strategy_is_provider_gated(self):
+        voyage = Config(embedding=EmbeddingConfig(provider="voyage"))
+        openai = Config(embedding=EmbeddingConfig(
+            provider="openai",
+            strategy="contextual",
+        ))
+
+        assert contextual_embeddings_supported(voyage)
+        assert embedding_strategy(voyage) == "contextual"
+        assert not contextual_embeddings_supported(openai)
+        assert embedding_strategy(openai) == "single"
+
 
 class TestEmbedTextDispatch:
     def test_unknown_provider_returns_none(self):
@@ -119,6 +152,199 @@ class TestEmbedTextDispatch:
             result = embed_text("test", config=config)
         mock_embed.assert_called_once_with("test", "all-MiniLM-L6-v2")
         assert result == [0.1, 0.2]
+
+    def test_voyage_context_model_uses_contextualized_endpoint(self):
+        requests = []
+
+        def fake_urlopen(req, **_kwargs):
+            requests.append(req)
+            return FakeHTTPResponse({
+                "data": [{"data": [{"embedding": [0.1, 0.2], "index": 0}]}],
+                "model": "voyage-context-4",
+            })
+
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": "test-key"}, clear=True):
+            with patch("kindex.vectors.urllib.request.urlopen", fake_urlopen):
+                result = _embed_voyage(
+                    "hello",
+                    "voyage-context-4",
+                    1024,
+                    "VOYAGE_API_KEY",
+                    input_type="document",
+                )
+
+        assert result == [0.1, 0.2]
+        assert requests[0].get_full_url() == "https://api.voyageai.com/v1/contextualizedembeddings"
+        body = json.loads(requests[0].data.decode("utf-8"))
+        assert body == {
+            "inputs": [["hello"]],
+            "model": "voyage-context-4",
+            "input_type": "document",
+            "output_dimension": 1024,
+        }
+
+    def test_voyage_context_query_uses_query_input_shape(self):
+        requests = []
+
+        def fake_urlopen(req, **_kwargs):
+            requests.append(req)
+            return FakeHTTPResponse({
+                "data": [{"data": [{"embedding": [0.3, 0.4], "index": 0}]}],
+                "model": "voyage-context-4",
+            })
+
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": "test-key"}, clear=True):
+            with patch("kindex.vectors.urllib.request.urlopen", fake_urlopen):
+                result = _embed_voyage(
+                    "find this",
+                    "voyage-context-4",
+                    1024,
+                    "VOYAGE_API_KEY",
+                    input_type="query",
+                )
+
+        assert result == [0.3, 0.4]
+        body = json.loads(requests[0].data.decode("utf-8"))
+        assert body["inputs"] == ["find this"]
+        assert body["input_type"] == "query"
+
+    def test_voyage_standard_model_keeps_embeddings_endpoint(self):
+        requests = []
+
+        def fake_urlopen(req, **_kwargs):
+            requests.append(req)
+            return FakeHTTPResponse({"data": [{"embedding": [0.5, 0.6]}]})
+
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": "test-key"}, clear=True):
+            with patch("kindex.vectors.urllib.request.urlopen", fake_urlopen):
+                result = _embed_voyage(
+                    "legacy",
+                    "voyage-3.5",
+                    1024,
+                    "VOYAGE_API_KEY",
+                    input_type="document",
+                )
+
+        assert result == [0.5, 0.6]
+        assert requests[0].get_full_url() == "https://api.voyageai.com/v1/embeddings"
+        body = json.loads(requests[0].data.decode("utf-8"))
+        assert body == {
+            "input": ["legacy"],
+            "model": "voyage-3.5",
+            "input_type": "document",
+        }
+
+    def test_vector_search_embeds_query_as_query(self, monkeypatch):
+        seen = {}
+
+        def fake_ensure_vec_table(store):
+            seen["ensured_store"] = store
+            return True
+
+        def fake_embed_text(text, config=None, *, input_type="document"):
+            seen["text"] = text
+            seen["config"] = config
+            seen["input_type"] = input_type
+            return None
+
+        config = Config()
+        store = SimpleNamespace(config=config)
+        monkeypatch.setattr(vectors, "ensure_vec_table", fake_ensure_vec_table)
+        monkeypatch.setattr(vectors, "embed_text", fake_embed_text)
+
+        assert vector_search(store, "find me") == []
+        assert seen["ensured_store"] is store
+        assert seen == {
+            "ensured_store": store,
+            "text": "find me",
+            "config": config,
+            "input_type": "query",
+        }
+
+    def test_chunk_text_uses_overlap(self):
+        assert _chunk_text("abcdefghij", chunk_chars=4, overlap_chars=1) == [
+            "abcd", "defg", "ghij",
+        ]
+
+    def test_contextual_document_embedding_batches_chunks(self, monkeypatch):
+        calls = []
+        config = Config(embedding=EmbeddingConfig(
+            provider="voyage",
+            chunk_chars=4,
+            chunk_overlap_chars=0,
+            max_group_chunks=2,
+        ))
+
+        def fake_embed(group, *_args, **_kwargs):
+            calls.append(list(group))
+            return [[float(len(c))] for c in group]
+
+        monkeypatch.setattr(vectors, "_embed_voyage_context_chunks", fake_embed)
+        records = embed_document_chunks("abcdefghijkl", config)
+
+        assert calls == [["abcd", "efgh"], ["ijkl"]]
+        assert [r["embedding"] for r in records] == [[4.0], [4.0], [4.0]]
+        assert [r["index"] for r in records] == [0, 1, 2]
+
+    def test_upsert_embedding_stores_chunk_metadata(self, tmp_path, monkeypatch):
+        store = Store(Config(data_dir=str(tmp_path)))
+        try:
+            store.conn.execute(
+                "CREATE TABLE node_vectors (node_id TEXT PRIMARY KEY, embedding BLOB)"
+            )
+            vectors._ensure_vector_meta_table(store)
+            monkeypatch.setattr(vectors, "ensure_vec_table", lambda store: True)
+            monkeypatch.setattr(vectors, "embed_document_chunks", lambda text, config: [
+                {
+                    "index": 0,
+                    "text": "first",
+                    "embedding": [0.1, 0.2],
+                    "text_hash": "hash",
+                    "token_estimate": 2,
+                },
+                {
+                    "index": 1,
+                    "text": "second",
+                    "embedding": [0.3, 0.4],
+                    "text_hash": "hash",
+                    "token_estimate": 2,
+                },
+            ])
+
+            assert upsert_embedding(store, "node-1", "ignored")
+            rows = store.conn.execute(
+                "SELECT node_id FROM node_vectors ORDER BY node_id"
+            ).fetchall()
+            meta = store.conn.execute(
+                "SELECT vector_id, node_id, chunk_index, chunk_count "
+                "FROM node_vector_meta ORDER BY chunk_index"
+            ).fetchall()
+
+            assert [r["node_id"] for r in rows] == ["node-1#0000", "node-1#0001"]
+            assert [(r["vector_id"], r["node_id"], r["chunk_index"], r["chunk_count"])
+                    for r in meta] == [
+                        ("node-1#0000", "node-1", 0, 2),
+                        ("node-1#0001", "node-1", 1, 2),
+                    ]
+        finally:
+            store.close()
+
+    def test_reindex_selection_estimate_and_enqueue(self, tmp_path):
+        store = Store(Config(data_dir=str(tmp_path)))
+        try:
+            a = store.add_node("Alpha", content="body", domains=["kindex"])
+            store.add_node("Beta", content="body", domains=["other"])
+
+            selected = select_reindex_nodes(store, tags=["kindex"])
+            estimate = estimate_reindex_cost(selected, store.config)
+            result = enqueue_reindex(store, tags=["kindex"])
+
+            assert [n["id"] for n in selected] == [a]
+            assert estimate["nodes"] == 1
+            assert estimate["chunks"] == 1
+            assert result["enqueued"] == 1
+        finally:
+            store.close()
 
 
 class TestProviderDefaults:

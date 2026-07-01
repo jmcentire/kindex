@@ -2443,16 +2443,96 @@ def _profile_create(args):
 # ── embed ─────────────────────────────────────────────────────────────
 
 def cmd_embed(args):
-    """Index all nodes for vector similarity search.
+    """Index or reindex nodes for vector similarity search.
 
     Requires: pip install kindex[vectors]
     """
     store = _store(args)
+    action = getattr(args, "embed_action", None) or "index"
+
+    def _split_csv(value):
+        if not value:
+            return None
+        return [v.strip() for v in value.split(",") if v.strip()]
+
+    def _filters():
+        return {
+            "tags": _split_csv(getattr(args, "tags", None)),
+            "node_type": getattr(args, "node_type", None),
+            "status": getattr(args, "status", None),
+            "since": getattr(args, "since", None),
+            "project_path": (getattr(args, "kin", None)
+                             or getattr(args, "target", None)),
+            "stale": getattr(args, "stale", False),
+            "limit": getattr(args, "limit", None),
+        }
 
     try:
-        from .vectors import index_all_nodes
-        count = index_all_nodes(store, verbose=getattr(args, "verbose", False))
-        print(f"Embedded {count} nodes for vector search.")
+        from .vectors import (
+            drain_embedding_queue,
+            embedding_status,
+            enqueue_reindex,
+            index_all_nodes,
+            plan_embedding_reindex,
+            reindex_now,
+        )
+        if action == "status":
+            result = embedding_status(store)
+        elif action == "plan":
+            result = plan_embedding_reindex(store, **_filters())
+        elif action == "enqueue":
+            filters = _filters()
+            filters["max_queue"] = getattr(args, "max_queue", None)
+            result = enqueue_reindex(store, **filters)
+        elif action == "drain":
+            result = drain_embedding_queue(
+                store, store.config, max_jobs=getattr(args, "max_jobs", None)
+            )
+        elif action == "reindex":
+            if getattr(args, "enqueue", False):
+                filters = _filters()
+                filters["max_queue"] = getattr(args, "max_queue", None)
+                result = enqueue_reindex(store, **filters)
+            else:
+                result = reindex_now(
+                    store, verbose=getattr(args, "verbose", False), **_filters()
+                )
+        else:
+            count = index_all_nodes(store, verbose=getattr(args, "verbose", False))
+            result = {"status": "ok", "embedded": count}
+        if args.json:
+            print(_dumps(result, indent=2))
+        elif action == "status":
+            print(f"Provider: {result['provider']} / {result['model']}")
+            print(f"Strategy: {result['strategy']} "
+                  f"(contextual_supported={result['contextual_supported']})")
+            print(f"Dimensions: {result['dimensions']}")
+            print(f"Indexed nodes: {result.get('indexed_nodes')}")
+            print(f"Vector rows: {result.get('vector_rows')}")
+            print(f"Queue pending: {result['queue_pending']}")
+        elif action == "plan":
+            print(f"Nodes: {result['nodes']}")
+            print(f"Chunks: {result['chunks']}")
+            print(f"Estimated tokens: {result['estimated_tokens']}")
+            if result.get("estimated_cost_usd") is not None:
+                print(f"Estimated cost: ${result['estimated_cost_usd']:.4f}")
+            else:
+                print("Estimated cost: unknown for this provider/model")
+        elif action == "enqueue":
+            print(f"Enqueued {result['enqueued']} nodes "
+                  f"({result['queue_pending']} pending).")
+        elif action == "drain":
+            print(f"Embedded {result.get('embedded', 0)} queued nodes "
+                  f"({result.get('pending', 0)} pending).")
+        elif action == "reindex":
+            if result.get("enqueued") is not None:
+                print(f"Enqueued {result['enqueued']} nodes "
+                      f"({result['queue_pending']} pending).")
+            else:
+                print(f"Embedded {result.get('embedded', 0)} nodes "
+                      f"({result.get('failed', 0)} failed).")
+        else:
+            print(f"Embedded {result['embedded']} nodes for vector search.")
     except Exception as e:
         print(f"Vector indexing failed: {e}", file=sys.stderr)
         print("Install dependencies: pip install kindex[vectors]", file=sys.stderr)
@@ -5898,8 +5978,46 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_profile)
 
     # embed
-    s = sub.add_parser("embed", help="Index all nodes for vector search")
+    s = sub.add_parser("embed", help="Index and maintain vector search")
     s.add_argument("--verbose", "-v", action="store_true")
+    embed_sub = s.add_subparsers(dest="embed_action")
+
+    def _embed_filters(parser):
+        parser.add_argument("--tags", help="Comma-separated tags/domains to target")
+        parser.add_argument("--node-type", help="Target one node type")
+        parser.add_argument("--status", help="Target one node status")
+        parser.add_argument("--since", help="Only nodes updated since this ISO timestamp")
+        parser.add_argument("--target", help="Target nodes under a project path")
+        parser.add_argument("--kin", help="Target a project .kin directory or .kin/config")
+        parser.add_argument("--stale", action="store_true",
+                            help="Only nodes missing current embedding metadata")
+        parser.add_argument("--limit", type=int, help="Maximum nodes to target")
+
+    for name, help_text in (
+        ("plan", "Estimate selected reindex work"),
+        ("enqueue", "Queue selected nodes for gradual embedding maintenance"),
+        ("reindex", "Run selected reindex work now, or enqueue with --enqueue"),
+    ):
+        es = embed_sub.add_parser(name, help=help_text)
+        _embed_filters(es)
+        if name in {"enqueue", "reindex"}:
+            es.add_argument("--max-queue", type=int, help="Maximum retained queue size")
+        if name == "reindex":
+            es.add_argument("--enqueue", action="store_true",
+                            help="Queue work instead of running synchronously")
+            es.add_argument("--verbose", "-v", action="store_true")
+        _common(es)
+        es.set_defaults(func=cmd_embed)
+
+    es = embed_sub.add_parser("drain", help="Drain queued embedding work")
+    es.add_argument("--max-jobs", type=int, help="Maximum queued nodes to embed")
+    _common(es)
+    es.set_defaults(func=cmd_embed)
+
+    es = embed_sub.add_parser("status", help="Show embedding index status")
+    _common(es)
+    es.set_defaults(func=cmd_embed)
+
     _common(s)
     s.set_defaults(func=cmd_embed)
 
