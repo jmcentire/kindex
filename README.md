@@ -16,6 +16,8 @@ It's a persistent knowledge graph for AI-assisted workflows. It indexes your con
 
 > **Memory plugins capture what happened. Kindex captures what it means and how it connects.** Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time — understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.
 
+Docs: [kindex.tools](https://kindex.tools/) is the canonical site, with the same Pages build available at [jmcentire.github.io/kindex](https://jmcentire.github.io/kindex/). Human setup lives in [docs/human-guide.md](docs/human-guide.md); agent operating rules live in [docs/mcp-agent-guide.md](docs/mcp-agent-guide.md).
+
 ## Install
 
 Pick whichever installer you already use. They all install the same `kin` and `kin-mcp` binaries.
@@ -127,6 +129,7 @@ Or hand-edit `~/.gemini/config/mcp_config.json` and
 
 ```bash
 kin setup-opencode-mcp
+kin setup-agents-md --install --global
 ```
 
 Or hand-edit `~/.config/opencode/opencode.json`:
@@ -139,7 +142,7 @@ Or hand-edit `~/.config/opencode/opencode.json`:
 }
 ```
 
-OpenCode reads `AGENTS.md` natively, so `kin setup-agents-md --install` works for OpenCode too.
+OpenCode reads `AGENTS.md` natively, so install the MCP server and the shared `AGENTS.md` instructions together.
 OpenCode also supports plugins, but Kindex currently uses MCP + instructions there rather than prompt-time attention injection.
 
 ### Cursor
@@ -243,7 +246,7 @@ treat tracked `.kin` files as shipped project state, not local cache.
 If the host also exposes session-local task tools, use those only for temporary
 planning; durable work belongs in Kindex.
 
-The SessionStart hook (`kin setup-hooks`) reinforces these directives at the start of every session with a "Session directives" block that reminds Claude to use kindex MCP tools throughout the session.
+The Claude SessionStart hook (`kin setup-hooks`) and Codex hooks (`kin setup-codex-hooks`) reinforce these directives at the start of supported sessions with a "Session directives" block that reminds the agent to use kindex MCP tools throughout the session.
 
 ### What gets captured
 
@@ -267,6 +270,13 @@ does not interrupt an idle TUI unless the host itself exposes a same-thread
 automation/server wake path. A Stop hook guard can block Claude from exiting when
 actionable reminders are pending, but it is opt-in because Claude displays
 visible "Blocked by hook" output when a Stop hook blocks.
+
+Important boundary: `remind_create` records the reminder. Something must later
+run `kin remind check`, `kin remind exec`, `kin cron`, or an installed
+`kin setup-cron` schedule for due reminders to fire. Wake reminders are a
+Kindex capability for Codex and OpenCode because those clients expose
+headless commands; they are not a reentrant scheduler for an already-idle
+interactive session.
 
 Hook-time reminder injection uses a scoped reminder board. When a client supplies a chat/session id (`conversation_id`, `chat_id`, `session_id`, `CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, `OPENCODE_SESSION_ID`, `CURSOR_SESSION_ID`, etc.), Kindex injects only reminders scoped to that id plus reminders explicitly marked `--scope global`. Legacy unscoped reminders still work for manual `kin prompt-check`, daemon checks, and notifications, but they are not injected into an identified chat by default.
 

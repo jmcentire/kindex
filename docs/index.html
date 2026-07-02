@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kindex — The memory layer AI coding agents don't have</title>
-<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start blind. Free MCP plugin with CLI, ingestion, and cache-optimized LLM retrieval.">
+<meta name="description" content="The memory layer AI coding agents don't have. A persistent knowledge graph so Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start blind. Free MCP plugin with CLI, reminders, wakeups, ingestion, and cache-optimized LLM retrieval.">
 <style>
   :root {
     --bg: #0d1117;
@@ -251,7 +251,7 @@
     </p>
     <p class="subline">
       Kindex does one thing. It knows what you know.
-      A persistent knowledge graph so Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start blind.
+      A persistent knowledge graph so Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents never start blind, lose project context, or miss scheduled follow-up work.
     </p>
     <div class="install-boxes">
       <div class="install-box primary mono">
@@ -310,7 +310,7 @@
       </div>
       <div class="card">
         <h3>Reminders &amp; Actions</h3>
-        <p>Natural language scheduling with recurring support. Reminders can carry shell commands, Claude instructions, or headless Codex/OpenCode wakeups &mdash; the daemon executes them automatically when due. When explicitly enabled, a Stop hook guard can block session exit for actionable reminders. <code>kin remind create "deploy" --at "in 1h" --wake codex</code>.</p>
+        <p>Natural language scheduling with recurring support. Reminders can carry shell commands, Claude instructions, or headless Codex/OpenCode wakeups. The checker fires them when <code>kin cron</code>, <code>kin remind check</code>, or an installed schedule runs. <code>kin remind create "deploy" --at "in 1h" --wake codex</code>.</p>
       </div>
       <div class="card">
         <h3>Adaptive Scheduling</h3>
@@ -339,6 +339,7 @@
     <div class="callout">
       <strong>Installing tools is not enough. Agents won't use them proactively unless you tell them to.</strong>
       <p>Kindex ships with recommended instruction files and lifecycle hooks that turn passive tools into active habits. The difference between "an agent has a knowledge graph" and "an agent actively maintains a knowledge graph" is the right setup command for that client.</p>
+      <p>Humans can follow the <a href="human-guide.md">human setup guide</a>. Agents should follow the <a href="mcp-agent-guide.md">MCP agent guide</a>.</p>
     </div>
     <div class="terminal mono">
 <span class="comment"># Claude Code: CLAUDE.md + lifecycle hooks</span>
@@ -384,6 +385,10 @@
       <div class="card">
         <h3>Bulk Extraction</h3>
         <p>Use <code>learn</code> after reading long files or completing complex tasks to auto-extract and index concepts.</p>
+      </div>
+      <div class="card">
+        <h3>Wakeup Reminders</h3>
+        <p>Create reminders that run shell actions or launch headless Codex/OpenCode follow-up turns when the checker fires. Kindex records and dispatches due reminders; it does not interrupt an idle terminal UI by itself.</p>
       </div>
       <div class="card">
         <h3>Project <code>.kin/</code> Contract</h3>
@@ -442,6 +447,7 @@
 
 <span class="comment"># Codex</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-codex-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-codex-hooks</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-agents-md</span> <span class="flag">--install</span> <span class="flag">--global</span>
 
 <span class="comment"># Gemini CLI</span>
@@ -455,6 +461,7 @@
 
 <span class="comment"># OpenCode (also reads AGENTS.md)</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-opencode-mcp</span>
+<span class="prompt">$</span> <span class="cmd">kin setup-agents-md</span> <span class="flag">--install</span> <span class="flag">--global</span>
 
 <span class="comment"># Cursor</span>
 <span class="prompt">$</span> <span class="cmd">kin setup-cursor-mcp</span>
@@ -493,7 +500,7 @@
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Or add <code>.mcp.json</code> to any repo for project-scope access:</p>
     <div class="integration-block mono">{ "mcpServers": { "kindex": { "command": "kin-mcp" } } }</div>
-    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via agent lifecycle hooks. Use whichever integration fits your workflow. Per-client and per-instance behavior can be tuned with <code>kin agent-config</code>. For durable work, agents should use Kindex tags and tasks, search before adding, and treat tracked <code>.kin</code> files as shipped project state; host-local task scratch is not a substitute for persistent graph state.</p>
+    <p style="margin-top: 16px; color: var(--text-dim);">Also works as a standalone CLI (<code>kin search</code>, <code>kin add</code>, etc.) and via agent lifecycle hooks. Use whichever integration fits your workflow. Per-client and per-instance behavior can be tuned with <code>kin agent-config</code>. For durable work, agents should use Kindex tags and tasks, search before adding, and treat tracked <code>.kin</code> files as shipped project state; host-local task scratch is not a substitute for persistent graph state. See the <a href="human-guide.md">human guide</a> and <a href="mcp-agent-guide.md">agent guide</a> for complete setup.</p>
   </div>
 </section>
 
@@ -572,6 +579,7 @@
   Daemon:        launchd/cron <span class="highlight">adaptive interval</span> ── check due ── notify ── auto-snooze
   Scheduling:    adaptive tiers (&gt;7d=daily, &gt;1d=hourly, &gt;1h=10min, &lt;1h=5min, none=disabled)
   Actions:       shell commands | <span class="highlight">claude -p</span> | <span class="highlight">codex exec</span> | <span class="highlight">opencode run</span>
+                 wakeups are headless daemon/cron turns, not idle-TUI interrupts
   Stop guard:    optional block when actionable reminders are pending
 
 <span class="green">Three integration paths:</span>
@@ -712,7 +720,7 @@ work_policy:
         <tr><td><code>kin decay</code></td><td>Apply weight decay to stale nodes/edges</td></tr>
         <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
         <tr><td><code>kin tag [action]</code></td><td>Session tags: start, update, segment, pause, end, resume, list, show</td></tr>
-        <tr><td><code>kin remind [action]</code></td><td>Reminders: create, list, show, snooze, done, cancel, check, exec</td></tr>
+        <tr><td><code>kin remind [action]</code></td><td>Reminders: create, list, show, snooze, done, cancel, check, exec, and <code>--wake codex|opencode</code></td></tr>
       </table>
     </div>
 
@@ -802,6 +810,8 @@ work_policy:
     <p>
       <a href="https://github.com/jmcentire/kindex">GitHub</a> &middot;
       <a href="https://github.com/jmcentire/kindex/issues">Issues</a> &middot;
+      <a href="human-guide.md">Human Guide</a> &middot;
+      <a href="mcp-agent-guide.md">Agent Guide</a> &middot;
       <a href="https://github.com/jmcentire/kindex/tree/main/examples/kin-voices">Voice Examples</a> &middot;
       MIT License &middot;
       Free
@@ -812,6 +822,7 @@ work_policy:
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;
       <a href="https://signet.tools">signet.tools</a> &middot;
       <a href="https://kindex.tools">kindex.tools</a> &middot;
+      <a href="https://jmcentire.github.io/kindex/">jmcentire.github.io/kindex</a> &middot;
       <a href="https://herald.tools">herald.tools</a> &middot;
       <a href="https://centaur.tools">centaur.tools</a> &middot;
       <a href="https://perardua.dev">perardua.dev</a>

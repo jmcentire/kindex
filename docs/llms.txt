@@ -1,0 +1,45 @@
+# Kindex
+
+Kindex is a local-first persistent knowledge graph and MCP server for AI-assisted workflows. It helps Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other MCP-capable agents preserve durable project memory across sessions.
+
+Core docs:
+
+- Human setup guide: https://kindex.tools/human-guide.md
+- AI/MCP agent guide: https://kindex.tools/mcp-agent-guide.md
+- GitHub repo: https://github.com/jmcentire/kindex
+- PyPI package: https://pypi.org/project/kindex/
+- GitHub Pages mirror: https://jmcentire.github.io/kindex/
+
+Install:
+
+```bash
+pip install 'kindex[mcp]'
+uv tool install 'kindex[mcp]'
+uvx --from 'kindex[mcp]' kin-mcp --help
+kin init
+```
+
+Agent setup:
+
+```bash
+kin setup-codex-mcp
+kin setup-codex-hooks
+kin setup-agents-md --install --global
+
+kin setup-opencode-mcp
+kin setup-agents-md --install --global
+```
+
+Reminder wakeups:
+
+```bash
+kin setup-cron
+kin remind create "Continue rollout check" --at "in 10 minutes" \
+  --wake codex --session last --cwd "$PWD" \
+  --instructions "Check the rollout and fix any new failures."
+kin remind create "Continue OpenCode build" --at "in 10 minutes" \
+  --wake opencode --session last --cwd "$PWD" --wake-agent build \
+  --instructions "Continue the build triage."
+```
+
+Boundary: `remind_create` records a reminder. Due reminders fire only when `kin remind check`, `kin remind exec`, `kin cron`, or an installed `kin setup-cron` schedule runs. Codex/OpenCode wakeups start headless turns from that checker context; Kindex does not interrupt an idle interactive TUI by itself.

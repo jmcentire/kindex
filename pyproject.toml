@@ -36,7 +36,8 @@ dev = ["pytest>=7.0", "scipy>=1.10", "dateparser>=1.1", "build>=1.0"]
 all = ["anthropic>=0.40", "sqlite-vec>=0.1", "mcp[cli]>=1.26.0", "dateparser>=1.1", "cronsim>=2.0"]
 
 [project.urls]
-Homepage = "https://github.com/jmcentire/kindex"
+Homepage = "https://kindex.tools/"
+Documentation = "https://kindex.tools/"
 Repository = "https://github.com/jmcentire/kindex"
 Issues = "https://github.com/jmcentire/kindex/issues"
 

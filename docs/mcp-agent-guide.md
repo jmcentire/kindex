@@ -224,6 +224,14 @@ action, natural-language instructions, or a headless Codex/OpenCode wakeup. Use
 `wake_model`, and `wake_agent` fields to start or resume a noninteractive turn
 when the reminder fires.
 
+Do not treat reminders as reentrant interrupts for an idle interactive thread.
+`remind_create` stores the reminder; it fires only when `kin remind check`,
+`kin remind exec`, `kin cron`, or an installed `kin setup-cron` schedule runs.
+Codex wakeups launch `codex exec` (or `codex exec resume ...`) from that
+daemon/cron context. OpenCode wakeups launch `opencode run` with `--session` or
+`--continue` when requested. If the host has no same-thread wake server,
+Kindex starts a headless follow-up turn instead of prodding the original TUI.
+
 ## What Not To Capture
 
 Do not capture trivial file reads, routine git status output, obvious
@@ -362,3 +370,6 @@ before `kin config set` or `kin agent-config set` runs.
 4. Install the agent instruction file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or Cursor `.mdc`).
 5. Run `kin setup-cron` for periodic maintenance.
 6. Backfill saved sessions with `kin ingest codex-sessions` or `kin ingest sessions`.
+
+For a human-facing walkthrough with reminders, docs site URLs, and release
+metadata checks, see [human-guide.md](human-guide.md).

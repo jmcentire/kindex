@@ -1,0 +1,109 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/server-card.json",
+  "serverInfo": {
+    "name": "kindex",
+    "version": "0.27.1",
+    "title": "Kindex",
+    "description": "Persistent knowledge graph for Claude Code, Codex, Gemini CLI, Google Antigravity, OpenCode, Cursor, and other AI-assisted workflows. Hybrid FTS5 + graph retrieval, context tiers, operational guardrails, session tags, reminders with headless Codex/OpenCode wakeups, agent-specific configuration, lifecycle adapters, dream-cycle consolidation, git-tracked .kin project context, and opt-in work policy enforcement.",
+    "homepage": "https://kindex.tools",
+    "mirror": "https://jmcentire.github.io/kindex/",
+    "repository": "https://github.com/jmcentire/kindex",
+    "documentation": "https://kindex.tools/mcp-agent-guide.md",
+    "humanGuide": "https://kindex.tools/human-guide.md",
+    "license": "MIT",
+    "vendor": {
+      "name": "Jeremy McEntire",
+      "url": "https://github.com/jmcentire"
+    }
+  },
+  "transport": {
+    "type": "stdio",
+    "note": "Kindex runs locally over stdio. Install with `pip install kindex[mcp]`, `uv tool install kindex[mcp]`, or `uvx --from kindex[mcp] kin-mcp`, then register `kin-mcp` with your MCP client. No public HTTP transport is exposed."
+  },
+  "install": {
+    "pypi": "kindex[mcp]",
+    "command": "kin-mcp",
+    "config": {
+      "mcpServers": {
+        "kindex": {
+          "command": "kin-mcp"
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "summary": [
+      "Hybrid FTS5 + graph search",
+      "Tier-budgeted context injection",
+      "Knowledge capture, edit, supersede, learn, and linking",
+      "Session tags and durable tasks",
+      "Multi-agent coordination, advisory locks, standing messages, and watches",
+      "Time-based reminders with shell actions, Claude instructions, and headless Codex/OpenCode wakeups",
+      "Mode primers, graph health, analytics, imports, exports, and ingestion adapters"
+    ],
+    "tools": [
+      "search",
+      "add",
+      "edit",
+      "supersede",
+      "context",
+      "show",
+      "ask",
+      "learn",
+      "link",
+      "list_nodes",
+      "status",
+      "suggest",
+      "graph_stats",
+      "graph_heal",
+      "graph_merge",
+      "dream",
+      "changelog",
+      "ingest",
+      "tag_start",
+      "tag_update",
+      "tag_resume",
+      "task_add",
+      "task_done",
+      "task_list",
+      "task_claim",
+      "task_release",
+      "coord_start",
+      "coord_join",
+      "coord_post",
+      "coord_read",
+      "coord_attach",
+      "coord_inject",
+      "coord_list",
+      "coord_end",
+      "lock_acquire",
+      "lock_release",
+      "watch_add",
+      "watch_list",
+      "watch_resolve",
+      "remind_create",
+      "remind_list",
+      "remind_snooze",
+      "remind_done",
+      "remind_check",
+      "remind_exec",
+      "mode_activate",
+      "mode_list",
+      "mode_show",
+      "mode_create",
+      "mode_export",
+      "mode_import",
+      "mode_seed"
+    ],
+    "resources": [],
+    "prompts": []
+  },
+  "links": {
+    "llms.txt": "https://kindex.tools/llms.txt",
+    "llmsFull": "https://kindex.tools/llms-full.txt",
+    "humanGuide": "https://kindex.tools/human-guide.md",
+    "agentGuide": "https://kindex.tools/mcp-agent-guide.md",
+    "registry": "https://github.com/jmcentire/kindex/blob/main/server.json",
+    "githubPages": "https://jmcentire.github.io/kindex/"
+  }
+}

@@ -1,0 +1,148 @@
+# Kindex Full LLM Guide
+
+Kindex is the durable memory layer for AI-assisted work. It stores knowledge in
+a local SQLite graph, exposes it through a CLI and MCP server, and gives agents
+explicit operating rules for using that graph without waiting for the user to
+ask.
+
+Public surfaces:
+
+- Canonical website: https://kindex.tools/
+- GitHub Pages mirror/build: https://jmcentire.github.io/kindex/
+- Human setup guide: https://kindex.tools/human-guide.md
+- MCP agent guide: https://kindex.tools/mcp-agent-guide.md
+- MCP server card: https://kindex.tools/.well-known/mcp/server-card.json
+- Source: https://github.com/jmcentire/kindex
+- PyPI: https://pypi.org/project/kindex/
+
+## Install
+
+```bash
+pip install 'kindex[mcp]'
+uv tool install 'kindex[mcp]'
+uvx --from 'kindex[mcp]' kin-mcp --help
+git clone https://github.com/jmcentire/kindex && cd kindex && make install
+kin init
+```
+
+Extras:
+
+- `mcp`: installs the `kin-mcp` server.
+- `llm`: enables Anthropic-powered extraction and question answering.
+- `vectors`: enables sqlite-vec semantic similarity.
+- `reminders`: enables natural-language scheduling.
+- `all`: installs all optional features.
+
+## Agent Operating Contract
+
+Agents connected to Kindex should:
+
+1. Start or resume a session tag.
+2. Search or ask Kindex before significant work.
+3. Use durable Kindex tasks for work that must survive the current chat.
+4. Capture decisions, constraints, questions, watches, key files, and notable outputs while they are fresh.
+5. Link related concepts.
+6. End the session tag with a summary.
+
+Agents should not treat host-local task scratch as durable memory. If a repo
+tracks `.kin/`, agents should treat `.kin/config`, `.kin/index.json`, and
+`.kin/code-map.json` as shipped project state and regenerate generated JSON
+instead of hand-editing it.
+
+## Client Setup
+
+```bash
+# Claude Code
+claude mcp add --scope user --transport stdio kindex -- kin-mcp
+kin setup-claude-md --install
+kin setup-hooks
+
+# Codex
+kin setup-codex-mcp
+kin setup-codex-hooks
+kin setup-agents-md --install --global
+
+# Gemini CLI
+kin setup-gemini-mcp
+kin setup-gemini-md --install
+
+# Google Antigravity
+kin setup-antigravity-mcp
+kin setup-antigravity-hooks
+kin setup-antigravity-md --install
+
+# OpenCode
+kin setup-opencode-mcp
+kin setup-agents-md --install --global
+
+# Cursor
+kin setup-cursor-mcp
+kin setup-cursor-rules --install
+```
+
+## Reminder Wakeups
+
+Reminders can carry shell actions, natural-language instructions, or headless
+agent wakeups:
+
+```bash
+kin setup-cron
+
+kin remind create "Continue rollout check" --at "in 10 minutes" \
+  --wake codex --session last --cwd "$PWD" \
+  --instructions "Check the rollout and fix any new failures."
+
+kin remind create "Continue OpenCode build" --at "in 10 minutes" \
+  --wake opencode --session last --cwd "$PWD" --wake-agent build \
+  --instructions "Continue the build triage."
+```
+
+Important boundary:
+
+- `remind_create` stores the reminder.
+- Due reminders fire only when `kin remind check`, `kin remind exec`,
+  `kin cron`, or an installed `kin setup-cron` schedule runs.
+- Codex wakeups run `codex exec` or `codex exec resume ...`.
+- OpenCode wakeups run `opencode run`, optionally with `--session`,
+  `--continue`, `--dir`, `--model`, and `--agent`.
+- Kindex does not reenter or interrupt an idle terminal UI unless that host
+  provides a same-thread wake API.
+
+## Core Tool Families
+
+- Search and context: `search`, `context`, `ask`, `show`, `list_nodes`.
+- Knowledge capture: `add`, `edit`, `supersede`, `learn`, `link`.
+- Session state: `tag_start`, `tag_update`, `tag_resume`.
+- Durable work: `task_add`, `task_list`, `task_done`, `task_claim`,
+  `task_release`.
+- Coordination: `coord_start`, `coord_join`, `coord_post`, `coord_read`,
+  `coord_attach`, `coord_inject`, `coord_end`.
+- Locks and watches: `lock_acquire`, `lock_release`, `watch_add`,
+  `watch_list`, `watch_resolve`.
+- Reminders: `remind_create`, `remind_list`, `remind_snooze`,
+  `remind_done`, `remind_check`, `remind_exec`.
+- Graph maintenance: `status`, `suggest`, `graph_stats`, `graph_heal`,
+  `graph_merge`, `dream`, `changelog`, `ingest`.
+- Modes: `mode_activate`, `mode_list`, `mode_show`, `mode_create`,
+  `mode_export`, `mode_import`, `mode_seed`.
+
+## Release Verification
+
+For release work, verify:
+
+```bash
+python3 -m pytest
+mcp-publisher validate server.json
+git describe --tags --exact-match HEAD
+gh release view vX.Y.Z --repo jmcentire/kindex
+curl -fsSL https://pypi.org/pypi/kindex/json
+curl -fsSL https://kindex.tools/ | grep 'vX.Y.Z'
+curl -fsSL https://kindex.tools/.well-known/mcp/server-card.json | grep 'X.Y.Z'
+```
+
+Refresh registry auth before publishing if the local MCP publisher token has
+expired, then run:
+
+```bash
+mcp-publisher publish server.json
+```
