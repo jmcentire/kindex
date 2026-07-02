@@ -2,6 +2,15 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.27.1] - 2026-07-02
+
+### Added
+- Reminder actions can now wake headless Codex or OpenCode runs when due. `kin remind create --wake codex|opencode` stores first-class wake metadata, can resume a host session via `--session last` or an explicit session id, and passes through working directory/model/agent options where the host CLI supports them.
+- MCP `remind_create` exposes matching `wake`, `wake_session`, `wake_cwd`, `wake_model`, and `wake_agent` arguments so agent clients can create Codex/OpenCode wake reminders directly.
+
+### Documentation
+- README, website docs, MCP agent guide, and session guidance now distinguish daemon-triggered headless wakeups from same-thread TUI interruption.
+
 ## [0.27.0] - 2026-07-01
 
 ### Changed

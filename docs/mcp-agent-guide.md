@@ -219,7 +219,10 @@ Use `watch_resolve` once the risk is fixed or irrelevant.
 ### Use Reminders
 
 Use `remind_create` for time-based follow-up. A reminder may include a shell
-action, natural-language instructions, or both.
+action, natural-language instructions, or a headless Codex/OpenCode wakeup. Use
+`wake=codex` or `wake=opencode` with optional `wake_session`, `wake_cwd`,
+`wake_model`, and `wake_agent` fields to start or resume a noninteractive turn
+when the reminder fires.
 
 ## What Not To Capture
 

@@ -2,10 +2,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.27.0](https://img.shields.io/badge/version-0.27.0-purple.svg)](https://github.com/jmcentire/kindex/releases)
+[![v0.27.1](https://img.shields.io/badge/version-0.27.1-purple.svg)](https://github.com/jmcentire/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
-[![Tests](https://img.shields.io/badge/tests-1551%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1559%20passing-brightgreen.svg)](#)
 [![MCP Plugin](https://img.shields.io/badge/MCP-Plugin-orange.svg)](#install-as-agent-mcp-plugin)
 
 **The memory layer AI coding agents don't have.**
@@ -253,11 +253,20 @@ With the directives active, the agent will:
 - **Link** related concepts when connections are found
 - **Learn** from long files and outputs via bulk extraction
 - **Tag** sessions to track work context across conversations
-- **Remind** with actions for deferred tasks (shell commands or headless Claude invocations)
+- **Remind** with actions for deferred tasks (shell commands or headless agent wakeups)
 
 ### Actionable Reminders
 
-Reminders can carry shell commands and/or natural-language instructions. When due, the daemon executes them automatically — simple commands run directly, complex tasks launch headless `claude -p`. A Stop hook guard can block Claude from exiting when actionable reminders are pending, but it is opt-in because Claude displays visible "Blocked by hook" output when a Stop hook blocks.
+Reminders can carry shell commands, natural-language instructions, or a headless
+agent wakeup. When due, the daemon executes them automatically — simple commands
+run directly, complex Claude tasks launch `claude -p`, Codex wakeups run
+`codex exec`, and OpenCode wakeups run `opencode run`. Wakeups can resume a
+known host session id, or `last` for the latest session when the host supports
+that. This starts/resumes a headless turn from Kindex's daemon/cron context; it
+does not interrupt an idle TUI unless the host itself exposes a same-thread
+automation/server wake path. A Stop hook guard can block Claude from exiting when
+actionable reminders are pending, but it is opt-in because Claude displays
+visible "Blocked by hook" output when a Stop hook blocks.
 
 Hook-time reminder injection uses a scoped reminder board. When a client supplies a chat/session id (`conversation_id`, `chat_id`, `session_id`, `CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, `OPENCODE_SESSION_ID`, `CURSOR_SESSION_ID`, etc.), Kindex injects only reminders scoped to that id plus reminders explicitly marked `--scope global`. Legacy unscoped reminders still work for manual `kin prompt-check`, daemon checks, and notifications, but they are not injected into an identified chat by default.
 
@@ -266,6 +275,14 @@ Hook-time reminder injection uses a scoped reminder board. When a client supplie
 kin remind create "Kill vast.ai instance" --at "in 1 hour" \
   --action "vastai destroy instance 12345" \
   --instructions "Download results from /workspace/ before killing"
+
+# Wake a headless Codex or OpenCode turn when due
+kin remind create "Continue rollout check" --at "in 10 minutes" \
+  --wake codex --session last --cwd "$PWD" \
+  --instructions "Check the rollout and fix any new failures."
+kin remind create "Continue OpenCode build" --at "in 10 minutes" \
+  --wake opencode --session last --cwd "$PWD" --wake-agent build \
+  --instructions "Continue the build triage."
 
 # Chat-scoped or intentionally global hook-visible reminders
 kin remind create "Deploy checklist" --at "tomorrow 9am" \
@@ -612,7 +629,7 @@ Reminders:
   Channels:      system (macOS) | slack | email | claude (hook) | terminal
   Daemon:        launchd/cron adaptive interval -> check due -> notify -> auto-snooze
   Scheduling:    adaptive tiers (>7d=daily, >1d=hourly, >1h=10min, <1h=5min, none=disabled)
-  Actions:       shell commands run directly | complex tasks launch claude -p
+  Actions:       shell commands | claude -p | codex exec | opencode run
   Stop guard:    blocks session exit when actionable reminders pending
 
 Dream (kin dream):

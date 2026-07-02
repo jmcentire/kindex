@@ -265,10 +265,10 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.27.0</span>
+      <span class="badge green">v0.27.1</span>
       <span class="badge orange">MCP Plugin</span>
       <span class="badge blue">52 MCP Tools</span>
-      <span class="badge purple">77 CLI Commands</span>
+      <span class="badge purple">80 CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -310,7 +310,7 @@
       </div>
       <div class="card">
         <h3>Reminders &amp; Actions</h3>
-        <p>Natural language scheduling with recurring support. Reminders can carry shell commands and Claude instructions &mdash; the daemon executes them automatically when due. When explicitly enabled, a Stop hook guard can block session exit for actionable reminders. <code>kin remind create "deploy" --at "in 1h" --action "..."</code>.</p>
+        <p>Natural language scheduling with recurring support. Reminders can carry shell commands, Claude instructions, or headless Codex/OpenCode wakeups &mdash; the daemon executes them automatically when due. When explicitly enabled, a Stop hook guard can block session exit for actionable reminders. <code>kin remind create "deploy" --at "in 1h" --wake codex</code>.</p>
       </div>
       <div class="card">
         <h3>Adaptive Scheduling</h3>
@@ -571,7 +571,7 @@
   Channels:      <span class="highlight">system</span> (macOS) | <span class="highlight">slack</span> | <span class="highlight">email</span> | <span class="highlight">claude</span> (hook) | <span class="highlight">terminal</span>
   Daemon:        launchd/cron <span class="highlight">adaptive interval</span> ── check due ── notify ── auto-snooze
   Scheduling:    adaptive tiers (&gt;7d=daily, &gt;1d=hourly, &gt;1h=10min, &lt;1h=5min, none=disabled)
-  Actions:       shell commands run directly | complex tasks launch <span class="highlight">claude -p</span>
+  Actions:       shell commands | <span class="highlight">claude -p</span> | <span class="highlight">codex exec</span> | <span class="highlight">opencode run</span>
   Stop guard:    optional block when actionable reminders are pending
 
 <span class="green">Three integration paths:</span>
@@ -806,7 +806,7 @@ work_policy:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.27.0 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 77 CLI Commands &middot; 1551 Tests</p>
+    <p style="margin-top: 8px;">v0.27.1 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 80 CLI Commands &middot; 1559 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

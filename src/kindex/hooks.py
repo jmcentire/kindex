@@ -365,7 +365,7 @@ def prime_context(
         lines.append("- `learn` after reading long files/outputs to bulk-extract knowledge")
         lines.append("- `task_add` for work items — ALWAYS use link_to to connect to related concepts")
         lines.append("- `task_done` to complete tasks, `task_list` to see what's open")
-        lines.append("- `remind_create` for time-based triggers (with `action` or `instructions`)")
+        lines.append("- `remind_create` for time-based triggers (with `action`, `instructions`, or `wake`)")
         lines.append("- `tag_start`/`tag_update` to track session focus and progress")
         lines.append("**Project graph (`.kin/`)** — keep it with the code:")
         lines.append("- Look for a `.kin/` directory in the tree of the files you touch — not just your cwd root — and honor its config/index.")
@@ -569,7 +569,7 @@ def generate_session_directive(store: Store) -> str:
         "- Always `search` before `add` to avoid duplicates",
         "- Use `learn` for bulk extraction from long text/files",
         "- Use `tag_start`/`tag_update` to track session context",
-        "- Use `remind_create` with `action`/`instructions` for deferred tasks",
+        "- Use `remind_create` with `action`/`instructions`/`wake` for deferred tasks",
         "",
         "### Project graph (`.kin/`)",
         "- Honor `.kin/` for the files you touch — look up the directory tree, not just the repo root.",

@@ -77,7 +77,7 @@ mcp = FastMCP(
         "Set owner and expires. Watches surface in every session's context automatically.\n"
         "- `watch_resolve`: when a watched issue is fixed or no longer relevant\n"
         "- `remind_create`: for TIME-BASED triggers — use `action` for shell commands, "
-        "`instructions` for Claude to follow when the reminder fires\n"
+        "`instructions` for Claude, or `wake` for Codex/OpenCode headless wakeups\n"
         "- `suggest`: check for bridge opportunities between disconnected graph clusters\n"
         "- `graph_heal`: diagnose graph health — find orphans, bridges, fading nodes\n"
         "- `graph_merge`: merge duplicate nodes (moves edges, archives source)\n"
@@ -1863,7 +1863,9 @@ def watch_resolve(id: str, reason: str = "") -> str:
 def remind_create(text: str, when: str, priority: str = "normal",
                   channels: str = "", action: str = "",
                   instructions: str = "", conversation_id: str = "",
-                  scope: str = "chat") -> str:
+                  scope: str = "chat", wake: str = "",
+                  wake_session: str = "", wake_cwd: str = "",
+                  wake_model: str = "", wake_agent: str = "") -> str:
     """Create a reminder with natural language time parsing.
 
     Args:
@@ -1875,6 +1877,11 @@ def remind_create(text: str, when: str, priority: str = "normal",
         instructions: Natural language instructions for Claude to follow when due (optional).
         conversation_id: Optional chat/session id for scoped hook injection.
         scope: Reminder visibility for hook injection: chat or global.
+        wake: Wake an agent when due: codex or opencode.
+        wake_session: Optional host session id to resume; use 'last' for latest.
+        wake_cwd: Optional working directory for the wake run.
+        wake_model: Optional model override for the wake run.
+        wake_agent: Optional OpenCode agent override for the wake run.
     """
     store, config = _get_store()
     from .reminders import create_reminder
@@ -1892,12 +1899,19 @@ def remind_create(text: str, when: str, priority: str = "normal",
             priority=priority, channels=channel_list,
             action_command=action,
             action_instructions=instructions,
+            wake_client=wake,
+            wake_session_id=wake_session,
+            wake_cwd=wake_cwd,
+            wake_model=wake_model,
+            wake_agent=wake_agent,
             conversation_id=conversation_id,
             scope=effective_scope,
         )
         r = store.get_reminder(rid)
         action_info = ""
-        if action or instructions:
+        if wake:
+            action_info = f", action: wake:{wake}"
+        elif action or instructions:
             action_info = f", action: {'shell' if action and not instructions else 'claude'}"
         return f"Created reminder: {rid} (next due: {r['next_due']}{action_info})"
     except ValueError as e:

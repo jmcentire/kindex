@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 
 _VALID_PRIORITIES = ("low", "normal", "high", "urgent")
+_VALID_WAKE_CLIENTS = ("codex", "opencode")
 
 
 def _try_repack(store: "Store") -> None:
@@ -274,6 +275,11 @@ def create_reminder(
     action_command: str = "",
     action_instructions: str = "",
     action_mode: str = "auto",
+    wake_client: str = "",
+    wake_session_id: str = "",
+    wake_cwd: str = "",
+    wake_model: str = "",
+    wake_agent: str = "",
     attention_triggers: list[str] | None = None,
     conversation_id: str = "",
     scope: str = "",
@@ -284,18 +290,44 @@ def create_reminder(
     scope = scope.strip().lower()
     if scope and scope not in {"chat", "global"}:
         raise ValueError("Invalid reminder scope; must be 'chat' or 'global'")
+    wake_client = wake_client.strip().lower()
+    if wake_client and wake_client not in _VALID_WAKE_CLIENTS:
+        raise ValueError(
+            f"Invalid wake client {wake_client!r}; must be one of {_VALID_WAKE_CLIENTS}"
+        )
+    if wake_client:
+        if action_mode not in ("auto", wake_client):
+            raise ValueError(
+                f"Wake client {wake_client!r} requires action_mode 'auto' or {wake_client!r}"
+            )
+        action_mode = wake_client
 
     next_due, schedule, reminder_type = parse_time_spec(time_spec)
 
     extra: dict | None = None
-    if action_command or action_instructions or attention_triggers or conversation_id or scope:
+    if (
+        action_command
+        or action_instructions
+        or wake_client
+        or attention_triggers
+        or conversation_id
+        or scope
+    ):
         extra = {}
-        if action_command or action_instructions:
+        if action_command or action_instructions or wake_client:
             extra.update({
                 "action_command": action_command,
                 "action_instructions": action_instructions,
                 "action_mode": action_mode,
                 "action_status": "pending",
+            })
+        if wake_client:
+            extra.update({
+                "wake_client": wake_client,
+                "wake_session_id": wake_session_id,
+                "wake_cwd": wake_cwd,
+                "wake_model": wake_model,
+                "wake_agent": wake_agent,
             })
         if attention_triggers:
             extra["attention_triggers"] = attention_triggers
@@ -575,10 +607,25 @@ def format_reminder(reminder: dict) -> str:
 
     # Action info
     extra = reminder.get("extra") or {}
-    if extra.get("action_command") or extra.get("action_instructions"):
+    if (
+        extra.get("action_command")
+        or extra.get("action_instructions")
+        or extra.get("wake_client")
+    ):
         a_status = extra.get("action_status", "pending")
         a_mode = extra.get("action_mode", "auto")
         lines.append(f"    Action [{a_mode}]: {a_status}")
+        if extra.get("wake_client"):
+            target = extra["wake_client"]
+            if extra.get("wake_session_id"):
+                target += f" session={extra['wake_session_id']}"
+            lines.append(f"      Wake: {target}")
+            if extra.get("wake_cwd"):
+                lines.append(f"      Cwd: {extra['wake_cwd']}")
+            if extra.get("wake_model"):
+                lines.append(f"      Model: {extra['wake_model']}")
+            if extra.get("wake_agent"):
+                lines.append(f"      Agent: {extra['wake_agent']}")
         if extra.get("action_command"):
             lines.append(f"      Command: {extra['action_command']}")
         if extra.get("action_instructions"):

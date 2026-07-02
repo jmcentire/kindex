@@ -3771,6 +3771,11 @@ def cmd_remind(args):
                 action_command=getattr(args, "action_command", "") or "",
                 action_instructions=getattr(args, "action_instructions", "") or "",
                 action_mode=getattr(args, "action_mode", "auto") or "auto",
+                wake_client=getattr(args, "wake_client", "") or "",
+                wake_session_id=getattr(args, "wake_session_id", "") or "",
+                wake_cwd=getattr(args, "wake_cwd", "") or "",
+                wake_model=getattr(args, "wake_model", "") or "",
+                wake_agent=getattr(args, "wake_agent", "") or "",
                 attention_triggers=([
                     t.strip() for t in getattr(args, "attention_trigger", "").split(",")
                     if t.strip()
@@ -5307,8 +5312,9 @@ multiple concepts at once
 - After a complex multi-step task: use `learn` with a summary of what happened and why
 
 ### Reminders with actions
-- Use `remind_create` with `action` and/or `instructions` for deferred tasks
-- The daemon will execute shell commands or launch headless Claude when they come due
+- Use `remind_create` with `action`, `instructions`, or `wake` for deferred tasks
+- The daemon will execute shell commands or launch headless Claude/Codex/OpenCode
+  when they come due
 """
 
 
@@ -6403,8 +6409,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--instructions", dest="action_instructions",
                    help="NL instructions for Claude (triggers claude -p mode)")
     s.add_argument("--action-mode", dest="action_mode",
-                   choices=["shell", "claude", "auto"], default="auto",
+                   choices=["shell", "claude", "codex", "opencode", "auto"], default="auto",
                    help="Execution mode (default: auto)")
+    s.add_argument("--wake", dest="wake_client", choices=["codex", "opencode"],
+                   help="Wake a headless agent when due")
+    s.add_argument("--wake-session", "--session", dest="wake_session_id",
+                   help="Host session id to resume for --wake; use 'last' for latest")
+    s.add_argument("--wake-cwd", "--cwd", dest="wake_cwd",
+                   help="Working directory for the wake run")
+    s.add_argument("--wake-model", dest="wake_model",
+                   help="Model override for the wake run")
+    s.add_argument("--wake-agent", dest="wake_agent",
+                   help="OpenCode agent override for the wake run")
     s.add_argument("--attention-trigger",
                    help="Comma-separated conversation trigger terms for attention injection")
     s.add_argument("--conversation-id", help="Scope reminder to this conversation/session id")

@@ -1,9 +1,10 @@
 {
   "domains": [
     "code",
-    "python"
+    "python",
+    "shell"
   ],
-  "node_count": 115,
+  "node_count": 122,
   "nodes": [
     {
       "domains": [
@@ -24,7 +25,29 @@
       "id": "code-mod-kindex-086378eea6e0",
       "title": "src/kindex/attention.py",
       "type": "artifact",
-      "updated_at": "2026-06-11T15:16:38",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
+    },
+    {
+      "domains": [
+        "code",
+        "python"
+      ],
+      "id": "code-mod-kindex-0c0f8066c77b",
+      "title": "src/kindex/agent_adapters.py",
+      "type": "artifact",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
+    },
+    {
+      "domains": [
+        "code",
+        "shell"
+      ],
+      "id": "code-mod-kindex-0fae9ff61910",
+      "title": "scripts/sync-version.sh",
+      "type": "artifact",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -54,10 +77,21 @@
         "code",
         "python"
       ],
+      "id": "code-mod-kindex-13363db31233",
+      "title": "src/kindex/kin_merge.py",
+      "type": "artifact",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
+    },
+    {
+      "domains": [
+        "code",
+        "python"
+      ],
       "id": "code-mod-kindex-1668da8a23a5",
       "title": "src/kindex/daemon.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -101,7 +135,7 @@
       "id": "code-mod-kindex-1b467bb9761a",
       "title": "src/kindex/reminders.py",
       "type": "artifact",
-      "updated_at": "2026-06-11T15:16:38",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -112,7 +146,7 @@
       "id": "code-mod-kindex-1cc1824729d5",
       "title": "src/kindex/ingest.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -123,7 +157,7 @@
       "id": "code-mod-kindex-1fd61a2a944a",
       "title": "src/kindex/actions.py",
       "type": "artifact",
-      "updated_at": "2026-03-27T22:16:52",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -189,7 +223,7 @@
       "id": "code-mod-kindex-46a31493a160",
       "title": "src/kindex/store.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -219,6 +253,17 @@
         "code",
         "python"
       ],
+      "id": "code-mod-kindex-5998a0a5ca33",
+      "title": "src/kindex/agent_settings.py",
+      "type": "artifact",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
+    },
+    {
+      "domains": [
+        "code",
+        "python"
+      ],
       "id": "code-mod-kindex-5aa57e096c49",
       "title": "src/kindex/dream.py",
       "type": "artifact",
@@ -233,7 +278,7 @@
       "id": "code-mod-kindex-62731532a556",
       "title": "src/kindex/setup.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -244,7 +289,7 @@
       "id": "code-mod-kindex-66df7720eed6",
       "title": "src/kindex/cli.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -255,7 +300,7 @@
       "id": "code-mod-kindex-6a3142a46050",
       "title": "src/kindex/config.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -266,7 +311,7 @@
       "id": "code-mod-kindex-6a374a6f7fce",
       "title": "src/kindex/vectors.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -354,7 +399,7 @@
       "id": "code-mod-kindex-92df373f87c7",
       "title": "src/kindex/notify.py",
       "type": "artifact",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -442,7 +487,7 @@
       "id": "code-mod-kindex-bd222a4e378f",
       "title": "src/kindex/hooks.py",
       "type": "artifact",
-      "updated_at": "2026-06-11T15:16:38",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -464,7 +509,7 @@
       "id": "code-mod-kindex-c36798e40719",
       "title": "src/kindex/adapters/code.py",
       "type": "artifact",
-      "updated_at": "2026-05-24T14:04:23",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -475,7 +520,7 @@
       "id": "code-mod-kindex-c4522229e518",
       "title": "src/kindex/__init__.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T20:15:17",
       "weight": 0.0109
     },
     {
@@ -530,7 +575,7 @@
       "id": "code-mod-kindex-d68e56207179",
       "title": "src/kindex/retrieve.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -574,7 +619,7 @@
       "id": "code-mod-kindex-f9986c492ab2",
       "title": "src/kindex/mcp_server.py",
       "type": "artifact",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -604,10 +649,21 @@
         "code",
         "python"
       ],
+      "id": "code-sym-kindex-05a1fbf0db2e",
+      "title": "AgentsConfig",
+      "type": "concept",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
+    },
+    {
+      "domains": [
+        "code",
+        "python"
+      ],
       "id": "code-sym-kindex-0850aa56538b",
       "title": "ProfileEntry",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -618,7 +674,7 @@
       "id": "code-sym-kindex-08e1ea9d3cda",
       "title": "ReminderConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -629,7 +685,7 @@
       "id": "code-sym-kindex-0ab7c168abe0",
       "title": "SlackChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -651,7 +707,7 @@
       "id": "code-sym-kindex-11a0db8685d1",
       "title": "TerminalChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -662,7 +718,7 @@
       "id": "code-sym-kindex-126d2691006d",
       "title": "EmailChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -684,7 +740,7 @@
       "id": "code-sym-kindex-15261553fafb",
       "title": "SimConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -695,7 +751,7 @@
       "id": "code-sym-kindex-187622f1260e",
       "title": "NotificationChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -728,7 +784,7 @@
       "id": "code-sym-kindex-1ca6d2b3a552",
       "title": "AttentionInjection",
       "type": "concept",
-      "updated_at": "2026-06-11T15:16:35",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -750,7 +806,18 @@
       "id": "code-sym-kindex-200aad86be36",
       "title": "AttentionConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
+    },
+    {
+      "domains": [
+        "code",
+        "python"
+      ],
+      "id": "code-sym-kindex-279e1c45cb06",
+      "title": "AgentInstanceConfig",
+      "type": "concept",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -783,7 +850,7 @@
       "id": "code-sym-kindex-352d8c9bbdba",
       "title": "CollabConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -794,7 +861,7 @@
       "id": "code-sym-kindex-36fe0270bb97",
       "title": "ScheduleTier",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -805,7 +872,7 @@
       "id": "code-sym-kindex-415d46d7c508",
       "title": "RankingConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -816,7 +883,7 @@
       "id": "code-sym-kindex-49ac56615e1e",
       "title": "AttentionCandidate",
       "type": "concept",
-      "updated_at": "2026-06-11T15:16:34",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -849,7 +916,7 @@
       "id": "code-sym-kindex-552c22e16187",
       "title": "WorkPolicyConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -860,7 +927,7 @@
       "id": "code-sym-kindex-58d630bc994a",
       "title": "ClaudeChannelConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -871,7 +938,7 @@
       "id": "code-sym-kindex-608ef82e510c",
       "title": "Config",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -882,7 +949,7 @@
       "id": "code-sym-kindex-62490d9465aa",
       "title": "TelegramChannelConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -893,7 +960,7 @@
       "id": "code-sym-kindex-6d1dbf76937d",
       "title": "BudgetConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.01
     },
     {
@@ -915,7 +982,7 @@
       "id": "code-sym-kindex-74266f41225f",
       "title": "SystemChannelConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -948,7 +1015,7 @@
       "id": "code-sym-kindex-7c4b42dbb2fa",
       "title": "LLMConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.01
     },
     {
@@ -959,7 +1026,7 @@
       "id": "code-sym-kindex-7e4d614285e9",
       "title": "SlackChannelConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -970,7 +1037,7 @@
       "id": "code-sym-kindex-89cc5b13c9e0",
       "title": "EmailChannelConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -992,8 +1059,19 @@
       "id": "code-sym-kindex-95b8acd87972",
       "title": "Store",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
+    },
+    {
+      "domains": [
+        "code",
+        "python"
+      ],
+      "id": "code-sym-kindex-979d447616b7",
+      "title": "AgentOverrideConfig",
+      "type": "concept",
+      "updated_at": "2026-07-01T19:37:21",
+      "weight": 0.5
     },
     {
       "domains": [
@@ -1014,7 +1092,7 @@
       "id": "code-sym-kindex-9f9f9fbe1087",
       "title": "EditPolicyError",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -1036,7 +1114,7 @@
       "id": "code-sym-kindex-a8ad139fc733",
       "title": "LinearPolicyConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -1058,7 +1136,7 @@
       "id": "code-sym-kindex-b166b6681594",
       "title": "LockHeldError",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -1091,7 +1169,7 @@
       "id": "code-sym-kindex-b42e459fa446",
       "title": "DefaultsConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -1102,7 +1180,7 @@
       "id": "code-sym-kindex-b49f63b10a0f",
       "title": "TelegramChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -1124,7 +1202,7 @@
       "id": "code-sym-kindex-b724908147cc",
       "title": "ProfileMismatchError",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -1135,7 +1213,7 @@
       "id": "code-sym-kindex-b90676bdf42f",
       "title": "EmbeddingConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     },
     {
@@ -1146,7 +1224,7 @@
       "id": "code-sym-kindex-c644dbd33873",
       "title": "GitPolicyConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.5
     },
     {
@@ -1157,7 +1235,7 @@
       "id": "code-sym-kindex-c663225debcc",
       "title": "NotifyResult",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -1179,7 +1257,7 @@
       "id": "code-sym-kindex-c6d318c35fe8",
       "title": "ClaudeChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -1234,7 +1312,7 @@
       "id": "code-sym-kindex-e3d3571dcdc7",
       "title": "CodeAdapter",
       "type": "concept",
-      "updated_at": "2026-05-24T14:04:22",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -1256,7 +1334,7 @@
       "id": "code-sym-kindex-ed860a14fde8",
       "title": "SystemChannel",
       "type": "concept",
-      "updated_at": "2026-03-16T16:20:11",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0108
     },
     {
@@ -1267,11 +1345,10 @@
       "id": "code-sym-kindex-fe4d5554b184",
       "title": "ChannelsConfig",
       "type": "concept",
-      "updated_at": "2026-06-12T11:32:26",
+      "updated_at": "2026-07-01T19:37:21",
       "weight": 0.0109
     }
   ],
   "repo": "kindex",
-  "source_updated_at": "2026-06-12T11:39:40",
   "version": 1
 }
