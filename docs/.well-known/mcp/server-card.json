@@ -18,6 +18,8 @@
   },
   "transport": {
     "type": "stdio",
+    "command": "kin-mcp",
+    "package": "kindex[mcp]",
     "note": "Kindex runs locally over stdio. Install with `pip install kindex[mcp]`, `uv tool install kindex[mcp]`, or `uvx --from kindex[mcp] kin-mcp`, then register `kin-mcp` with your MCP client. No public HTTP transport is exposed."
   },
   "install": {
