@@ -8,7 +8,7 @@ ask.
 Public surfaces:
 
 - Canonical website: https://kindex.tools/
-- GitHub Pages mirror/build: https://jmcentire.github.io/kindex/
+- GitHub Pages docs build: https://jmcentire.github.io/kindex/
 - Human setup guide: https://kindex.tools/human-guide.md
 - MCP agent guide: https://kindex.tools/mcp-agent-guide.md
 - MCP server card: https://kindex.tools/.well-known/mcp/server-card.json

@@ -5,14 +5,15 @@ operating contract lives in [mcp-agent-guide.md](mcp-agent-guide.md).
 
 ## Public Docs
 
-- Canonical website: <https://kindex.tools/>
-- GitHub Pages mirror/build: <https://jmcentire.github.io/kindex/>
+- Canonical public website: <https://kindex.tools/>
+- GitHub Pages docs build from this repo: <https://jmcentire.github.io/kindex/>
 - Source and releases: <https://github.com/jmcentire/kindex>
 - PyPI package: <https://pypi.org/project/kindex/>
 
-Both public website URLs are served from the `docs/` directory in this repo.
-The Pages workflow also publishes `docs/.well-known/` so MCP server-card
-metadata stays in sync with the release.
+The canonical `kindex.tools` site is served by the companion `Kindex-Tools`
+Fly static app. This repo's Pages workflow publishes the `docs/` directory,
+including `docs/.well-known/`, to the GitHub Pages docs URL so the repo-local
+documentation and MCP server-card metadata stay in sync with the release.
 
 ## Install
 

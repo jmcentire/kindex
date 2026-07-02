@@ -16,7 +16,7 @@ It's a persistent knowledge graph for AI-assisted workflows. It indexes your con
 
 > **Memory plugins capture what happened. Kindex captures what it means and how it connects.** Most memory tools are session archives with search. Kindex is a weighted knowledge graph that grows intelligence over time — understanding relationships, surfacing constraints, and managing exactly how much context to inject based on your available token budget.
 
-Docs: [kindex.tools](https://kindex.tools/) is the canonical site, with the same Pages build available at [jmcentire.github.io/kindex](https://jmcentire.github.io/kindex/). Human setup lives in [docs/human-guide.md](docs/human-guide.md); agent operating rules live in [docs/mcp-agent-guide.md](docs/mcp-agent-guide.md).
+Docs: [kindex.tools](https://kindex.tools/) is the canonical public site, served by the companion Fly static app. This repo also publishes its `docs/` directory at [jmcentire.github.io/kindex](https://jmcentire.github.io/kindex/). Human setup lives in [docs/human-guide.md](docs/human-guide.md); agent operating rules live in [docs/mcp-agent-guide.md](docs/mcp-agent-guide.md).
 
 ## Install
 
