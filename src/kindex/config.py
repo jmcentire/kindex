@@ -493,9 +493,12 @@ def _detect_user(project_path: str | Path | None = None) -> str:
 
     for command in commands:
         try:
+            # Config probes may run inside stdio MCP servers; never let child
+            # Git processes inherit the JSON-RPC stdin pipe.
             result = subprocess.run(
                 command,
                 capture_output=True, text=True, timeout=2,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip().lower().replace(" ", "-")
@@ -687,10 +690,13 @@ def resolve_project_root(project_path: str | Path | None = None) -> Path:
 def _git_root(start: Path) -> Path | None:
     import subprocess
     try:
+        # Config probes may run inside stdio MCP servers; never let child
+        # Git processes inherit the JSON-RPC stdin pipe.
         result = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=3,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
