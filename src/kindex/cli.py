@@ -1423,25 +1423,30 @@ def cmd_compact_hook(args):
     store = _store(args)
     ledger, cfg = _ledger(args)
 
-    text = args.text
-    if not text:
-        if not sys.stdin.isatty():
-            text = sys.stdin.read()
-        else:
-            print("No text provided. Use --text or pipe via stdin.", file=sys.stderr)
-            store.close()
-            return
-
     # A Claude Code hook pipes a JSON envelope ({session_id,
     # transcript_path, ...}) on stdin — metadata, not conversation text.
+    # The envelope preempts --text: the Stop hook historically passed
+    # both, and letting --text win ran extraction on the literal instead
+    # of the transcript the envelope points at. --text is the effective
+    # input only when stdin is not a parseable envelope.
+    stdin_text = ""
+    if not sys.stdin.isatty():
+        stdin_text = sys.stdin.read()
+
     env = {}
     try:
         from .attention import parse_hook_payload
-        env = parse_hook_payload(text) if text else {}
+        env = parse_hook_payload(stdin_text) if stdin_text else {}
     except Exception:
         env = {}
     tpath = env.get("transcript_path") or env.get("transcriptPath") or ""
     is_envelope = bool(env.get("hook_event_name") or env.get("session_id") or tpath)
+
+    text = stdin_text if is_envelope else (args.text or stdin_text)
+    if not text and sys.stdin.isatty():
+        print("No text provided. Use --text or pipe via stdin.", file=sys.stderr)
+        store.close()
+        return
 
     # Silent, lightweight: if a hook envelope (PreCompact/Stop) gave us a
     # transcript path, queue the session for later reinforcement grading in cron.

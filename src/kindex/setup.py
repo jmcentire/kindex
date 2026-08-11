@@ -58,6 +58,13 @@ def _hook_needs_attention_deadline(entry: object) -> bool:
     return "--deadline-ms" not in str(entry)
 
 
+def _hook_needs_envelope_capture(entry: object) -> bool:
+    """Old Stop entries passed `--text "Session ended"`, which preempted
+    the stdin envelope so the transcript was never extracted. Re-running
+    setup is the migration (issue-#15 pattern): rebuild the whole entry."""
+    return "--text" in str(entry)
+
+
 def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     """Install Kindex hooks into Claude Code's settings.json.
 
@@ -185,9 +192,12 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         })
     stop_hook_commands.extend([
         {
+            # No --text: the stdin envelope must reach compact-hook so the
+            # session transcript is what gets extracted. Timeout matches
+            # the PreCompact entry — this path now does real extraction.
             "type": "command",
-            "command": _kin_stop_hook_command(kin_path, ["compact-hook", "--text", "Session ended"]),
-            "timeout": 5000,
+            "command": _kin_stop_hook_command(kin_path, ["compact-hook"]),
+            "timeout": 10000,
         },
         {
             # Super lightweight + silent: records the session for later
@@ -225,6 +235,7 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     elif (
         _hook_needs_profile(stop_hooks[existing_idx])
         or _hook_needs_stop_active_guard(stop_hooks[existing_idx])
+        or _hook_needs_envelope_capture(stop_hooks[existing_idx])
         or ("dream" in str(stop_hooks[existing_idx]) and not config.reminders.dream_on_stop_enabled)
         or ("dream" not in str(stop_hooks[existing_idx]) and config.reminders.dream_on_stop_enabled)
         or ("stop-guard" in str(stop_hooks[existing_idx]) and not config.reminders.stop_guard_enabled)
