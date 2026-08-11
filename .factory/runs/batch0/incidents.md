@@ -6,8 +6,10 @@ was taken by the primary session; the window was respawned to neutralize the spa
 instance — but `tmux respawn-window -k` without an explicit command re-runs the window's
 ORIGINAL command, silently relaunching a second Validator. It ran ~20 min, independently
 authored a competing product spec, and was caught AT the file-overwrite permission
-prompt — nothing on disk was modified (all three artifact digests verified intact against
-their citations afterward, in the run root and both lane workspace copies).
+prompt — nothing on disk was modified **[FALSE-AS-WRITTEN — see the addendum below: the
+duplicate fast-forwarded main, committed the endgame gates as 08954de, and
+interleaved its receipts into the authoritative chain. The artifact digests were
+intact; the repository was not untouched.]**
 Resolution: window respawned with an explicit `exec bash`. Lanes were dispatched after
 containment; dispatch-cited digests verified.
 Second-reader signal worth keeping: the duplicate's independent Phase A classified the
