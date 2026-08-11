@@ -1,0 +1,16 @@
+{
+  "ts": "2026-08-11T16:49:03+00:00",
+  "label": "fixed3",
+  "ref": "lane/coder",
+  "red_now": {
+    "exit": 0,
+    "passed": 25,
+    "skipped": 3,
+    "deselected": 16
+  },
+  "green_now": {
+    "exit": 0,
+    "passed": 16,
+    "deselected": 28
+  }
+}
