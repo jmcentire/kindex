@@ -651,6 +651,110 @@ def _activate_profile(cfg: Config, name: str, source: str) -> Config:
     return cfg
 
 
+# ── Degraded-event ledger ─────────────────────────────────────────────
+# Hook-surface failures append one JSON line each. The write path is a
+# plain file append in the BASE (pre-profile) data dir — same anchor rule
+# as scheduler_log_path (issue #15) — so it still works when SQLite is
+# what broke.
+
+_DEGRADED_LEDGER_NAME = "degraded.jsonl"
+_DEGRADED_MAX_BYTES = 1024 * 1024
+_DEGRADED_KEEP_LINES = 200
+
+
+def degraded_ledger_path(config: Config | None = None,
+                         override_dir: str | None = None) -> Path:
+    """Path of degraded.jsonl under the base (pre-profile) data dir.
+
+    override_dir is an explicit --data-dir: like the store itself it wins
+    over config resolution so hermetic runs stay hermetic.
+    """
+    if override_dir:
+        base = override_dir
+    elif config is not None:
+        base = config._legacy_data_dir or config.data_dir
+    else:
+        base = "~/.kindex"
+    return Path(base).expanduser().resolve() / _DEGRADED_LEDGER_NAME
+
+
+def record_degraded(cmd: str, error: BaseException,
+                    config: Config | None = None,
+                    override_dir: str | None = None) -> None:
+    """Append one degraded event. Never raises — the ledger must not
+    become a second failure mode. Each event is a single O_APPEND write,
+    so two hooks failing simultaneously both land whole, never torn."""
+    import json
+    from datetime import datetime
+
+    try:
+        path = degraded_ledger_path(config, override_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "cmd": cmd,
+            "profile": config.active_profile if config is not None else None,
+            "profile_source": (config.profile_source
+                               if config is not None else "unknown"),
+            "error_class": type(error).__name__,
+            "msg": str(error)[:200],
+        }
+        line = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+        _cap_degraded_ledger(path)
+    except Exception:
+        pass
+
+
+def _cap_degraded_ledger(path: Path) -> None:
+    """Over 1 MB, rewrite keeping the last 200 lines. The atomic replace
+    means readers never see a torn file and a failed rewrite leaves the
+    original (with the fresh append) intact; an append racing the rewrite
+    may be dropped — best effort, per the ledger contract."""
+    if path.stat().st_size <= _DEGRADED_MAX_BYTES:
+        return
+    lines = path.read_bytes().splitlines(keepends=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(b"".join(lines[-_DEGRADED_KEEP_LINES:]))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def read_degraded_events(config: Config | None = None,
+                         days: int = 7,
+                         override_dir: str | None = None) -> list[dict]:
+    """Degraded events from the last `days` days, oldest first.
+
+    Absent file or unreadable content mean zero events, never an error;
+    malformed lines are skipped.
+    """
+    import json
+    from datetime import datetime, timedelta
+
+    try:
+        path = degraded_ledger_path(config, override_dir)
+        if not path.exists():
+            return []
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        events = []
+        for raw in path.read_text(errors="replace").splitlines():
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and str(event.get("ts", "")) >= cutoff:
+                events.append(event)
+        return events
+    except Exception:
+        return []
+
+
 def resolve_agent_id(config: Config) -> str:
     """Stable agent identity for collab/locks/claims.
 

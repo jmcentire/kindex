@@ -8,6 +8,7 @@ Google Antigravity, OpenCode, Cursor, and other MCP clients)
 from __future__ import annotations
 
 import atexit
+import functools
 import json
 import os
 import sys
@@ -97,15 +98,51 @@ _store = None
 _config = None
 
 
+class MemoryUnavailableError(RuntimeError):
+    """Store open/init failed; tools degrade to a typed error string
+    instead of an unhandled exception."""
+
+    def __init__(self, cause: BaseException):
+        self.error_class = type(cause).__name__
+        super().__init__(f"memory unavailable ({self.error_class})")
+
+
+def _tool(*dargs, **dkwargs):
+    """mcp.tool() plus the memory-unavailable guard: a broken store turns
+    into a typed tool result on every tool, never a protocol error."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def guarded(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            except MemoryUnavailableError as e:
+                return f"Error: memory unavailable ({e.error_class})"
+        return mcp.tool(*dargs, **dkwargs)(guarded)
+    return decorate
+
+
 def _get_store():
-    """Lazy-init Store and Config singletons."""
+    """Lazy-init Store and Config singletons.
+
+    A config-load or store-open failure records a degraded-ledger event
+    and raises MemoryUnavailableError for the _tool guard; the failed
+    singleton stays unset so a later call may recover.
+    """
     global _store, _config
     if _store is None:
-        from .config import load_config
+        from .config import load_config, record_degraded
         from .store import Store
 
-        _config = load_config()
-        _store = Store(_config)
+        try:
+            _config = load_config()
+        except Exception as e:
+            record_degraded("mcp", e)
+            raise MemoryUnavailableError(e) from e
+        try:
+            _store = Store(_config)
+        except Exception as e:
+            record_degraded("mcp", e, config=_config)
+            raise MemoryUnavailableError(e) from e
         atexit.register(_store.close)
     return _store, _config
 
@@ -213,7 +250,7 @@ def _node_detail(store, node: dict) -> str:
 # ── Tools ─────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def search(query: str, top_k: int = 10, tags: str = "") -> str:
     """Search the knowledge graph with hybrid FTS5 + graph traversal.
 
@@ -259,7 +296,7 @@ def search(query: str, top_k: int = 10, tags: str = "") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def add(
     text: str,
     node_type: str = "concept",
@@ -322,7 +359,7 @@ def add(
     )
 
 
-@mcp.tool()
+@_tool()
 def edit(node_id: str, title: str = "", content: str = "", append: str = "",
          add_tags: str = "", remove_tags: str = "", intent: str = "",
          expires: str = "", force: bool = False) -> str:
@@ -384,7 +421,7 @@ def edit(node_id: str, title: str = "", content: str = "", append: str = "",
             f"fields: {', '.join(sorted(provided))}")
 
 
-@mcp.tool()
+@_tool()
 def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") -> str:
     """Replace a node with a fresh one, preserving history. Accepts ID or title.
 
@@ -421,7 +458,7 @@ def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") 
     return f"Superseded {node['title']} ({node['id']}) -> new node {new['id']}"
 
 
-@mcp.tool()
+@_tool()
 def context(
     topic: str = "",
     level: str = "abridged",
@@ -456,7 +493,7 @@ def context(
     return format_context_block(store, results, query=topic, adapter=client, **kwargs)
 
 
-@mcp.tool()
+@_tool()
 def show(node_id: str) -> str:
     """Show full details of a node including edges and provenance.
 
@@ -470,7 +507,7 @@ def show(node_id: str) -> str:
     return _node_detail(store, node)
 
 
-@mcp.tool()
+@_tool()
 def link(
     node_a: str,
     node_b: str,
@@ -512,7 +549,7 @@ def link(
     return f"Linked: {a['title']} -> {b['title']} ({relationship}, w={weight})"
 
 
-@mcp.tool()
+@_tool()
 def list_nodes(
     node_type: str = "",
     status: str = "",
@@ -547,7 +584,7 @@ def list_nodes(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def status() -> str:
     """Get knowledge graph health and statistics.
 
@@ -586,7 +623,7 @@ def status() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def ask(question: str) -> str:
     """Ask a question of the knowledge graph.
 
@@ -622,7 +659,7 @@ def ask(question: str) -> str:
     return f"[{qtype} question]\n\n{block}"
 
 
-@mcp.tool()
+@_tool()
 def suggest(limit: int = 10) -> str:
     """Show pending bridge opportunity suggestions.
 
@@ -662,7 +699,7 @@ def _is_substantive_concept(concept: dict) -> bool:
     return bool(content) or bool(domains)
 
 
-@mcp.tool()
+@_tool()
 def learn(text: str) -> str:
     """Extract knowledge from text and add it to the graph.
 
@@ -767,7 +804,7 @@ def learn(text: str) -> str:
     return ", ".join(parts)
 
 
-@mcp.tool()
+@_tool()
 def graph_stats() -> str:
     """Get graph analytics: density, components, centrality, and communities."""
     store, _ = _get_store()
@@ -803,7 +840,7 @@ def graph_stats() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def graph_heal() -> str:
     """Diagnose and report graph health issues with actionable recommendations.
 
@@ -877,7 +914,7 @@ def graph_heal() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def graph_merge(source_id: str, target_id: str, keep: str = "target",
                 force: bool = False) -> str:
     """Merge two nodes that represent the same concept.
@@ -982,7 +1019,7 @@ def graph_merge(source_id: str, target_id: str, keep: str = "target",
             f"{moved} edges moved, source archived.")
 
 
-@mcp.tool()
+@_tool()
 def dream(
     mode: str = "lightweight",
     dry_run: bool = False,
@@ -1017,7 +1054,7 @@ def dream(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def changelog(since: str = "", days: int = 7) -> str:
     """Show recent changes to the knowledge graph.
 
@@ -1065,7 +1102,7 @@ def changelog(since: str = "", days: int = 7) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def ingest(source: str, limit: int = 0, repo: str = "", since: str = "") -> str:
     """Ingest knowledge from external sources.
 
@@ -1220,7 +1257,7 @@ def orient() -> str:
 # ── Session tags ──────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def tag_start(name: str, description: str = "", focus: str = "",
               remaining: str = "") -> str:
     """Start a new session tag for tracking work context.
@@ -1279,7 +1316,7 @@ def _reinforce_on_end(store, config, tag_name: str, summary: str) -> str:
     return ""
 
 
-@mcp.tool()
+@_tool()
 def tag_update(name: str = "", focus: str = "", description: str = "",
                remaining: str = "", add_remaining: str = "",
                done: str = "", summary: str = "",
@@ -1333,7 +1370,7 @@ def tag_update(name: str = "", focus: str = "", description: str = "",
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 def tag_resume(name: str = "", tokens: int = 1500) -> str:
     """Resume a session tag — get full context for continuing work.
 
@@ -1363,7 +1400,7 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
 # ── Tasks ─────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def task_add(text: str, priority: int = 3, due: str = "",
              scope: str = "contextual", link_to: str = "",
              effort: str = "") -> str:
@@ -1400,7 +1437,7 @@ def task_add(text: str, priority: int = 3, due: str = "",
     return f"Created task: {task_id} [{p_label}]{due_info} — {text}"
 
 
-@mcp.tool()
+@_tool()
 def task_list(status: str = "open", scope: str = "",
               priority: str = "") -> str:
     """List tasks, optionally filtered.
@@ -1429,7 +1466,7 @@ def task_list(status: str = "open", scope: str = "",
     return format_task_list(tasks)
 
 
-@mcp.tool()
+@_tool()
 def task_done(id: str) -> str:
     """Mark a task as completed.
 
@@ -1444,7 +1481,7 @@ def task_done(id: str) -> str:
     return f"Task not found: {id}"
 
 
-@mcp.tool()
+@_tool()
 def task_claim(id: str, agent: str = "", ttl_minutes: int = 120,
                note: str = "", force: bool = False) -> str:
     """Claim a task for an agent with an expiry.
@@ -1476,7 +1513,7 @@ def task_claim(id: str, agent: str = "", ttl_minutes: int = 120,
     )
 
 
-@mcp.tool()
+@_tool()
 def task_release(id: str, agent: str = "", force: bool = False) -> str:
     """Release a task claim.
 
@@ -1499,7 +1536,7 @@ def task_release(id: str, agent: str = "", force: bool = False) -> str:
 # ── Coordination ─────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def coord_start(name: str, task_id: str = "", agent: str = "",
                 ttl_minutes: int = 240) -> str:
     """Start a short-lived coordination conversation.
@@ -1525,7 +1562,7 @@ def coord_start(name: str, task_id: str = "", agent: str = "",
     return f"Started coordination conversation: {conv_id} ({name})"
 
 
-@mcp.tool()
+@_tool()
 def coord_join(name: str, agent: str = "") -> str:
     """Join a coordination conversation as a member.
 
@@ -1545,7 +1582,7 @@ def coord_join(name: str, agent: str = "") -> str:
     return f"Joined {name} as {member['agent']}"
 
 
-@mcp.tool()
+@_tool()
 def coord_post(conversation: str, agent: str = "", message: str = "",
                to: str = "") -> str:
     """Post a message to a coordination conversation.
@@ -1567,7 +1604,7 @@ def coord_post(conversation: str, agent: str = "", message: str = "",
     return f"Posted coordination message #{msg['id']} to {conversation}"
 
 
-@mcp.tool()
+@_tool()
 def coord_read(conversation: str, since_id: int = 0, limit: int = 50,
                agent: str = "") -> str:
     """Read messages from a coordination conversation.
@@ -1590,7 +1627,7 @@ def coord_read(conversation: str, since_id: int = 0, limit: int = 50,
     return format_messages(payload)
 
 
-@mcp.tool()
+@_tool()
 def coord_attach(name: str, node_id: str) -> str:
     """Attach a graph node to a conversation as a shared resource.
 
@@ -1612,7 +1649,7 @@ def coord_attach(name: str, node_id: str) -> str:
     return f"Attached. Resources on {name}: {', '.join(resources)}"
 
 
-@mcp.tool()
+@_tool()
 def coord_inject(name: str, action: str = "list", text: str = "",
                  to: str = "", message_id: int = 0) -> str:
     """Manage standing inject messages on a coordination conversation.
@@ -1658,7 +1695,7 @@ def coord_inject(name: str, action: str = "list", text: str = "",
     return f"Unknown inject action: {action} (use set, clear, or list)"
 
 
-@mcp.tool()
+@_tool()
 def coord_list(status: str = "active", task_id: str = "") -> str:
     """List coordination conversations.
 
@@ -1676,7 +1713,7 @@ def coord_list(status: str = "active", task_id: str = "") -> str:
     return format_conversations(conversations)
 
 
-@mcp.tool()
+@_tool()
 def coord_end(conversation: str, summary: str = "") -> str:
     """End a coordination conversation and clear transient messages.
 
@@ -1695,7 +1732,7 @@ def coord_end(conversation: str, summary: str = "") -> str:
 # ── Locks ────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def lock_acquire(node_id: str, ttl_minutes: int = 60, note: str = "",
                  force: bool = False) -> str:
     """Acquire an advisory lock on a node for the current agent.
@@ -1724,7 +1761,7 @@ def lock_acquire(node_id: str, ttl_minutes: int = 60, note: str = "",
             f"until {lock['expires_at']}")
 
 
-@mcp.tool()
+@_tool()
 def lock_release(node_id: str, force: bool = False) -> str:
     """Release an advisory lock held on a node.
 
@@ -1750,7 +1787,7 @@ def lock_release(node_id: str, force: bool = False) -> str:
 # ── Watches ──────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def watch_add(text: str, owner: str = "", expires: str = "",
               link_to: str = "") -> str:
     """Create a watch node for something needing periodic attention.
@@ -1805,7 +1842,7 @@ def watch_add(text: str, owner: str = "", expires: str = "",
     return f"Watch created: {text} (id={nid}{exp}{own})"
 
 
-@mcp.tool()
+@_tool()
 def watch_list(status: str = "active") -> str:
     """List watch nodes.
 
@@ -1835,7 +1872,7 @@ def watch_list(status: str = "active") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def watch_resolve(id: str, reason: str = "") -> str:
     """Resolve/archive a watch node.
 
@@ -1862,7 +1899,7 @@ def watch_resolve(id: str, reason: str = "") -> str:
 # ── Reminders ─────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def remind_create(text: str, when: str, priority: str = "normal",
                   channels: str = "", action: str = "",
                   instructions: str = "", conversation_id: str = "",
@@ -1921,7 +1958,7 @@ def remind_create(text: str, when: str, priority: str = "normal",
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 def remind_list(status: str = "active", priority: str = "") -> str:
     """List reminders with optional filters.
 
@@ -1939,7 +1976,7 @@ def remind_list(status: str = "active", priority: str = "") -> str:
     return format_reminder_list(reminders)
 
 
-@mcp.tool()
+@_tool()
 def remind_snooze(id: str, duration: str = "") -> str:
     """Snooze a reminder.
 
@@ -1957,7 +1994,7 @@ def remind_snooze(id: str, duration: str = "") -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 def remind_done(id: str) -> str:
     """Mark a reminder as completed.
 
@@ -1973,7 +2010,7 @@ def remind_done(id: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 def remind_check() -> str:
     """Check for due reminders and fire notifications.
 
@@ -1996,7 +2033,7 @@ def remind_check() -> str:
     return "\n".join(parts)
 
 
-@mcp.tool()
+@_tool()
 def remind_exec(id: str) -> str:
     """Manually trigger a reminder's action.
 
@@ -2017,7 +2054,7 @@ def remind_exec(id: str) -> str:
 # ── Modes ─────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool()
 def mode_activate(name: str, session_context: str = "") -> str:
     """Activate a conversation mode. Returns the priming artifact to inject.
 
@@ -2037,7 +2074,7 @@ def mode_activate(name: str, session_context: str = "") -> str:
     return activate_mode(store, name, session_context=session_context or None)
 
 
-@mcp.tool()
+@_tool()
 def mode_list() -> str:
     """List available conversation modes (built-in and custom)."""
     store, _ = _get_store()
@@ -2046,7 +2083,7 @@ def mode_list() -> str:
     return format_mode_list(modes, defaults=DEFAULT_MODES)
 
 
-@mcp.tool()
+@_tool()
 def mode_show(name: str) -> str:
     """Show details of a conversation mode including its primer, boundary, and permissions.
 
@@ -2060,7 +2097,7 @@ def mode_show(name: str) -> str:
     return format_mode_detail(name, mode=mode, default=default)
 
 
-@mcp.tool()
+@_tool()
 def mode_create(name: str, primer: str, boundary: str, permissions: str,
                 description: str = "", link_to: str = "") -> str:
     """Create a custom conversation mode from a primer, boundary, and permissions.
@@ -2091,7 +2128,7 @@ def mode_create(name: str, primer: str, boundary: str, permissions: str,
     return f"Created mode: {name} ({mode_id})"
 
 
-@mcp.tool()
+@_tool()
 def mode_export(name: str) -> str:
     """Export a mode as a portable, PII-free artifact (JSON).
 
@@ -2107,7 +2144,7 @@ def mode_export(name: str) -> str:
     return json.dumps(artifact, indent=2)
 
 
-@mcp.tool()
+@_tool()
 def mode_import(artifact_json: str) -> str:
     """Import a mode from a portable artifact (JSON string).
 
@@ -2128,7 +2165,7 @@ def mode_import(artifact_json: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@_tool()
 def mode_seed() -> str:
     """Seed the default conversation modes into the graph. Idempotent."""
     store, _ = _get_store()

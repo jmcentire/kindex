@@ -19,6 +19,16 @@ if TYPE_CHECKING:
     from .budget import BudgetLedger
 
 
+def _record_section_degraded(section: str, error: Exception,
+                             config: "Config | None") -> None:
+    """Ledger a shielded prime-section failure; never raises."""
+    try:
+        from .config import record_degraded
+        record_degraded(section, error, config=config)
+    except Exception:
+        pass
+
+
 def prime_context(
     store: Store,
     topic: str | None = None,
@@ -51,9 +61,15 @@ def prime_context(
             # Use the directory name as a fallback search term
             topic = os.path.basename(cwd)
 
-    # Search for relevant nodes (expired and other-client nodes never surface)
-    results = [r for r in hybrid_search(store, topic, top_k=8)
-               if not node_expired(r) and not adapter_scoped_out(r.get("tags"), adapter)]
+    # Search for relevant nodes (expired and other-client nodes never surface).
+    # Shielded: one bad node must not zero the whole prime — a failed
+    # search section degrades to empty and the other sections still render.
+    try:
+        results = [r for r in hybrid_search(store, topic, top_k=8)
+                   if not node_expired(r) and not adapter_scoped_out(r.get("tags"), adapter)]
+    except Exception as e:
+        _record_section_degraded("prime.search", e, config)
+        results = []
 
     lines: list[str] = []
     lines.append("## Kindex Context (auto-primed)")
@@ -89,14 +105,19 @@ def prime_context(
     # -- Active operational nodes (expired ones are skipped in every section) --
     # Client-scoped nodes (e.g. an Antigravity hook-protocol directive) are dropped
     # when a different client is priming, mirroring the attention-hook scoping.
-    ops = store.operational_summary()
-    ops = {
-        k: [
-            n for n in v
-            if not node_expired(n) and not adapter_scoped_out(n.get("tags"), adapter)
-        ]
-        for k, v in ops.items()
-    }
+    # Shielded like the search section: partial priming beats an empty prime.
+    try:
+        ops = store.operational_summary()
+        ops = {
+            k: [
+                n for n in v
+                if not node_expired(n) and not adapter_scoped_out(n.get("tags"), adapter)
+            ]
+            for k, v in ops.items()
+        }
+    except Exception as e:
+        _record_section_degraded("prime.operational", e, config)
+        ops = {"constraints": [], "checkpoints": [], "watches": [], "directives": []}
 
     if ops["constraints"]:
         lines.append("### Active constraints")
