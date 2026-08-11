@@ -255,6 +255,8 @@ def hybrid_search(
     ranking: str = "ensemble",
     *,
     include_expired: bool = False,
+    include_archived: bool = False,
+    fence_stats: dict | None = None,
 ) -> list[dict]:
     """Hybrid search combining FTS5 + graph expansion + vector search.
 
@@ -269,25 +271,42 @@ def hybrid_search(
             is in the past are filtered out — expired knowledge stops
             surfacing in search/context/ask everywhere, matching the primed
             session context. Daemon/maintenance callers may opt in.
+        include_archived: When False (default), archived nodes are fenced
+            from results no matter which mode surfaced them; True restores
+            the pre-fence behavior for callers that need retired content.
+        fence_stats: Optional dict the caller owns; on return its "fenced"
+            key holds how many archived/superseded candidates were dropped
+            while assembling results (feeds the CLI/MCP fence note).
 
     Returns list of node dicts with 'confidence' and 'rrf_score' keys.
     """
-    # Mode 1: FTS5 search (raw query — register is intentional signal for keywords)
-    fts_results = store.fts_search(query, limit=top_k * 3)
-    fts_ranked = [(r["id"], abs(r.get("rank", 0)) + r.get("weight", 0))
-                  for r in fts_results]
+    # Mode 1: FTS5 search (raw query — register is intentional signal for
+    # keywords). Per-row scoring guard: one malformed node (NULL weight,
+    # garbage rank) is skipped, never allowed to zero the result set.
+    fts_results = store.fts_search(query, limit=top_k * 3,
+                                   include_archived=include_archived)
+    fts_ranked: list[tuple[str, float]] = []
+    for r in fts_results:
+        try:
+            fts_ranked.append((r["id"], abs(r.get("rank") or 0) + (r.get("weight") or 0)))
+        except Exception:
+            continue
 
-    # Mode 2: Graph expansion from FTS hits
+    # Mode 2: Graph expansion from FTS hits (same per-edge tolerance)
     graph_ranked: list[tuple[str, float]] = []
     if expand_graph and fts_ranked:
         seen = {nid for nid, _ in fts_ranked}
         for nid, fts_score in fts_ranked[:5]:  # expand top 5 FTS hits
             edges = store.edges_from(nid)
             for edge in edges:
-                target = edge["to_id"]
+                try:
+                    target = edge["to_id"]
+                    edge_score = (edge["weight"] or 0) * fts_score
+                except Exception:
+                    continue
                 if target not in seen:
                     seen.add(target)
-                    graph_ranked.append((target, edge["weight"] * fts_score))
+                    graph_ranked.append((target, edge_score))
 
     # Mode 3: Vector search (if available)
     # Transmogrifier normalizes register for embeddings only — FTS5 stays raw
@@ -328,17 +347,28 @@ def hybrid_search(
         if vec_ranked:
             sources["vector"] = vec_ranked
         if all_ids:
-            sources["node_weight"] = _node_weight_scores(store, all_ids)
-            sources["recency"] = _recency_score(store, all_ids)
+            # Ranking-signal sources degrade independently: losing one
+            # (bad rows, broken table) drops that signal, not retrieval.
+            try:
+                sources["node_weight"] = _node_weight_scores(store, all_ids)
+            except Exception:
+                pass
+            try:
+                sources["recency"] = _recency_score(store, all_ids)
+            except Exception:
+                pass
             # Stigmergic injection-usefulness — separate channel from topology.
             # Weight is the user's explicit override (ranking.pheromone_weight>0)
             # else the auto-ramped learned weight (0 until trails mature).
-            phero_weight = cfg_weights.get("pheromone", 0) or _learned_pheromone_weight(store)
-            if phero_weight > 0:
-                phero = _pheromone_scores(store, all_ids)
-                if phero:
-                    sources["pheromone"] = phero
-                    cfg_weights = {**cfg_weights, "pheromone": phero_weight}
+            try:
+                phero_weight = cfg_weights.get("pheromone", 0) or _learned_pheromone_weight(store)
+                if phero_weight > 0:
+                    phero = _pheromone_scores(store, all_ids)
+                    if phero:
+                        sources["pheromone"] = phero
+                        cfg_weights = {**cfg_weights, "pheromone": phero_weight}
+            except Exception:
+                pass
 
         merged = _weighted_ensemble(sources, weights=cfg_weights)
     else:
@@ -350,36 +380,83 @@ def hybrid_search(
             ranked_lists.append(vec_ranked)
         merged = _rrf_merge(*ranked_lists, k=cfg_rrf_k) if len(ranked_lists) > 1 else fts_ranked
 
-    # Fetch full nodes for top results. Superseded nodes never surface —
-    # follow extra['superseded_by'] to the live replacement when it isn't
-    # already a candidate of its own, otherwise drop the stale entry.
+    # Fetch full nodes, drawing from the merged candidate list until top_k
+    # results or exhaustion — drop-filtering used to happen after slicing
+    # top_k, silently returning short result sets. Superseded nodes never
+    # surface — follow extra['superseded_by'] to the live replacement when
+    # it isn't already a candidate of its own, otherwise drop the stale
+    # entry. Archived nodes are fenced unless the caller opted in. Ranking
+    # order of survivors is unchanged: candidates are consumed in merged
+    # order and never re-scored.
     from .store import node_expired
 
-    top = merged[:top_k]
-    top_ids = {nid for nid, _ in top}
+    candidate_ids = {nid for nid, _ in merged}
     results = []
     seen: set[str] = set()
-    for nid, score in top:
-        node = store.get_node(nid)
-        hops = 0
-        while node is not None and node.get("status") == "superseded":
-            successor = (node.get("extra") or {}).get("superseded_by")
-            if not successor or successor in top_ids or hops >= 5:
-                node = None
-                break
-            node = store.get_node(successor)
-            hops += 1
-        if node is None or node.get("status") == "superseded":
-            continue
-        if not include_expired and node_expired(node):
-            continue
-        if node["id"] in seen:
-            continue
-        seen.add(node["id"])
-        node["confidence"] = round(score, 4)
-        node["rrf_score"] = round(score, 6)  # backward compat
-        node["edges_out"] = store.edges_from(node["id"])[:5]
-        results.append(node)
+    fenced_nodes: dict[str, dict] = {}
+    for nid, score in merged:
+        if len(results) >= top_k:
+            break
+        try:
+            node = store.get_node(nid)
+            orig = node
+            hops = 0
+            while node is not None and node.get("status") == "superseded":
+                successor = (node.get("extra") or {}).get("superseded_by")
+                if not successor or hops >= 5:
+                    node = None
+                    # Fenced — but only counted if the caller could ever
+                    # see it: an expired candidate stays invisible with or
+                    # without the escape hatch.
+                    if include_expired or not node_expired(orig):
+                        fenced_nodes[nid] = orig
+                    break
+                if successor in candidate_ids:
+                    # Dedup, not a fence: the successor ranks as its own candidate.
+                    node = None
+                    break
+                node = store.get_node(successor)
+                hops += 1
+            if node is None:
+                continue
+            if not include_expired and node_expired(node):
+                continue
+            if not include_archived and node.get("status") == "archived":
+                fenced_nodes[node["id"]] = node
+                continue
+            if node["id"] in seen:
+                continue
+            seen.add(node["id"])
+            node["confidence"] = round(score, 4)
+            node["rrf_score"] = round(score, 6)  # backward compat
+            node["edges_out"] = store.edges_from(node["id"])[:5]
+            results.append(node)
+        except Exception:
+            continue  # one malformed candidate never zeroes retrieval
+
+    if fence_stats is not None:
+        if not include_archived and len(results) < top_k:
+            # Archived FTS matches were fenced upstream (inside fts_search)
+            # and never became candidates, so the loop above cannot have
+            # counted them — with the result set short, any of them would
+            # have ranked. One extra FTS query, only on this short path.
+            # Expiry parity with the real results: an expired archived hit
+            # would stay invisible even through the escape hatch, so it
+            # never counts toward the note.
+            try:
+                unfenced = store.fts_search(query, limit=top_k * 3,
+                                            include_archived=True)
+                for r in unfenced:
+                    if (r.get("status") == "archived"
+                            and r["id"] not in fenced_nodes
+                            and (include_expired or not node_expired(r))):
+                        fenced_nodes[r["id"]] = r
+            except Exception:
+                pass
+        fence_stats["fenced"] = len(fenced_nodes)
+        # Callers that post-filter results (tags/owner) apply the same
+        # predicates to these before deciding on the fence note.
+        fence_stats["fenced_nodes"] = list(fenced_nodes.values())
 
     return results
 
@@ -478,37 +555,56 @@ def _append_operational(
             for k, v in ops.items()
         }
 
+    # Per-node rendering guards: a malformed operational node (e.g. a
+    # garbage extra that hydrates as a string) is skipped, never allowed
+    # to take the whole context block down with it.
+    def _extra_of(n: dict) -> dict:
+        extra = n.get("extra")
+        return extra if isinstance(extra, dict) else {}
+
     if ops["constraints"]:
         lines.append("\n### Active constraints")
         for c in ops["constraints"][:5 if verbose else 3]:
-            extra = c.get("extra") or {}
-            action = extra.get("action", "warn")
-            lines.append(f"- [{action}] {c['title']}")
-            if verbose and extra.get("trigger"):
-                lines.append(f"  trigger: {extra['trigger']}")
+            try:
+                extra = _extra_of(c)
+                action = extra.get("action", "warn")
+                lines.append(f"- [{action}] {c['title']}")
+                if verbose and extra.get("trigger"):
+                    lines.append(f"  trigger: {extra['trigger']}")
+            except Exception:
+                continue
 
     if ops["watches"]:
         lines.append("\n### Watches")
         for w in ops["watches"][:5 if verbose else 3]:
-            extra = w.get("extra") or {}
-            parts = [f"! {w['title']}"]
-            if extra.get("owner"):
-                parts.append(f"@{extra['owner']}")
-            if extra.get("expires"):
-                parts.append(f"(expires {extra['expires']})")
-            lines.append(f"- {' '.join(parts)}")
+            try:
+                extra = _extra_of(w)
+                parts = [f"! {w['title']}"]
+                if extra.get("owner"):
+                    parts.append(f"@{extra['owner']}")
+                if extra.get("expires"):
+                    parts.append(f"(expires {extra['expires']})")
+                lines.append(f"- {' '.join(parts)}")
+            except Exception:
+                continue
 
     if verbose and ops["checkpoints"]:
         lines.append("\n### Checkpoints")
         for cp in ops["checkpoints"][:5]:
-            trig = (cp.get("extra") or {}).get("trigger", "")
-            lines.append(f"- [ ] {cp['title']}" + (f" (trigger: {trig})" if trig else ""))
+            try:
+                trig = _extra_of(cp).get("trigger", "")
+                lines.append(f"- [ ] {cp['title']}" + (f" (trigger: {trig})" if trig else ""))
+            except Exception:
+                continue
 
     if verbose and ops["directives"]:
         lines.append("\n### Directives")
         for d in ops["directives"][:5]:
-            scope = (d.get("extra") or {}).get("scope", "")
-            lines.append(f"- {d['title']}" + (f" [scope: {scope}]" if scope else ""))
+            try:
+                scope = _extra_of(d).get("scope", "")
+                lines.append(f"- {d['title']}" + (f" [scope: {scope}]" if scope else ""))
+            except Exception:
+                continue
 
 
 # ── Full tier ─────────────────────────────────────────────────────────
@@ -568,8 +664,8 @@ def _format_full(
             if q.get("content"):
                 lines.append(f"  Context: {_strip_frontmatter(q['content'])[:200]}")
 
-    # Recent decisions
-    decisions = store.all_nodes(node_type="decision", limit=5)
+    # Recent decisions (active only — retired decisions stay retired)
+    decisions = store.all_nodes(node_type="decision", status="active", limit=5)
     if decisions:
         lines.append("\n### Recent decisions")
         for d in decisions:
@@ -629,8 +725,8 @@ def _format_abridged(
         for q in questions:
             lines.append(f"- {q['title']}")
 
-    # Recent decisions (brief)
-    decisions = store.all_nodes(node_type="decision", limit=3)
+    # Recent decisions (brief; active only)
+    decisions = store.all_nodes(node_type="decision", status="active", limit=3)
     if decisions:
         lines.append("\n### Recent decisions")
         for d in decisions:
@@ -749,9 +845,12 @@ def generate_codebook(store: Store, min_weight: float = 0.5) -> tuple[str, str]:
     """
     import hashlib
 
+    from .store import node_retired
+
     nodes = store.all_nodes(limit=5000)
     eligible = [n for n in nodes
-                if n.get("type") != "session" and (n.get("weight") or 0) >= min_weight]
+                if n.get("type") != "session" and not node_retired(n)
+                and (n.get("weight") or 0) >= min_weight]
     eligible.sort(key=lambda n: n["id"])
 
     lines = []
@@ -797,6 +896,8 @@ def predict_tier2(
     might ask about next. Returns merged list sorted by node ID for
     deterministic prefix ordering.
     """
+    from .store import node_retired
+
     hit_ids = {r["id"] for r in search_results}
     predicted: dict[str, dict] = {}
 
@@ -805,7 +906,7 @@ def predict_tier2(
             tid = edge["to_id"]
             if tid not in hit_ids and tid not in predicted:
                 node = store.get_node(tid)
-                if node and node.get("type") != "session":
+                if node and node.get("type") != "session" and not node_retired(node):
                     predicted[tid] = node
 
     merged = list(search_results[:top_k])

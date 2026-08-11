@@ -58,6 +58,13 @@ def _hook_needs_attention_deadline(entry: object) -> bool:
     return "--deadline-ms" not in str(entry)
 
 
+def _hook_needs_envelope_capture(entry: object) -> bool:
+    """Old Stop entries passed `--text "Session ended"`, which preempted
+    the stdin envelope so the transcript was never extracted. Re-running
+    setup is the migration (issue-#15 pattern): rebuild the whole entry."""
+    return "--text" in str(entry)
+
+
 def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     """Install Kindex hooks into Claude Code's settings.json.
 
@@ -185,9 +192,12 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         })
     stop_hook_commands.extend([
         {
+            # No --text: the stdin envelope must reach compact-hook so the
+            # session transcript is what gets extracted. Timeout matches
+            # the PreCompact entry — this path now does real extraction.
             "type": "command",
-            "command": _kin_stop_hook_command(kin_path, ["compact-hook", "--text", "Session ended"]),
-            "timeout": 5000,
+            "command": _kin_stop_hook_command(kin_path, ["compact-hook"]),
+            "timeout": 10000,
         },
         {
             # Super lightweight + silent: records the session for later
@@ -207,13 +217,16 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         "matcher": "",
         "hooks": stop_hook_commands,
     }
-    existing_idx = next(
-        (i for i, h in enumerate(stop_hooks)
-         if "stop-guard" in str(h) or "compact-hook" in str(h) or "dream" in str(h)
-         or "reinforce" in str(h)),
-        None,
-    )
-    if existing_idx is None:
+    # ALL kindex Stop entries are considered, not just the first match:
+    # repeated legacy installs (or an earlier sibling-only entry) could
+    # otherwise shadow a broken `compact-hook --text` entry that would
+    # then never migrate. Duplicates collapse into the one canonical entry.
+    existing_idxs = [
+        i for i, h in enumerate(stop_hooks)
+        if "stop-guard" in str(h) or "compact-hook" in str(h) or "dream" in str(h)
+        or "reinforce" in str(h)
+    ]
+    if not existing_idxs:
         stop_hooks.append(stop_guard_entry)
         if config.reminders.stop_guard_enabled:
             action = "Added Stop hook: kin stop-guard + compact-hook"
@@ -223,19 +236,25 @@ def install_claude_hooks(config: "Config", dry_run: bool = False) -> list[str]:
             action += " + dream"
         actions.append(action)
     elif (
-        _hook_needs_profile(stop_hooks[existing_idx])
-        or _hook_needs_stop_active_guard(stop_hooks[existing_idx])
-        or ("dream" in str(stop_hooks[existing_idx]) and not config.reminders.dream_on_stop_enabled)
-        or ("dream" not in str(stop_hooks[existing_idx]) and config.reminders.dream_on_stop_enabled)
-        or ("stop-guard" in str(stop_hooks[existing_idx]) and not config.reminders.stop_guard_enabled)
-        or ("stop-guard" not in str(stop_hooks[existing_idx]) and config.reminders.stop_guard_enabled)
+        len(existing_idxs) > 1
+        or _hook_needs_profile(stop_hooks[existing_idxs[0]])
+        or _hook_needs_stop_active_guard(stop_hooks[existing_idxs[0]])
+        or _hook_needs_envelope_capture(stop_hooks[existing_idxs[0]])
+        or ("dream" in str(stop_hooks[existing_idxs[0]]) and not config.reminders.dream_on_stop_enabled)
+        or ("dream" not in str(stop_hooks[existing_idxs[0]]) and config.reminders.dream_on_stop_enabled)
+        or ("stop-guard" in str(stop_hooks[existing_idxs[0]]) and not config.reminders.stop_guard_enabled)
+        or ("stop-guard" not in str(stop_hooks[existing_idxs[0]]) and config.reminders.stop_guard_enabled)
     ):
-        stop_hooks[existing_idx] = stop_guard_entry
+        stop_hooks[existing_idxs[0]] = stop_guard_entry
+        for i in reversed(existing_idxs[1:]):
+            del stop_hooks[i]
         action = "Updated Stop hook to source ~/.profile and avoid recursion"
         if config.reminders.stop_guard_enabled:
             action += " with guard"
         if config.reminders.dream_on_stop_enabled:
             action += " with dream"
+        if len(existing_idxs) > 1:
+            action += f" (merged {len(existing_idxs)} entries)"
         actions.append(action)
     else:
         actions.append("Stop hook already installed")

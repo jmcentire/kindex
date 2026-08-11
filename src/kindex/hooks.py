@@ -19,6 +19,16 @@ if TYPE_CHECKING:
     from .budget import BudgetLedger
 
 
+def _record_section_degraded(section: str, error: Exception,
+                             config: "Config | None") -> None:
+    """Ledger a shielded prime-section failure; never raises."""
+    try:
+        from .config import record_degraded
+        record_degraded(section, error, config=config)
+    except Exception:
+        pass
+
+
 def prime_context(
     store: Store,
     topic: str | None = None,
@@ -41,19 +51,47 @@ def prime_context(
     from .retrieve import detect_domain_from_path, hybrid_search
     from .store import node_expired
 
-    # Auto-detect topic from cwd if not provided
+    # Section shields: a failure in one section degrades that section and
+    # the rest still renders. Ledger events are DEFERRED — one failed hook
+    # invocation yields exactly one degraded event (the top-level
+    # catch-all's), so section events are written only when this function
+    # completes, i.e. the partial-success case. If every store-backed
+    # section failed the store is unreadable: re-raise so the catch-all
+    # owns the single event and the degraded output line.
+    section_failures: list[tuple[str, Exception]] = []
+    search_failed = ops_failed = False
+
+    # Auto-detect topic from cwd if not provided. Topic detection reads
+    # the store; a failure degrades to the directory-name fallback.
     if not topic:
         cwd = os.getcwd()
-        domains = detect_domain_from_path(store, cwd)
+        try:
+            domains = detect_domain_from_path(store, cwd)
+        except Exception as e:
+            section_failures.append(("prime.topic", e))
+            domains = []
         if domains:
             topic = " ".join(domains)
         else:
             # Use the directory name as a fallback search term
             topic = os.path.basename(cwd)
 
-    # Search for relevant nodes (expired and other-client nodes never surface)
-    results = [r for r in hybrid_search(store, topic, top_k=8)
-               if not node_expired(r) and not adapter_scoped_out(r.get("tags"), adapter)]
+    # Search for relevant nodes (expired and other-client nodes never
+    # surface). Per-node filtering: one bad node is skipped, never allowed
+    # to zero the section, and a failed search still primes the rest.
+    try:
+        raw_results = hybrid_search(store, topic, top_k=8)
+    except Exception as e:
+        section_failures.append(("prime.search", e))
+        search_failed = True
+        raw_results = []
+    results = []
+    for r in raw_results:
+        try:
+            if not node_expired(r) and not adapter_scoped_out(r.get("tags"), adapter):
+                results.append(r)
+        except Exception:
+            continue
 
     lines: list[str] = []
     lines.append("## Kindex Context (auto-primed)")
@@ -67,17 +105,21 @@ def prime_context(
     if results:
         lines.append("### Key concepts")
         for r in results[:6]:
-            title = r.get("title", r["id"])
-            ntype = r.get("type", "concept")
-            content = (r.get("content") or "")[:120]
-            edges = r.get("edges_out", [])
-            connected = ", ".join(e.get("to_title", e["to_id"]) for e in edges[:3])
+            try:
+                title = r.get("title", r["id"])
+                ntype = r.get("type", "concept")
+                content = (r.get("content") or "")[:120]
+                edges = r.get("edges_out", [])
+                connected = ", ".join(str(e.get("to_title") or e.get("to_id") or "")
+                                      for e in edges[:3])
 
-            entry = f"- **{title}** ({ntype})"
-            if content:
-                entry += f": {content}"
-            if connected:
-                entry += f" [{connected}]"
+                entry = f"- **{title}** ({ntype})"
+                if content:
+                    entry += f": {content}"
+                if connected:
+                    entry += f" [{connected}]"
+            except Exception:
+                continue  # one malformed node never zeroes the prime
 
             if used + len(entry) + 1 > char_budget - 400:
                 break
@@ -89,21 +131,35 @@ def prime_context(
     # -- Active operational nodes (expired ones are skipped in every section) --
     # Client-scoped nodes (e.g. an Antigravity hook-protocol directive) are dropped
     # when a different client is priming, mirroring the attention-hook scoping.
-    ops = store.operational_summary()
-    ops = {
-        k: [
-            n for n in v
-            if not node_expired(n) and not adapter_scoped_out(n.get("tags"), adapter)
-        ]
-        for k, v in ops.items()
-    }
+    # Per-node filtering here too: a malformed operational node is skipped,
+    # never allowed to take the section (or the prime) down with it.
+    ops = {"constraints": [], "checkpoints": [], "watches": [], "directives": []}
+    try:
+        ops_raw = store.operational_summary()
+    except Exception as e:
+        section_failures.append(("prime.operational", e))
+        ops_failed = True
+        ops_raw = {}
+    for k, v in ops_raw.items():
+        kept = []
+        for n in v:
+            try:
+                if not node_expired(n) and not adapter_scoped_out(n.get("tags"), adapter):
+                    kept.append(n)
+            except Exception:
+                continue
+        ops[k] = kept
 
     if ops["constraints"]:
         lines.append("### Active constraints")
         for c in ops["constraints"][:3]:
-            extra = c.get("extra") or {}
-            action = extra.get("action", "warn")
-            entry = f"- [{action}] {c['title']}"
+            try:
+                extra = c.get("extra")
+                extra = extra if isinstance(extra, dict) else {}
+                action = extra.get("action", "warn")
+                entry = f"- [{action}] {c['title']}"
+            except Exception:
+                continue
             lines.append(entry)
             used += len(entry) + 1
         lines.append("")
@@ -113,24 +169,28 @@ def prime_context(
         today = _dt.date.today().isoformat()
         lines.append("### Watches")
         for w in ops["watches"][:5]:
-            extra = w.get("extra") or {}
-            expires = extra.get("expires", "")
-            urgent = ""
-            if expires:
-                try:
-                    days_left = (_dt.date.fromisoformat(expires) - _dt.date.today()).days
-                    if days_left <= 0:
-                        urgent = " [OVERDUE]"
-                    elif days_left <= 3:
-                        urgent = f" [{days_left}d left]"
-                except (ValueError, TypeError):
-                    pass
-            parts = [f"! {w['title']}{urgent}"]
-            if extra.get("owner"):
-                parts.append(f"@{extra['owner']}")
-            if expires:
-                parts.append(f"(expires {expires})")
-            entry = f"- {' '.join(parts)}"
+            try:
+                extra = w.get("extra")
+                extra = extra if isinstance(extra, dict) else {}
+                expires = extra.get("expires", "")
+                urgent = ""
+                if expires:
+                    try:
+                        days_left = (_dt.date.fromisoformat(expires) - _dt.date.today()).days
+                        if days_left <= 0:
+                            urgent = " [OVERDUE]"
+                        elif days_left <= 3:
+                            urgent = f" [{days_left}d left]"
+                    except (ValueError, TypeError):
+                        pass
+                parts = [f"! {w['title']}{urgent}"]
+                if extra.get("owner"):
+                    parts.append(f"@{extra['owner']}")
+                if expires:
+                    parts.append(f"(expires {expires})")
+                entry = f"- {' '.join(parts)}"
+            except Exception:
+                continue
             lines.append(entry)
             used += len(entry) + 1
         lines.append("")
@@ -138,44 +198,65 @@ def prime_context(
     if ops["directives"]:
         lines.append("### Directives")
         for d in ops["directives"][:2]:
-            scope = (d.get("extra") or {}).get("scope", "")
-            entry = f"- {d['title']}"
-            if scope:
-                entry += f" [scope: {scope}]"
+            try:
+                extra = d.get("extra")
+                extra = extra if isinstance(extra, dict) else {}
+                scope = extra.get("scope", "")
+                entry = f"- {d['title']}"
+                if scope:
+                    entry += f" [scope: {scope}]"
+            except Exception:
+                continue
             lines.append(entry)
             used += len(entry) + 1
         lines.append("")
 
     # -- Recent activity summary (since yesterday) --
-    yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat(timespec="seconds")
-    recent = store.activity_since(yesterday)
-    if recent:
-        lines.append("### Recent activity (last 24h)")
-        # Group by action. Notable titles for nodes scoped to a different client
-        # are dropped so their titles don't echo into the wrong session (the
-        # aggregate counts stay complete — they reveal no titles).
-        scoping = bool(adapter) and adapter != "plain"
-        action_counts: dict[str, int] = {}
-        notable: list[str] = []
-        for entry in recent:
-            action = entry.get("action", "unknown")
-            action_counts[action] = action_counts.get(action, 0) + 1
-            if len(notable) >= 5:
-                continue
-            target = entry.get("target_title") or entry.get("target_id", "")
-            if not target:
-                continue
-            if scoping:
-                domains = store.get_node_domains(str(entry.get("target_id") or ""))
-                if adapter_scoped_out(domains, adapter):
+    # Shielded like the other sections: a failed activity pull skips this
+    # section and the rest of the prime still renders.
+    try:
+        yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat(timespec="seconds")
+        recent = store.activity_since(yesterday)
+        if recent:
+            lines.append("### Recent activity (last 24h)")
+            # Group by action. Notable titles for nodes scoped to a different client
+            # are dropped so their titles don't echo into the wrong session (the
+            # aggregate counts stay complete — they reveal no titles). Titles of
+            # non-active nodes are dropped too: archiving a node writes the very
+            # activity entry that would otherwise echo its title back into context.
+            scoping = bool(adapter) and adapter != "plain"
+            action_counts: dict[str, int] = {}
+            notable: list[str] = []
+            for entry in recent:
+                action = entry.get("action", "unknown")
+                action_counts[action] = action_counts.get(action, 0) + 1
+                if len(notable) >= 5:
                     continue
-            notable.append(f"{action}: {target}")
+                try:
+                    target = entry.get("target_title") or entry.get("target_id", "")
+                    if not target:
+                        continue
+                    target_id = str(entry.get("target_id") or "")
+                    if target_id:
+                        target_node = store.get_node(target_id)
+                        if target_node is not None and (
+                                target_node.get("status") or "active") != "active":
+                            continue
+                    if scoping:
+                        domains = store.get_node_domains(target_id)
+                        if adapter_scoped_out(domains, adapter):
+                            continue
+                    notable.append(f"{action}: {target}")
+                except Exception:
+                    continue
 
-        summary_parts = [f"{count} {action}" for action, count in action_counts.items()]
-        lines.append(f"- Activity: {', '.join(summary_parts)}")
-        for n in notable[:3]:
-            lines.append(f"  - {n}")
-        lines.append("")
+            summary_parts = [f"{count} {action}" for action, count in action_counts.items()]
+            lines.append(f"- Activity: {', '.join(summary_parts)}")
+            for n in notable[:3]:
+                lines.append(f"  - {n}")
+            lines.append("")
+    except Exception as e:
+        section_failures.append(("prime.activity", e))
 
     # -- Active session tag --
     try:
@@ -371,6 +452,20 @@ def prime_context(
         lines.append("- Look for a `.kin/` directory in the tree of the files you touch — not just your cwd root — and honor its config/index.")
         lines.append("- When you `git add`/commit, stage the matching `.kin/` changes (config, index.json) alongside the code so the graph travels with the work.")
         lines.append("")
+
+    if search_failed and ops_failed:
+        # Both core calls failed: no memory content could be primed, so
+        # this is a failed invocation, not a partial prime. Re-raise and
+        # let the top-level catch-all own the single degraded event and
+        # the degraded output line. (activity_since swallows its own
+        # errors, so the auxiliary sections can't gate this decision.)
+        raise next(err for name, err in section_failures if name == "prime.search")
+
+    # Partial success: the command completes, so the failed sections'
+    # events are written now (and only now — never alongside a catch-all
+    # event for the same invocation).
+    for section, err in section_failures:
+        _record_section_degraded(section, err, config)
 
     return "\n".join(lines) + "\n"
 

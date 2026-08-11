@@ -120,6 +120,16 @@ def node_expired(node: dict, today: str | None = None) -> bool:
     return expires < today
 
 
+def node_retired(node: dict) -> bool:
+    """True for any non-active node (archived, superseded, completed, …).
+
+    Context-rendering pulls filter to ACTIVE status via this helper; the
+    search fence in fts/hybrid keeps its explicit archived/superseded
+    pair because search legitimately ranks e.g. completed tasks.
+    """
+    return (node.get("status") or "active") != "active"
+
+
 class Store:
     """SQLite-backed knowledge graph with FTS5 full-text search.
 
@@ -1204,13 +1214,21 @@ class Store:
 
     # ── FTS5 search ────────────────────────────────────────────────────
 
-    def fts_search(self, query: str, limit: int = 20) -> list[dict]:
-        """Full-text search using FTS5 BM25 ranking."""
+    def fts_search(self, query: str, limit: int = 20,
+                   include_archived: bool = False) -> list[dict]:
+        """Full-text search using FTS5 BM25 ranking.
+
+        Archived and superseded nodes are fenced from default results;
+        include_archived=True restores archived candidates (the pre-fence
+        behavior) for callers that legitimately need retired content.
+        """
         import re
         # Strip punctuation and FTS5 special chars, keep only words
         tokens = re.findall(r'\w+', query.lower())
         if not tokens:
             return []
+        status_fence = ("status != 'superseded'" if include_archived
+                        else "status NOT IN ('archived', 'superseded')")
         # Build FTS5 query: quoted phrase OR individual tokens
         phrase = " ".join(tokens)
         safe_phrase = phrase.replace('"', '""')
@@ -1218,18 +1236,18 @@ class Store:
         fts_query = f'"{safe_phrase}" OR {token_expr}'
         try:
             rows = self.conn.execute(
-                """SELECT n.*, rank FROM nodes_fts
+                f"""SELECT n.*, rank FROM nodes_fts
                    JOIN nodes n ON n.id = nodes_fts.id
-                   WHERE nodes_fts MATCH ? AND n.status != 'superseded'
+                   WHERE nodes_fts MATCH ? AND n.{status_fence}
                    ORDER BY rank LIMIT ?""",
                 (fts_query, limit),
             ).fetchall()
         except sqlite3.OperationalError:
             # Fallback: simple LIKE search if FTS query syntax fails
             rows = self.conn.execute(
-                """SELECT *, 0 as rank FROM nodes
+                f"""SELECT *, 0 as rank FROM nodes
                    WHERE (title LIKE ? OR content LIKE ?)
-                     AND status != 'superseded'
+                     AND {status_fence}
                    ORDER BY weight DESC LIMIT ?""",
                 (f"%{phrase}%", f"%{phrase}%", limit),
             ).fetchall()
@@ -1237,51 +1255,110 @@ class Store:
 
     # ── Weight decay ───────────────────────────────────────────────────
 
+    # Runs closer together than this are no-ops that do NOT advance the
+    # decay.last_run stamp, so sub-day slices accumulate instead of being
+    # rounded away: a slice only survives if it changes the stored 4-dp
+    # weight, and even a floor-adjacent node (w=0.0101, H=90d) needs
+    # ~0.65 days for its delta to reach that resolution. Without this
+    # gate a 5-minute cron cadence would suppress every write and decay
+    # would silently stop.
+    _DECAY_MIN_INTERVAL_DAYS = 1.0
+
     def apply_weight_decay(self, node_half_life_days: int = 90,
                            edge_half_life_days: int = 30) -> int:
-        """Decay weights based on last access time. Returns count of affected nodes."""
+        """Decay weights over the interval since the previous decay run.
+
+        Cadence-independent: each run folds in only
+        (max(last_accessed, previous_run), now] for nodes and
+        (max(created_at, previous_run), now] for edges, so the slices
+        telescope to w0 * 0.5^(elapsed/half_life) no matter how often the
+        cron fires (the old code multiplied the FULL elapsed-age factor
+        into the already-decayed weight on every run). The checkpoint is
+        the meta key 'decay.last_run'; the first run after upgrade stamps
+        it and applies no decay — a cold start never retro-punishes.
+        Returns count of affected nodes.
+        """
         now = datetime.now()
 
-        # Node decay
-        rows = self.conn.execute("SELECT id, weight, last_accessed FROM nodes").fetchall()
-        count = 0
-        for row in rows:
-            try:
-                last = datetime.fromisoformat(row["last_accessed"])
-            except (ValueError, TypeError):
-                continue
-            days_since = (now - last).days
-            if days_since <= 0:
-                continue
-            decay = 0.5 ** (days_since / node_half_life_days)
-            new_weight = max(0.01, row["weight"] * decay)
-            if abs(new_weight - row["weight"]) > 0.001:
-                self.conn.execute(
-                    "UPDATE nodes SET weight = ? WHERE id = ?",
-                    (round(new_weight, 4), row["id"]),
-                )
-                count += 1
+        # Checkpoint read, row updates, and stamp are ONE serialized unit:
+        # BEGIN IMMEDIATE takes the write lock up front, so two concurrent
+        # runs cannot both read the same checkpoint and double-apply an
+        # interval (the loser blocks, then sees the fresh stamp and gates).
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            began = True
+        except sqlite3.OperationalError:
+            # Already inside a caller-managed transaction — its
+            # serialization applies.
+            began = False
 
-        # Edge decay
-        edge_rows = self.conn.execute("SELECT id, weight, created_at FROM edges").fetchall()
-        for row in edge_rows:
-            try:
-                created = datetime.fromisoformat(row["created_at"])
-            except (ValueError, TypeError):
-                continue
-            days_since = (now - created).days
-            if days_since <= 0:
-                continue
-            decay = 0.5 ** (days_since / edge_half_life_days)
-            new_weight = max(0.01, row["weight"] * decay)
-            if abs(new_weight - row["weight"]) > 0.001:
-                self.conn.execute(
-                    "UPDATE edges SET weight = ? WHERE id = ?",
-                    (round(new_weight, 4), row["id"]),
-                )
+        try:
+            prev_raw = self.get_meta("decay.last_run")
+            prev = None
+            if prev_raw:
+                try:
+                    prev = datetime.fromisoformat(prev_raw)
+                except (ValueError, TypeError):
+                    prev = None
+            if prev is None:
+                # Cold start (or corrupt stamp): establish accounting, decay nothing.
+                self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
+                return 0
+            if (now - prev).total_seconds() / 86400.0 < self._DECAY_MIN_INTERVAL_DAYS:
+                if began:
+                    self.conn.rollback()
+                return 0
 
-        self.conn.commit()
-        return count
+            # Node decay over (max(last_accessed, prev), now]
+            rows = self.conn.execute(
+                "SELECT id, weight, last_accessed FROM nodes").fetchall()
+            count = 0
+            for row in rows:
+                try:
+                    last = datetime.fromisoformat(row["last_accessed"])
+                except (ValueError, TypeError):
+                    continue
+                start = max(last, prev)
+                days_since = (now - start).total_seconds() / 86400.0
+                if days_since <= 0:
+                    continue
+                decay = 0.5 ** (days_since / node_half_life_days)
+                new_weight = max(0.01, round(row["weight"] * decay, 4))
+                if new_weight != round(row["weight"], 4):
+                    self.conn.execute(
+                        "UPDATE nodes SET weight = ? WHERE id = ?",
+                        (new_weight, row["id"]),
+                    )
+                    count += 1
+
+            # Edge decay over (max(created_at, prev), now]
+            edge_rows = self.conn.execute(
+                "SELECT id, weight, created_at FROM edges").fetchall()
+            for row in edge_rows:
+                try:
+                    created = datetime.fromisoformat(row["created_at"])
+                except (ValueError, TypeError):
+                    continue
+                start = max(created, prev)
+                days_since = (now - start).total_seconds() / 86400.0
+                if days_since <= 0:
+                    continue
+                decay = 0.5 ** (days_since / edge_half_life_days)
+                new_weight = max(0.01, round(row["weight"] * decay, 4))
+                if new_weight != round(row["weight"], 4):
+                    self.conn.execute(
+                        "UPDATE edges SET weight = ? WHERE id = ?",
+                        (new_weight, row["id"]),
+                    )
+
+            # Stamp + decay commit together (set_meta commits): a crash
+            # mid-run rolls the whole slice back, never double-applies.
+            self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
+            return count
+        except BaseException:
+            if began and self.conn.in_transaction:
+                self.conn.rollback()
+            raise
 
     # ── Stigmergic injection pheromone ──────────────────────────────────
 
@@ -1550,9 +1627,12 @@ class Store:
         result = []
         for r in rows:
             d = self._row_to_dict(r)
-            expires = (d.get("extra") or {}).get("expires", "")
-            # Include if no expiry or not yet expired
-            if not expires or expires >= now:
+            extra = d.get("extra")
+            expires = extra.get("expires", "") if isinstance(extra, dict) else ""
+            # Include if no (valid) expiry or not yet expired — a watch
+            # with malformed extra still surfaces rather than crashing
+            # every operational pull.
+            if not isinstance(expires, str) or not expires or expires >= now:
                 result.append(d)
         return result
 

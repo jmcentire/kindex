@@ -80,25 +80,53 @@ def cmd_search(args):
     """Hybrid search: FTS5 + graph traversal, merged via RRF."""
     store = _store(args)
     query = " ".join(args.query)
+    include_archived = bool(getattr(args, "include_archived", False))
 
     from .retrieve import hybrid_search
-    results = hybrid_search(store, query, top_k=args.top_k)
+    fence_stats: dict = {}
+    results = hybrid_search(store, query, top_k=args.top_k,
+                            include_archived=include_archived,
+                            fence_stats=fence_stats)
+
+    # Post-filters apply identically to results and fenced candidates so
+    # the fence note reflects the same filter set the results use.
+    fenced_nodes = fence_stats.get("fenced_nodes", [])
 
     # --tags: filter by tag membership
     if getattr(args, "tags", None):
         filter_tags = {t.strip().lower() for t in args.tags.split(",") if t.strip()}
-        results = [r for r in results
-                   if filter_tags & {d.lower() for d in (r.get("domains") or [])}]
+
+        def _tag_match(r):
+            return bool(filter_tags & {d.lower() for d in (r.get("domains") or [])})
+
+        results = [r for r in results if _tag_match(r)]
+        fenced_nodes = [r for r in fenced_nodes if _tag_match(r)]
 
     # --mine: filter to nodes owned by current user
     if getattr(args, "mine", False):
         cfg = _config(args)
         me = cfg.current_user
-        results = [r for r in results if me in (r.get("prov_who") or [])
-                   or (r.get("extra") or {}).get("owner") == me]
+
+        def _mine_match(r):
+            extra = r.get("extra")
+            owner = extra.get("owner") if isinstance(extra, dict) else None
+            return me in (r.get("prov_who") or []) or owner == me
+
+        results = [r for r in results if _mine_match(r)]
+        fenced_nodes = [r for r in fenced_nodes if _mine_match(r)]
+
+    # The fence never lies by omission: when default search comes up short
+    # of top_k and fenced candidates would otherwise have ranked, say so.
+    fence_note = ""
+    fenced = len(fenced_nodes)
+    if not include_archived and fenced and len(results) < args.top_k:
+        fence_note = (f"({fenced} archived/superseded results fenced; use "
+                      f"--include-archived / include_archived=True to see them)")
 
     if not results:
         print("No results.", file=sys.stderr)
+        if fence_note:
+            print(fence_note, file=sys.stderr)
         return
 
     if args.json:
@@ -110,6 +138,9 @@ def cmd_search(args):
                       for e in r.get("edges_out", [])],
         } for r in results]
         print(_dumps(out, indent=2))
+        if fence_note:
+            # stderr so machine-readable stdout stays parseable JSON
+            print(fence_note, file=sys.stderr)
     else:
         print(f"# Kindex:{len(results)} results for \"{query}\"\n")
         for r in results:
@@ -126,6 +157,8 @@ def cmd_search(args):
                 connected = ", ".join(e.get("to_title", e["to_id"]) for e in edges[:5])
                 print(f"  → {connected}")
             print()
+        if fence_note:
+            print(fence_note)
 
     store.close()
 
@@ -609,9 +642,17 @@ def cmd_status(args):
     stats = store.stats()
 
     cfg = _config(args)
+    from .config import read_degraded_events
+    degraded = read_degraded_events(cfg, override_dir=getattr(args, "data_dir", None))
     if args.json:
         stats["profile"] = cfg.active_profile
         stats["profile_source"] = cfg.profile_source if cfg.active_profile else None
+        if degraded:
+            last = degraded[-1]
+            stats["degraded_7d"] = len(degraded)
+            stats["degraded_last"] = {"cmd": last.get("cmd"),
+                                      "error_class": last.get("error_class"),
+                                      "ts": last.get("ts")}
         print(_dumps(stats, indent=2))
     else:
         if cfg.active_profile:
@@ -633,6 +674,11 @@ def cmd_status(args):
                   f"{len(ops['checkpoints'])} checkpoints, "
                   f"{len(ops['watches'])} watches, "
                   f"{len(ops['directives'])} directives")
+
+        if degraded:
+            last = degraded[-1]
+            print(f"\nDegraded (7d): {len(degraded)} hook event(s) — "
+                  f"last: {last.get('cmd', '?')} ({last.get('error_class', '?')})")
 
     store.close()
 
@@ -795,6 +841,17 @@ def cmd_doctor(args):
     stale = [n for n in nodes if (n.get("last_accessed") or "")[:10] < cutoff]
     if stale and len(stale) > len(nodes) * 0.3:
         warnings.append(f"{len(stale)} nodes not accessed in 90+ days")
+
+    # ── Degraded hook events (last 7 days) ──
+    from .config import read_degraded_events
+    degraded_events = read_degraded_events(
+        _config(args), override_dir=getattr(args, "data_dir", None))
+    if degraded_events:
+        last = degraded_events[-1]
+        warnings.append(
+            f"{len(degraded_events)} degraded hook event(s) in last 7 days — "
+            f"last: {last.get('cmd', '?')} ({last.get('error_class', '?')}); "
+            f"see degraded.jsonl")
 
     # ── FTS5 sync check ──
     try:
@@ -1423,25 +1480,42 @@ def cmd_compact_hook(args):
     store = _store(args)
     ledger, cfg = _ledger(args)
 
-    text = args.text
-    if not text:
-        if not sys.stdin.isatty():
-            text = sys.stdin.read()
-        else:
-            print("No text provided. Use --text or pipe via stdin.", file=sys.stderr)
-            store.close()
-            return
-
     # A Claude Code hook pipes a JSON envelope ({session_id,
     # transcript_path, ...}) on stdin — metadata, not conversation text.
+    # The envelope preempts --text: the Stop hook historically passed
+    # both, and letting --text win ran extraction on the literal instead
+    # of the transcript the envelope points at. --text is the effective
+    # input only when stdin is not a parseable envelope.
+    stdin_text = ""
+    if not sys.stdin.isatty():
+        stdin_text = sys.stdin.read()
+
     env = {}
     try:
         from .attention import parse_hook_payload
-        env = parse_hook_payload(text) if text else {}
+        env = parse_hook_payload(stdin_text) if stdin_text else {}
     except Exception:
         env = {}
     tpath = env.get("transcript_path") or env.get("transcriptPath") or ""
-    is_envelope = bool(env.get("hook_event_name") or env.get("session_id") or tpath)
+    # The hook envelope, per spec, is a parseable JSON object carrying
+    # BOTH hook_event_name and transcript_path — only that suppresses
+    # --text. Hook-ish JSON without a transcript pointer (a session_id
+    # ping, an envelope missing its transcript) is still metadata, never
+    # extraction input: --text applies when given, otherwise there is
+    # nothing to extract.
+    is_envelope = bool(env.get("hook_event_name")) and bool(tpath)
+    is_hook_metadata = bool(env.get("hook_event_name") or env.get("session_id") or tpath)
+
+    if is_envelope:
+        text = stdin_text
+    elif args.text:
+        text = args.text
+    else:
+        text = "" if is_hook_metadata else stdin_text
+    if not text and sys.stdin.isatty():
+        print("No text provided. Use --text or pipe via stdin.", file=sys.stderr)
+        store.close()
+        return
 
     # Silent, lightweight: if a hook envelope (PreCompact/Stop) gave us a
     # transcript path, queue the session for later reinforcement grading in cron.
@@ -5747,6 +5821,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--top-k", type=int, default=10)
     s.add_argument("--tags", help="Filter by tags (comma-separated)")
     s.add_argument("--mine", action="store_true", help="Only my nodes")
+    s.add_argument("--include-archived", action="store_true",
+                   help="Include archived nodes (fenced from default search)")
     _common(s)
     s.set_defaults(func=cmd_search)
 
@@ -6562,6 +6638,57 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Hook-surface commands: exactly the set invoked from installed hook
+# entries (setup.install_claude_hooks and the agent adapters) and from
+# schedulers (launchd/crontab: `kin cron`, `kin remind check`). Memory
+# failure on these must degrade the turn, never crash it. `attention`,
+# `dream`, and `remind` are shared with humans, so those gate on the
+# invocation shape the installed entries use.
+_HOOK_SURFACE_COMMANDS = {
+    "prime", "compact-hook", "prompt-check", "stop-guard",
+    "attention-hook", "agent-prime-hook", "agent-stop-hook", "cron",
+}
+
+
+def _is_hook_surface(args) -> bool:
+    cmd = getattr(args, "command", None)
+    if cmd in _HOOK_SURFACE_COMMANDS:
+        return True
+    if cmd == "attention":
+        # Stop-hook sibling: `kin attention reinforce --enqueue`
+        return (getattr(args, "attention_action", "") == "reinforce"
+                and bool(getattr(args, "enqueue", False)))
+    if cmd == "dream":
+        # Stop-hook sibling: `kin dream --detach --lightweight`
+        return bool(getattr(args, "detach", False))
+    if cmd == "remind":
+        # Scheduler entry: `kin remind check --all-profiles`
+        return getattr(args, "remind_action", "") == "check"
+    return False
+
+
+def _degrade_hook_failure(args, exc: BaseException) -> None:
+    """Record a degraded-ledger event and emit the per-hook degraded
+    shape: prime-type hooks print one context line, guard-type hooks fail
+    open with empty output, capture/maintenance hooks stay silent."""
+    from .config import load_config, record_degraded
+
+    cfg = None
+    try:
+        cfg = load_config(
+            getattr(args, "config", None),
+            project_path=getattr(args, "project_path", None),
+            profile=getattr(args, "profile", None),
+        )
+    except Exception:
+        cfg = None
+    record_degraded(getattr(args, "command", None) or "unknown", exc,
+                    config=cfg, override_dir=getattr(args, "data_dir", None))
+    if getattr(args, "command", None) in ("prime", "agent-prime-hook"):
+        print(f"# kindex degraded: {type(exc).__name__} — "
+              "session starting without memory context")
+
+
 def main():
     from .store import ProfileMismatchError
 
@@ -6577,13 +6704,22 @@ def main():
         return
 
     if hasattr(args, "func"):
-        try:
-            args.func(args)
-        except ProfileMismatchError as e:
-            # Sequestration guard: never open a DB stamped for another
-            # profile — fail clearly instead of dumping a traceback.
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(2)
+        if _is_hook_surface(args):
+            try:
+                args.func(args)
+            except Exception as e:
+                # Hooks fail open: any failure (corrupt DB, locked file,
+                # schema mismatch, profile mismatch) degrades with exit 0.
+                # Deliberate exits (SystemExit) pass through.
+                _degrade_hook_failure(args, e)
+        else:
+            try:
+                args.func(args)
+            except ProfileMismatchError as e:
+                # Sequestration guard: never open a DB stamped for another
+                # profile — fail clearly instead of dumping a traceback.
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(2)
     else:
         parser.print_help()
 
