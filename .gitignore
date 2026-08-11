@@ -24,3 +24,4 @@ kin.yaml
 .mcpregistry_*
 .envrc
 .direnv/
+.harness/
