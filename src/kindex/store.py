@@ -1280,64 +1280,85 @@ class Store:
         """
         now = datetime.now()
 
-        prev_raw = self.get_meta("decay.last_run")
-        prev = None
-        if prev_raw:
-            try:
-                prev = datetime.fromisoformat(prev_raw)
-            except (ValueError, TypeError):
-                prev = None
-        if prev is None:
-            # Cold start (or corrupt stamp): establish accounting, decay nothing.
+        # Checkpoint read, row updates, and stamp are ONE serialized unit:
+        # BEGIN IMMEDIATE takes the write lock up front, so two concurrent
+        # runs cannot both read the same checkpoint and double-apply an
+        # interval (the loser blocks, then sees the fresh stamp and gates).
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            began = True
+        except sqlite3.OperationalError:
+            # Already inside a caller-managed transaction — its
+            # serialization applies.
+            began = False
+
+        try:
+            prev_raw = self.get_meta("decay.last_run")
+            prev = None
+            if prev_raw:
+                try:
+                    prev = datetime.fromisoformat(prev_raw)
+                except (ValueError, TypeError):
+                    prev = None
+            if prev is None:
+                # Cold start (or corrupt stamp): establish accounting, decay nothing.
+                self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
+                return 0
+            if (now - prev).total_seconds() / 86400.0 < self._DECAY_MIN_INTERVAL_DAYS:
+                if began:
+                    self.conn.rollback()
+                return 0
+
+            # Node decay over (max(last_accessed, prev), now]
+            rows = self.conn.execute(
+                "SELECT id, weight, last_accessed FROM nodes").fetchall()
+            count = 0
+            for row in rows:
+                try:
+                    last = datetime.fromisoformat(row["last_accessed"])
+                except (ValueError, TypeError):
+                    continue
+                start = max(last, prev)
+                days_since = (now - start).total_seconds() / 86400.0
+                if days_since <= 0:
+                    continue
+                decay = 0.5 ** (days_since / node_half_life_days)
+                new_weight = max(0.01, round(row["weight"] * decay, 4))
+                if new_weight != round(row["weight"], 4):
+                    self.conn.execute(
+                        "UPDATE nodes SET weight = ? WHERE id = ?",
+                        (new_weight, row["id"]),
+                    )
+                    count += 1
+
+            # Edge decay over (max(created_at, prev), now]
+            edge_rows = self.conn.execute(
+                "SELECT id, weight, created_at FROM edges").fetchall()
+            for row in edge_rows:
+                try:
+                    created = datetime.fromisoformat(row["created_at"])
+                except (ValueError, TypeError):
+                    continue
+                start = max(created, prev)
+                days_since = (now - start).total_seconds() / 86400.0
+                if days_since <= 0:
+                    continue
+                decay = 0.5 ** (days_since / edge_half_life_days)
+                new_weight = max(0.01, round(row["weight"] * decay, 4))
+                if new_weight != round(row["weight"], 4):
+                    self.conn.execute(
+                        "UPDATE edges SET weight = ? WHERE id = ?",
+                        (new_weight, row["id"]),
+                    )
+
+            # Stamp + decay commit together (set_meta commits): a crash
+            # mid-run rolls the whole slice back, never double-applies.
             self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
-            return 0
-        if (now - prev).total_seconds() / 86400.0 < self._DECAY_MIN_INTERVAL_DAYS:
-            return 0
-
-        # Node decay over (max(last_accessed, prev), now]
-        rows = self.conn.execute("SELECT id, weight, last_accessed FROM nodes").fetchall()
-        count = 0
-        for row in rows:
-            try:
-                last = datetime.fromisoformat(row["last_accessed"])
-            except (ValueError, TypeError):
-                continue
-            start = max(last, prev)
-            days_since = (now - start).total_seconds() / 86400.0
-            if days_since <= 0:
-                continue
-            decay = 0.5 ** (days_since / node_half_life_days)
-            new_weight = max(0.01, round(row["weight"] * decay, 4))
-            if new_weight != round(row["weight"], 4):
-                self.conn.execute(
-                    "UPDATE nodes SET weight = ? WHERE id = ?",
-                    (new_weight, row["id"]),
-                )
-                count += 1
-
-        # Edge decay over (max(created_at, prev), now]
-        edge_rows = self.conn.execute("SELECT id, weight, created_at FROM edges").fetchall()
-        for row in edge_rows:
-            try:
-                created = datetime.fromisoformat(row["created_at"])
-            except (ValueError, TypeError):
-                continue
-            start = max(created, prev)
-            days_since = (now - start).total_seconds() / 86400.0
-            if days_since <= 0:
-                continue
-            decay = 0.5 ** (days_since / edge_half_life_days)
-            new_weight = max(0.01, round(row["weight"] * decay, 4))
-            if new_weight != round(row["weight"], 4):
-                self.conn.execute(
-                    "UPDATE edges SET weight = ? WHERE id = ?",
-                    (new_weight, row["id"]),
-                )
-
-        # Stamp + decay commit together (set_meta commits the connection):
-        # a crash mid-run rolls the whole slice back, never double-applies.
-        self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
-        return count
+            return count
+        except BaseException:
+            if began and self.conn.in_transaction:
+                self.conn.rollback()
+            raise
 
     # ── Stigmergic injection pheromone ──────────────────────────────────
 

@@ -276,16 +276,24 @@ def search(query: str, top_k: int = 10, tags: str = "",
                             include_archived=include_archived,
                             fence_stats=fence_stats)
 
+    # The tag filter applies identically to results and fenced candidates
+    # so the fence note reflects the same filter set the results use.
+    fenced_nodes = fence_stats.get("fenced_nodes", [])
     if tags:
         filter_tags = {t.strip().lower() for t in tags.split(",") if t.strip()}
-        results = [r for r in results
-                   if filter_tags & {d.lower() for d in (r.get("domains") or r.get("tags") or [])}]
+
+        def _tag_match(r):
+            return bool(filter_tags
+                        & {d.lower() for d in (r.get("domains") or r.get("tags") or [])})
+
+        results = [r for r in results if _tag_match(r)]
         results = results[:top_k]
+        fenced_nodes = [r for r in fenced_nodes if _tag_match(r)]
 
     # The fence never lies by omission: a short default result set names
     # the escape hatch when fenced candidates would otherwise have ranked.
     fence_note = ""
-    fenced = fence_stats.get("fenced", 0)
+    fenced = len(fenced_nodes)
     if not include_archived and fenced and len(results) < top_k:
         fence_note = (f"({fenced} archived/superseded results fenced; use "
                       f"--include-archived / include_archived=True to see them)")

@@ -393,18 +393,23 @@ def hybrid_search(
     candidate_ids = {nid for nid, _ in merged}
     results = []
     seen: set[str] = set()
-    fenced_ids: set[str] = set()
+    fenced_nodes: dict[str, dict] = {}
     for nid, score in merged:
         if len(results) >= top_k:
             break
         try:
             node = store.get_node(nid)
+            orig = node
             hops = 0
             while node is not None and node.get("status") == "superseded":
                 successor = (node.get("extra") or {}).get("superseded_by")
                 if not successor or hops >= 5:
                     node = None
-                    fenced_ids.add(nid)
+                    # Fenced — but only counted if the caller could ever
+                    # see it: an expired candidate stays invisible with or
+                    # without the escape hatch.
+                    if include_expired or not node_expired(orig):
+                        fenced_nodes[nid] = orig
                     break
                 if successor in candidate_ids:
                     # Dedup, not a fence: the successor ranks as its own candidate.
@@ -414,10 +419,10 @@ def hybrid_search(
                 hops += 1
             if node is None:
                 continue
-            if not include_archived and node.get("status") == "archived":
-                fenced_ids.add(node["id"])
-                continue
             if not include_expired and node_expired(node):
+                continue
+            if not include_archived and node.get("status") == "archived":
+                fenced_nodes[node["id"]] = node
                 continue
             if node["id"] in seen:
                 continue
@@ -435,14 +440,23 @@ def hybrid_search(
             # and never became candidates, so the loop above cannot have
             # counted them — with the result set short, any of them would
             # have ranked. One extra FTS query, only on this short path.
+            # Expiry parity with the real results: an expired archived hit
+            # would stay invisible even through the escape hatch, so it
+            # never counts toward the note.
             try:
                 unfenced = store.fts_search(query, limit=top_k * 3,
                                             include_archived=True)
-                fenced_ids |= {r["id"] for r in unfenced
-                               if r.get("status") == "archived"}
+                for r in unfenced:
+                    if (r.get("status") == "archived"
+                            and r["id"] not in fenced_nodes
+                            and (include_expired or not node_expired(r))):
+                        fenced_nodes[r["id"]] = r
             except Exception:
                 pass
-        fence_stats["fenced"] = len(fenced_ids)
+        fence_stats["fenced"] = len(fenced_nodes)
+        # Callers that post-filter results (tags/owner) apply the same
+        # predicates to these before deciding on the fence note.
+        fence_stats["fenced_nodes"] = list(fenced_nodes.values())
 
     return results
 

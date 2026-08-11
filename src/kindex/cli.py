@@ -88,23 +88,37 @@ def cmd_search(args):
                             include_archived=include_archived,
                             fence_stats=fence_stats)
 
+    # Post-filters apply identically to results and fenced candidates so
+    # the fence note reflects the same filter set the results use.
+    fenced_nodes = fence_stats.get("fenced_nodes", [])
+
     # --tags: filter by tag membership
     if getattr(args, "tags", None):
         filter_tags = {t.strip().lower() for t in args.tags.split(",") if t.strip()}
-        results = [r for r in results
-                   if filter_tags & {d.lower() for d in (r.get("domains") or [])}]
+
+        def _tag_match(r):
+            return bool(filter_tags & {d.lower() for d in (r.get("domains") or [])})
+
+        results = [r for r in results if _tag_match(r)]
+        fenced_nodes = [r for r in fenced_nodes if _tag_match(r)]
 
     # --mine: filter to nodes owned by current user
     if getattr(args, "mine", False):
         cfg = _config(args)
         me = cfg.current_user
-        results = [r for r in results if me in (r.get("prov_who") or [])
-                   or (r.get("extra") or {}).get("owner") == me]
+
+        def _mine_match(r):
+            extra = r.get("extra")
+            owner = extra.get("owner") if isinstance(extra, dict) else None
+            return me in (r.get("prov_who") or []) or owner == me
+
+        results = [r for r in results if _mine_match(r)]
+        fenced_nodes = [r for r in fenced_nodes if _mine_match(r)]
 
     # The fence never lies by omission: when default search comes up short
     # of top_k and fenced candidates would otherwise have ranked, say so.
     fence_note = ""
-    fenced = fence_stats.get("fenced", 0)
+    fenced = len(fenced_nodes)
     if not include_archived and fenced and len(results) < args.top_k:
         fence_note = (f"({fenced} archived/superseded results fenced; use "
                       f"--include-archived / include_archived=True to see them)")
@@ -1483,9 +1497,21 @@ def cmd_compact_hook(args):
     except Exception:
         env = {}
     tpath = env.get("transcript_path") or env.get("transcriptPath") or ""
-    is_envelope = bool(env.get("hook_event_name") or env.get("session_id") or tpath)
+    # The hook envelope, per spec, is a parseable JSON object carrying
+    # BOTH hook_event_name and transcript_path — only that suppresses
+    # --text. Hook-ish JSON without a transcript pointer (a session_id
+    # ping, an envelope missing its transcript) is still metadata, never
+    # extraction input: --text applies when given, otherwise there is
+    # nothing to extract.
+    is_envelope = bool(env.get("hook_event_name")) and bool(tpath)
+    is_hook_metadata = bool(env.get("hook_event_name") or env.get("session_id") or tpath)
 
-    text = stdin_text if is_envelope else (args.text or stdin_text)
+    if is_envelope:
+        text = stdin_text
+    elif args.text:
+        text = args.text
+    else:
+        text = "" if is_hook_metadata else stdin_text
     if not text and sys.stdin.isatty():
         print("No text provided. Use --text or pipe via stdin.", file=sys.stderr)
         store.close()
