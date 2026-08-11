@@ -11,6 +11,7 @@ import atexit
 import functools
 import json
 import os
+import sqlite3
 import sys
 from typing import Any
 
@@ -117,6 +118,17 @@ def _tool(*dargs, **dkwargs):
                 return fn(*a, **kw)
             except MemoryUnavailableError as e:
                 return f"Error: memory unavailable ({e.error_class})"
+            except sqlite3.Error as e:
+                # The store opened but a query hit a broken/locked DB
+                # mid-session — same degraded contract as an open failure
+                # (the open-time probe in _get_store catches corruption
+                # that SQLite would otherwise defer past open).
+                try:
+                    from .config import record_degraded
+                    record_degraded("mcp", e, config=_config)
+                except Exception:
+                    pass
+                return f"Error: memory unavailable ({type(e).__name__})"
         return mcp.tool(*dargs, **dkwargs)(guarded)
     return decorate
 
@@ -140,7 +152,17 @@ def _get_store():
             raise MemoryUnavailableError(e) from e
         try:
             _store = Store(_config)
+            # Force the deferred SQLite open + schema check now: a corrupt
+            # DB file must surface HERE as an open/init failure, not as a
+            # raw sqlite3 error on the first query inside a tool.
+            _store.conn
         except Exception as e:
+            broken, _store = _store, None
+            try:
+                if broken is not None:
+                    broken.close()
+            except Exception:
+                pass
             record_degraded("mcp", e, config=_config)
             raise MemoryUnavailableError(e) from e
         atexit.register(_store.close)
