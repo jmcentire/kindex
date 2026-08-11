@@ -9,7 +9,7 @@ this for its running tally. The verbatim authority remains TASK.md; this is cont
    pattern (INC-2); confirmed topology: only the Validator unblocks lanes.
 3. Founder flagged thin kindex usage → capture duty inverted for all seats
    (Amendment 3); backlog of rulings/evidence/defects captured to graph.
-4. Founder: spend cap reached — headless claude -p and Sim
+4. Founder: spend cap reached (shared account with Sim) — headless claude -p and Sim
    are unavailable; orchestrator re-seated as a full instance; Gemini(agy)/Codex/
    Ollama authorized, "use each to its maximal effectiveness."
 5. Founder asked agent census and why more than the 4 defined → answer: 4 seats by
