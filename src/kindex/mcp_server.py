@@ -488,14 +488,16 @@ def context(
     """
     store, _ = _get_store()
     from .retrieve import format_context_block, hybrid_search
-    from .store import node_expired
+    from .store import node_expired, node_retired
 
     client = _mcp_client()
     if topic:
         results = hybrid_search(store, topic, top_k=15)
     else:
-        # Fall back to recent high-weight nodes (skip expired knowledge)
-        results = [r for r in store.recent_nodes(n=15) if not node_expired(r)]
+        # Fall back to recent high-weight nodes (skip expired and
+        # retired knowledge — archived/superseded stays retired here too)
+        results = [r for r in store.recent_nodes(n=15)
+                   if not node_expired(r) and not node_retired(r)]
     results = _scope_results(results, client)
 
     if not results:
@@ -1212,13 +1214,14 @@ def prime(topic: str = "") -> str:
     """
     store, _ = _get_store()
     from .retrieve import format_context_block, hybrid_search
-    from .store import node_expired
+    from .store import node_expired, node_retired
 
     client = _mcp_client()
     if topic:
         results = hybrid_search(store, topic, top_k=15)
     else:
-        results = [r for r in store.recent_nodes(n=15) if not node_expired(r)]
+        results = [r for r in store.recent_nodes(n=15)
+                   if not node_expired(r) and not node_retired(r)]
     results = _scope_results(results, client)
 
     if not results:
@@ -1239,8 +1242,10 @@ def orient() -> str:
     store, _ = _get_store()
     from .graph import store_stats
 
+    from .store import node_retired
+
     stats = store_stats(store)
-    recent = store.recent_nodes(n=10)
+    recent = [n for n in store.recent_nodes(n=10) if not node_retired(n)]
     op = store.operational_summary()
 
     lines = [

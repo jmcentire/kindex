@@ -51,10 +51,16 @@ def prime_context(
     from .retrieve import detect_domain_from_path, hybrid_search
     from .store import node_expired
 
-    # Auto-detect topic from cwd if not provided
+    # Auto-detect topic from cwd if not provided. Shielded: topic
+    # detection reads the store, and a failure there must degrade to the
+    # directory-name fallback, not zero the whole prime.
     if not topic:
         cwd = os.getcwd()
-        domains = detect_domain_from_path(store, cwd)
+        try:
+            domains = detect_domain_from_path(store, cwd)
+        except Exception as e:
+            _record_section_degraded("prime.topic", e, config)
+            domains = []
         if domains:
             topic = " ".join(domains)
         else:
@@ -168,35 +174,40 @@ def prime_context(
         lines.append("")
 
     # -- Recent activity summary (since yesterday) --
-    yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat(timespec="seconds")
-    recent = store.activity_since(yesterday)
-    if recent:
-        lines.append("### Recent activity (last 24h)")
-        # Group by action. Notable titles for nodes scoped to a different client
-        # are dropped so their titles don't echo into the wrong session (the
-        # aggregate counts stay complete — they reveal no titles).
-        scoping = bool(adapter) and adapter != "plain"
-        action_counts: dict[str, int] = {}
-        notable: list[str] = []
-        for entry in recent:
-            action = entry.get("action", "unknown")
-            action_counts[action] = action_counts.get(action, 0) + 1
-            if len(notable) >= 5:
-                continue
-            target = entry.get("target_title") or entry.get("target_id", "")
-            if not target:
-                continue
-            if scoping:
-                domains = store.get_node_domains(str(entry.get("target_id") or ""))
-                if adapter_scoped_out(domains, adapter):
+    # Shielded like the other sections: a failed activity pull skips this
+    # section and the rest of the prime still renders.
+    try:
+        yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat(timespec="seconds")
+        recent = store.activity_since(yesterday)
+        if recent:
+            lines.append("### Recent activity (last 24h)")
+            # Group by action. Notable titles for nodes scoped to a different client
+            # are dropped so their titles don't echo into the wrong session (the
+            # aggregate counts stay complete — they reveal no titles).
+            scoping = bool(adapter) and adapter != "plain"
+            action_counts: dict[str, int] = {}
+            notable: list[str] = []
+            for entry in recent:
+                action = entry.get("action", "unknown")
+                action_counts[action] = action_counts.get(action, 0) + 1
+                if len(notable) >= 5:
                     continue
-            notable.append(f"{action}: {target}")
+                target = entry.get("target_title") or entry.get("target_id", "")
+                if not target:
+                    continue
+                if scoping:
+                    domains = store.get_node_domains(str(entry.get("target_id") or ""))
+                    if adapter_scoped_out(domains, adapter):
+                        continue
+                notable.append(f"{action}: {target}")
 
-        summary_parts = [f"{count} {action}" for action, count in action_counts.items()]
-        lines.append(f"- Activity: {', '.join(summary_parts)}")
-        for n in notable[:3]:
-            lines.append(f"  - {n}")
-        lines.append("")
+            summary_parts = [f"{count} {action}" for action, count in action_counts.items()]
+            lines.append(f"- Activity: {', '.join(summary_parts)}")
+            for n in notable[:3]:
+                lines.append(f"  - {n}")
+            lines.append("")
+    except Exception as e:
+        _record_section_degraded("prime.activity", e, config)
 
     # -- Active session tag --
     try:

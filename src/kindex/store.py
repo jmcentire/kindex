@@ -120,6 +120,12 @@ def node_expired(node: dict, today: str | None = None) -> bool:
     return expires < today
 
 
+def node_retired(node: dict) -> bool:
+    """True for archived/superseded nodes — the pair every default
+    search/context surface fences. Generic like node_expired."""
+    return node.get("status") in ("archived", "superseded")
+
+
 class Store:
     """SQLite-backed knowledge graph with FTS5 full-text search.
 

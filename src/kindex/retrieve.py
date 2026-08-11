@@ -788,9 +788,12 @@ def generate_codebook(store: Store, min_weight: float = 0.5) -> tuple[str, str]:
     """
     import hashlib
 
+    from .store import node_retired
+
     nodes = store.all_nodes(limit=5000)
     eligible = [n for n in nodes
-                if n.get("type") != "session" and (n.get("weight") or 0) >= min_weight]
+                if n.get("type") != "session" and not node_retired(n)
+                and (n.get("weight") or 0) >= min_weight]
     eligible.sort(key=lambda n: n["id"])
 
     lines = []
@@ -836,6 +839,8 @@ def predict_tier2(
     might ask about next. Returns merged list sorted by node ID for
     deterministic prefix ordering.
     """
+    from .store import node_retired
+
     hit_ids = {r["id"] for r in search_results}
     predicted: dict[str, dict] = {}
 
@@ -844,7 +849,7 @@ def predict_tier2(
             tid = edge["to_id"]
             if tid not in hit_ids and tid not in predicted:
                 node = store.get_node(tid)
-                if node and node.get("type") != "session":
+                if node and node.get("type") != "session" and not node_retired(node):
                     predicted[tid] = node
 
     merged = list(search_results[:top_k])
