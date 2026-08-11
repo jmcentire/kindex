@@ -77,4 +77,7 @@ test-isolation: build-dist ## Factory endgame gate: wheel + CLI + stdin-closed i
 	"$$TMP/venv/bin/pip" install --quiet --no-cache-dir "$(DIST_WHEEL)"; \
 	"$$TMP/venv/bin/kin" --version >/dev/null; \
 	"$$TMP/venv/bin/python" -c "import kindex.config" </dev/null; \
-	echo "isolation gate green: wheel installs, CLI answers, config import holds no stdin"
+	python3 -m venv "$$TMP/venv-all"; \
+	"$$TMP/venv-all/bin/pip" install --quiet --no-cache-dir "$(DIST_WHEEL)[all]"; \
+	"$$TMP/venv-all/bin/python" -c "import kindex.mcp_server" </dev/null; \
+	echo "isolation gate green: wheel + CLI + stdin-safe config; [all] extra resolves to a runnable MCP server"

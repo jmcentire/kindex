@@ -2,6 +2,11 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.30.1] - 2026-08-11
+
+### Fixed
+- The `all` extra still carried an unbounded `mcp[cli]>=1.26.0`, so `pip install kindex[all]` continued to resolve mcp 2.0.0 and produce an MCP server that could not start — the same defect 0.30.0 fixed for the `mcp` extra alone. Both extras are now pinned below 2.0, and the release isolation gate exercises the `[all]` install path so this class of gap cannot recur unnoticed.
+
 ## [0.30.0] - 2026-08-11
 
 ### Fixed
