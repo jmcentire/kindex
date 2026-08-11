@@ -2,6 +2,17 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.30.0] - 2026-08-11
+
+### Fixed
+- **End-of-session capture actually runs.** The installed Stop hook passed `--text "Session ended"`, which preempted the hook envelope on stdin, so `kin compact-hook` extracted knowledge from a 13-character literal instead of the session transcript — and could spend an LLM call doing it. Stdin envelopes (parseable JSON carrying `hook_event_name` and `transcript_path`) now take precedence over `--text`, `kin setup` installs the Stop entry without `--text`, and re-running setup migrates existing broken entries. Hook-shaped JSON without a transcript pointer is treated as metadata, never routed into extraction.
+- **Memory failure degrades the turn instead of crashing it.** Hook-surface commands (`prime`, `compact-hook`, guards, scheduler entries) previously tracebacked with a nonzero exit on any store failure, visible only in transient hook stderr. They now emit a shaped degraded output, exit 0, and append one JSON event per failed invocation to `degraded.jsonl` in the base data directory — a plain file append that works when SQLite is what broke. `kin status` and `kin doctor` surface the 7-day count; `doctor` warns when it is non-zero. Priming tolerates a poisoned node per section rather than losing the whole context block, and every MCP tool returns `Error: memory unavailable (<ErrClass>)` instead of a protocol error, including for corruption SQLite only surfaces at first query.
+- **Archived and superseded nodes stay out of retrieval.** Search fenced only superseded nodes, so archived content remained a first-class candidate in FTS, vector, and hybrid results, in context formatters, and in topicless MCP context/prime/orient pulls. All default retrieval paths now fence both states; `--include-archived` / `include_archived=True` restores the previous behavior, and a short result set says how many results were fenced so the escape hatch is discoverable. `hybrid_search` backfills after drop-filtering instead of silently returning fewer results than requested.
+- **Weight decay is cadence-independent.** Each cron pass re-applied a decay factor computed from a node's full age to its already-decayed weight, so the effective half-life depended on how often cron ran — at a five-minute cadence, weights collapsed roughly fifty times faster than the documented 90 days. Decay now folds only the interval since the last recorded run (`decay.last_run`), the first run after upgrade establishes the checkpoint without decaying anything, and the read/decay/stamp sequence is serialized.
+
+### Changed
+- The `mcp` extra is pinned to `mcp[cli]>=1.26.0,<2.0`. The unbounded pin resolved to mcp 2.0.0, which is incompatible with the MCP server module, so fresh `pip install kindex[mcp]` installs produced a server that could not start.
+
 ## [0.27.1] - 2026-07-02
 
 ### Added
