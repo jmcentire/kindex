@@ -1245,12 +1245,46 @@ class Store:
 
     # ── Weight decay ───────────────────────────────────────────────────
 
+    # Runs closer together than this are no-ops that do NOT advance the
+    # decay.last_run stamp, so sub-day slices accumulate instead of being
+    # rounded away: a slice only survives if it changes the stored 4-dp
+    # weight, and even a floor-adjacent node (w=0.0101, H=90d) needs
+    # ~0.65 days for its delta to reach that resolution. Without this
+    # gate a 5-minute cron cadence would suppress every write and decay
+    # would silently stop.
+    _DECAY_MIN_INTERVAL_DAYS = 1.0
+
     def apply_weight_decay(self, node_half_life_days: int = 90,
                            edge_half_life_days: int = 30) -> int:
-        """Decay weights based on last access time. Returns count of affected nodes."""
+        """Decay weights over the interval since the previous decay run.
+
+        Cadence-independent: each run folds in only
+        (max(last_accessed, previous_run), now] for nodes and
+        (max(created_at, previous_run), now] for edges, so the slices
+        telescope to w0 * 0.5^(elapsed/half_life) no matter how often the
+        cron fires (the old code multiplied the FULL elapsed-age factor
+        into the already-decayed weight on every run). The checkpoint is
+        the meta key 'decay.last_run'; the first run after upgrade stamps
+        it and applies no decay — a cold start never retro-punishes.
+        Returns count of affected nodes.
+        """
         now = datetime.now()
 
-        # Node decay
+        prev_raw = self.get_meta("decay.last_run")
+        prev = None
+        if prev_raw:
+            try:
+                prev = datetime.fromisoformat(prev_raw)
+            except (ValueError, TypeError):
+                prev = None
+        if prev is None:
+            # Cold start (or corrupt stamp): establish accounting, decay nothing.
+            self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
+            return 0
+        if (now - prev).total_seconds() / 86400.0 < self._DECAY_MIN_INTERVAL_DAYS:
+            return 0
+
+        # Node decay over (max(last_accessed, prev), now]
         rows = self.conn.execute("SELECT id, weight, last_accessed FROM nodes").fetchall()
         count = 0
         for row in rows:
@@ -1258,37 +1292,41 @@ class Store:
                 last = datetime.fromisoformat(row["last_accessed"])
             except (ValueError, TypeError):
                 continue
-            days_since = (now - last).days
+            start = max(last, prev)
+            days_since = (now - start).total_seconds() / 86400.0
             if days_since <= 0:
                 continue
             decay = 0.5 ** (days_since / node_half_life_days)
-            new_weight = max(0.01, row["weight"] * decay)
-            if abs(new_weight - row["weight"]) > 0.001:
+            new_weight = max(0.01, round(row["weight"] * decay, 4))
+            if new_weight != round(row["weight"], 4):
                 self.conn.execute(
                     "UPDATE nodes SET weight = ? WHERE id = ?",
-                    (round(new_weight, 4), row["id"]),
+                    (new_weight, row["id"]),
                 )
                 count += 1
 
-        # Edge decay
+        # Edge decay over (max(created_at, prev), now]
         edge_rows = self.conn.execute("SELECT id, weight, created_at FROM edges").fetchall()
         for row in edge_rows:
             try:
                 created = datetime.fromisoformat(row["created_at"])
             except (ValueError, TypeError):
                 continue
-            days_since = (now - created).days
+            start = max(created, prev)
+            days_since = (now - start).total_seconds() / 86400.0
             if days_since <= 0:
                 continue
             decay = 0.5 ** (days_since / edge_half_life_days)
-            new_weight = max(0.01, row["weight"] * decay)
-            if abs(new_weight - row["weight"]) > 0.001:
+            new_weight = max(0.01, round(row["weight"] * decay, 4))
+            if new_weight != round(row["weight"], 4):
                 self.conn.execute(
                     "UPDATE edges SET weight = ? WHERE id = ?",
-                    (round(new_weight, 4), row["id"]),
+                    (new_weight, row["id"]),
                 )
 
-        self.conn.commit()
+        # Stamp + decay commit together (set_meta commits the connection):
+        # a crash mid-run rolls the whole slice back, never double-applies.
+        self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
         return count
 
     # ── Stigmergic injection pheromone ──────────────────────────────────
