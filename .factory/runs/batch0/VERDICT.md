@@ -144,3 +144,70 @@ MCP server, so the coverage gap closes rather than just the constraint.
 This is the run's strongest evidence for the mandated doneness-skeptic step:
 the code was right, the tests were green, the gates passed, and the *claim*
 was still overstated. Recorded as kindex node `14e6f04c9a3d`.
+
+---
+
+# AMENDMENT — verdict downgraded after adversarial review (2026-08-11, post-release)
+
+The mandated doneness-skeptic pass returned **REJECT DONE** against this verdict's
+own claims. Per the postmortem convention, superseded conclusions are marked
+FALSE-AS-WRITTEN and kept, never rewritten.
+
+## Confirmed by Validator re-verification (not taken on the reviewer's word)
+
+**1. R4.1 is FALSE-AS-WRITTEN above. The MUST-formula is violated.**
+Reproduced exactly: from one checkpoint, decay runs at 24h and 47h leave weight
+`0.9923`; runs at 23h, 46h and 47h leave `0.9853`. Both schedules end at the same
+instant, so R4.1's "weight at time T equals w₀·0.5^((T−max(A,S))/H)" does not
+hold — the one-day gate produces a staircase whose phase depends on the schedule.
+**The gate is in this release because I ruled it acceptable** (see the S4 ruling)
+without checking whether it reintroduced the very cadence-dependence S4 existed to
+remove. The undecayed remainder is carried forward, not lost, so the practical
+error is bounded by one gate interval — under 1% on a 90-day half-life — but the
+requirement as written is not met.
+*Why the judge missed it:* the R4.1 cadence test cold-starts both databases and
+then makes immediate calls, so every compared call is a no-op. **The oracle for
+the run's headline requirement was vacuous.** Falsifiability spot-checks did not
+rescue it: mutating the fold turns the *closed-form* test red, not the cadence test.
+
+**2. The fence note overstates the escape hatch.** CLI and MCP say "N
+archived/superseded results fenced; use --include-archived to see them", but
+`include_archived=True` still excludes superseded. Confirmed at
+`store.py:1230`, `cli.py:123`, `mcp_server.py:320`. User-visible, small, real.
+
+**3. This verdict's evidence summary double-counted.** "Existing suite: 1702
+passed" conflates two things: the pre-existing suite is **1659** (receipt
+`R-20260811T033940Z-21537`); 1702 is 1659 plus the 43 new acceptance tests.
+Stated as written it implies more independent regression coverage than exists.
+
+## Reported and NOT yet verified by me (recorded as open, not accepted)
+
+- **R2.6 size-cap race**: the cap rewrite can drop an append that lands on the old
+  inode between read and `os.replace()`. The spec clause I wrote is
+  self-contradictory ("must not lose a concurrent append silently — best effort is
+  acceptable"), and neither test exercises append-during-cap. **Spec defect of
+  mine**, plus a coverage gap.
+- **R3.3 backfill is bounded**, not to exhaustion: retrieval draws `3*top_k`
+  candidates before filtering, so enough stronger expired matches can still
+  under-fill. The test's fixture sits inside that window.
+- **R3.4's ordering oracle is vacuous**: its fixture has one live survivor, so
+  relative order cannot fail. My earlier "inherent to fencing" disposition
+  accepted a tradeoff rather than proving the requirement.
+
+## Revised verdict
+
+**PASS_WITH_RISK_ACCEPTANCE**, downgraded from PASS_WITH_DECLARED_GAPS — Standard
+surfaces, named owner (jmcentire), remediation tracked, expiring at the v8 wave.
+
+What is *not* in question: the four defects this run set out to fix are fixed and
+independently verified. Decay no longer compounds per cron run (the ~50×
+over-decay bug is gone), capture runs, hooks degrade, retired nodes are fenced.
+What is in question is whether three requirements are met *as written*, and the
+answer for R4.1 is no.
+
+**The lesson worth more than the release:** the run's most-tested requirement had
+a vacuous oracle, and every gate was green anyway. Red-now/green-now proves a test
+*can* fail — it does not prove the test is *about* the requirement. A cadence test
+whose calls are all no-ops fails at base for the wrong reason and passes at head
+for the wrong reason. The only thing that caught it was an adversary reading the
+fixture, after the release shipped.
