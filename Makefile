@@ -67,3 +67,14 @@ docs: ## Open landing page in browser
 
 version: ## Show current version
 	@$(PYTHON) -c "from kindex import __version__; print(__version__)"
+
+ship: distribute ## Factory endgame gate: full check + dist verify + registry validation
+	@echo "ship gate green"
+
+test-isolation: build-dist ## Factory endgame gate: wheel + CLI + stdin-closed import in a bare venv
+	@set -e; TMP=$$(mktemp -d); \
+	python3 -m venv "$$TMP/venv"; \
+	"$$TMP/venv/bin/pip" install --quiet --no-cache-dir "$(DIST_WHEEL)"; \
+	"$$TMP/venv/bin/kin" --version >/dev/null; \
+	"$$TMP/venv/bin/python" -c "import kindex.config" </dev/null; \
+	echo "isolation gate green: wheel installs, CLI answers, config import holds no stdin"
