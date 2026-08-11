@@ -251,7 +251,8 @@ def _node_detail(store, node: dict) -> str:
 
 
 @_tool()
-def search(query: str, top_k: int = 10, tags: str = "") -> str:
+def search(query: str, top_k: int = 10, tags: str = "",
+           include_archived: bool = False) -> str:
     """Search the knowledge graph with hybrid FTS5 + graph traversal.
 
     USE THIS: before starting work on a topic, before adding nodes (to avoid
@@ -264,12 +265,16 @@ def search(query: str, top_k: int = 10, tags: str = "") -> str:
         query: Search query text.
         top_k: Maximum results to return.
         tags: Comma-separated tags to filter results (only nodes with these tags).
+        include_archived: Include archived nodes (fenced from default search).
     """
     store, _ = _get_store()
     from .retrieve import hybrid_search
 
+    fence_stats: dict = {}
     fetch_k = top_k * 3 if tags else top_k
-    results = hybrid_search(store, query, top_k=fetch_k)
+    results = hybrid_search(store, query, top_k=fetch_k,
+                            include_archived=include_archived,
+                            fence_stats=fence_stats)
 
     if tags:
         filter_tags = {t.strip().lower() for t in tags.split(",") if t.strip()}
@@ -277,8 +282,16 @@ def search(query: str, top_k: int = 10, tags: str = "") -> str:
                    if filter_tags & {d.lower() for d in (r.get("domains") or r.get("tags") or [])}]
         results = results[:top_k]
 
+    # The fence never lies by omission: a short default result set names
+    # the escape hatch when fenced candidates would otherwise have ranked.
+    fence_note = ""
+    fenced = fence_stats.get("fenced", 0)
+    if not include_archived and fenced and len(results) < top_k:
+        fence_note = (f"({fenced} archived/superseded results fenced; use "
+                      f"--include-archived / include_archived=True to see them)")
+
     if not results:
-        return "No results found."
+        return "No results found." + (f"\n{fence_note}" if fence_note else "")
 
     from .retrieve import _node_age_str, _staleness_caveat
 
@@ -293,6 +306,8 @@ def search(query: str, top_k: int = 10, tags: str = "") -> str:
         content = (r.get("content") or "")[:150]
         if content:
             lines.append(f"   {content}")
+    if fence_note:
+        lines.append(fence_note)
     return "\n".join(lines)
 
 

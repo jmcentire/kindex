@@ -255,6 +255,8 @@ def hybrid_search(
     ranking: str = "ensemble",
     *,
     include_expired: bool = False,
+    include_archived: bool = False,
+    fence_stats: dict | None = None,
 ) -> list[dict]:
     """Hybrid search combining FTS5 + graph expansion + vector search.
 
@@ -269,11 +271,18 @@ def hybrid_search(
             is in the past are filtered out — expired knowledge stops
             surfacing in search/context/ask everywhere, matching the primed
             session context. Daemon/maintenance callers may opt in.
+        include_archived: When False (default), archived nodes are fenced
+            from results no matter which mode surfaced them; True restores
+            the pre-fence behavior for callers that need retired content.
+        fence_stats: Optional dict the caller owns; on return its "fenced"
+            key holds how many archived/superseded candidates were dropped
+            while assembling results (feeds the CLI/MCP fence note).
 
     Returns list of node dicts with 'confidence' and 'rrf_score' keys.
     """
     # Mode 1: FTS5 search (raw query — register is intentional signal for keywords)
-    fts_results = store.fts_search(query, limit=top_k * 3)
+    fts_results = store.fts_search(query, limit=top_k * 3,
+                                   include_archived=include_archived)
     fts_ranked = [(r["id"], abs(r.get("rank", 0)) + r.get("weight", 0))
                   for r in fts_results]
 
@@ -350,26 +359,41 @@ def hybrid_search(
             ranked_lists.append(vec_ranked)
         merged = _rrf_merge(*ranked_lists, k=cfg_rrf_k) if len(ranked_lists) > 1 else fts_ranked
 
-    # Fetch full nodes for top results. Superseded nodes never surface —
-    # follow extra['superseded_by'] to the live replacement when it isn't
-    # already a candidate of its own, otherwise drop the stale entry.
+    # Fetch full nodes, drawing from the merged candidate list until top_k
+    # results or exhaustion — drop-filtering used to happen after slicing
+    # top_k, silently returning short result sets. Superseded nodes never
+    # surface — follow extra['superseded_by'] to the live replacement when
+    # it isn't already a candidate of its own, otherwise drop the stale
+    # entry. Archived nodes are fenced unless the caller opted in. Ranking
+    # order of survivors is unchanged: candidates are consumed in merged
+    # order and never re-scored.
     from .store import node_expired
 
-    top = merged[:top_k]
-    top_ids = {nid for nid, _ in top}
+    candidate_ids = {nid for nid, _ in merged}
     results = []
     seen: set[str] = set()
-    for nid, score in top:
+    fenced_ids: set[str] = set()
+    for nid, score in merged:
+        if len(results) >= top_k:
+            break
         node = store.get_node(nid)
         hops = 0
         while node is not None and node.get("status") == "superseded":
             successor = (node.get("extra") or {}).get("superseded_by")
-            if not successor or successor in top_ids or hops >= 5:
+            if not successor or hops >= 5:
+                node = None
+                fenced_ids.add(nid)
+                break
+            if successor in candidate_ids:
+                # Dedup, not a fence: the successor ranks as its own candidate.
                 node = None
                 break
             node = store.get_node(successor)
             hops += 1
-        if node is None or node.get("status") == "superseded":
+        if node is None:
+            continue
+        if not include_archived and node.get("status") == "archived":
+            fenced_ids.add(node["id"])
             continue
         if not include_expired and node_expired(node):
             continue
@@ -380,6 +404,21 @@ def hybrid_search(
         node["rrf_score"] = round(score, 6)  # backward compat
         node["edges_out"] = store.edges_from(node["id"])[:5]
         results.append(node)
+
+    if fence_stats is not None:
+        if not include_archived and len(results) < top_k:
+            # Archived FTS matches were fenced upstream (inside fts_search)
+            # and never became candidates, so the loop above cannot have
+            # counted them — with the result set short, any of them would
+            # have ranked. One extra FTS query, only on this short path.
+            try:
+                unfenced = store.fts_search(query, limit=top_k * 3,
+                                            include_archived=True)
+                fenced_ids |= {r["id"] for r in unfenced
+                               if r.get("status") == "archived"}
+            except Exception:
+                pass
+        fence_stats["fenced"] = len(fenced_ids)
 
     return results
 
@@ -568,8 +607,8 @@ def _format_full(
             if q.get("content"):
                 lines.append(f"  Context: {_strip_frontmatter(q['content'])[:200]}")
 
-    # Recent decisions
-    decisions = store.all_nodes(node_type="decision", limit=5)
+    # Recent decisions (active only — retired decisions stay retired)
+    decisions = store.all_nodes(node_type="decision", status="active", limit=5)
     if decisions:
         lines.append("\n### Recent decisions")
         for d in decisions:
@@ -629,8 +668,8 @@ def _format_abridged(
         for q in questions:
             lines.append(f"- {q['title']}")
 
-    # Recent decisions (brief)
-    decisions = store.all_nodes(node_type="decision", limit=3)
+    # Recent decisions (brief; active only)
+    decisions = store.all_nodes(node_type="decision", status="active", limit=3)
     if decisions:
         lines.append("\n### Recent decisions")
         for d in decisions:

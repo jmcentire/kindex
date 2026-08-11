@@ -80,9 +80,13 @@ def cmd_search(args):
     """Hybrid search: FTS5 + graph traversal, merged via RRF."""
     store = _store(args)
     query = " ".join(args.query)
+    include_archived = bool(getattr(args, "include_archived", False))
 
     from .retrieve import hybrid_search
-    results = hybrid_search(store, query, top_k=args.top_k)
+    fence_stats: dict = {}
+    results = hybrid_search(store, query, top_k=args.top_k,
+                            include_archived=include_archived,
+                            fence_stats=fence_stats)
 
     # --tags: filter by tag membership
     if getattr(args, "tags", None):
@@ -97,8 +101,18 @@ def cmd_search(args):
         results = [r for r in results if me in (r.get("prov_who") or [])
                    or (r.get("extra") or {}).get("owner") == me]
 
+    # The fence never lies by omission: when default search comes up short
+    # of top_k and fenced candidates would otherwise have ranked, say so.
+    fence_note = ""
+    fenced = fence_stats.get("fenced", 0)
+    if not include_archived and fenced and len(results) < args.top_k:
+        fence_note = (f"({fenced} archived/superseded results fenced; use "
+                      f"--include-archived / include_archived=True to see them)")
+
     if not results:
         print("No results.", file=sys.stderr)
+        if fence_note:
+            print(fence_note, file=sys.stderr)
         return
 
     if args.json:
@@ -110,6 +124,9 @@ def cmd_search(args):
                       for e in r.get("edges_out", [])],
         } for r in results]
         print(_dumps(out, indent=2))
+        if fence_note:
+            # stderr so machine-readable stdout stays parseable JSON
+            print(fence_note, file=sys.stderr)
     else:
         print(f"# Kindex:{len(results)} results for \"{query}\"\n")
         for r in results:
@@ -126,6 +143,8 @@ def cmd_search(args):
                 connected = ", ".join(e.get("to_title", e["to_id"]) for e in edges[:5])
                 print(f"  → {connected}")
             print()
+        if fence_note:
+            print(fence_note)
 
     store.close()
 
@@ -5776,6 +5795,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--top-k", type=int, default=10)
     s.add_argument("--tags", help="Filter by tags (comma-separated)")
     s.add_argument("--mine", action="store_true", help="Only my nodes")
+    s.add_argument("--include-archived", action="store_true",
+                   help="Include archived nodes (fenced from default search)")
     _common(s)
     s.set_defaults(func=cmd_search)
 

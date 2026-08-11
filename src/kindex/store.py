@@ -1204,13 +1204,21 @@ class Store:
 
     # ── FTS5 search ────────────────────────────────────────────────────
 
-    def fts_search(self, query: str, limit: int = 20) -> list[dict]:
-        """Full-text search using FTS5 BM25 ranking."""
+    def fts_search(self, query: str, limit: int = 20,
+                   include_archived: bool = False) -> list[dict]:
+        """Full-text search using FTS5 BM25 ranking.
+
+        Archived and superseded nodes are fenced from default results;
+        include_archived=True restores archived candidates (the pre-fence
+        behavior) for callers that legitimately need retired content.
+        """
         import re
         # Strip punctuation and FTS5 special chars, keep only words
         tokens = re.findall(r'\w+', query.lower())
         if not tokens:
             return []
+        status_fence = ("status != 'superseded'" if include_archived
+                        else "status NOT IN ('archived', 'superseded')")
         # Build FTS5 query: quoted phrase OR individual tokens
         phrase = " ".join(tokens)
         safe_phrase = phrase.replace('"', '""')
@@ -1218,18 +1226,18 @@ class Store:
         fts_query = f'"{safe_phrase}" OR {token_expr}'
         try:
             rows = self.conn.execute(
-                """SELECT n.*, rank FROM nodes_fts
+                f"""SELECT n.*, rank FROM nodes_fts
                    JOIN nodes n ON n.id = nodes_fts.id
-                   WHERE nodes_fts MATCH ? AND n.status != 'superseded'
+                   WHERE nodes_fts MATCH ? AND n.{status_fence}
                    ORDER BY rank LIMIT ?""",
                 (fts_query, limit),
             ).fetchall()
         except sqlite3.OperationalError:
             # Fallback: simple LIKE search if FTS query syntax fails
             rows = self.conn.execute(
-                """SELECT *, 0 as rank FROM nodes
+                f"""SELECT *, 0 as rank FROM nodes
                    WHERE (title LIKE ? OR content LIKE ?)
-                     AND status != 'superseded'
+                     AND {status_fence}
                    ORDER BY weight DESC LIMIT ?""",
                 (f"%{phrase}%", f"%{phrase}%", limit),
             ).fetchall()
