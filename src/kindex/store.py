@@ -121,9 +121,13 @@ def node_expired(node: dict, today: str | None = None) -> bool:
 
 
 def node_retired(node: dict) -> bool:
-    """True for archived/superseded nodes — the pair every default
-    search/context surface fences. Generic like node_expired."""
-    return node.get("status") in ("archived", "superseded")
+    """True for any non-active node (archived, superseded, completed, …).
+
+    Context-rendering pulls filter to ACTIVE status via this helper; the
+    search fence in fts/hybrid keeps its explicit archived/superseded
+    pair because search legitimately ranks e.g. completed tasks.
+    """
+    return (node.get("status") or "active") != "active"
 
 
 class Store:
@@ -1602,9 +1606,12 @@ class Store:
         result = []
         for r in rows:
             d = self._row_to_dict(r)
-            expires = (d.get("extra") or {}).get("expires", "")
-            # Include if no expiry or not yet expired
-            if not expires or expires >= now:
+            extra = d.get("extra")
+            expires = extra.get("expires", "") if isinstance(extra, dict) else ""
+            # Include if no (valid) expiry or not yet expired — a watch
+            # with malformed extra still surfaces rather than crashing
+            # every operational pull.
+            if not isinstance(expires, str) or not expires or expires >= now:
                 result.append(d)
         return result
 

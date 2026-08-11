@@ -280,23 +280,33 @@ def hybrid_search(
 
     Returns list of node dicts with 'confidence' and 'rrf_score' keys.
     """
-    # Mode 1: FTS5 search (raw query — register is intentional signal for keywords)
+    # Mode 1: FTS5 search (raw query — register is intentional signal for
+    # keywords). Per-row scoring guard: one malformed node (NULL weight,
+    # garbage rank) is skipped, never allowed to zero the result set.
     fts_results = store.fts_search(query, limit=top_k * 3,
                                    include_archived=include_archived)
-    fts_ranked = [(r["id"], abs(r.get("rank", 0)) + r.get("weight", 0))
-                  for r in fts_results]
+    fts_ranked: list[tuple[str, float]] = []
+    for r in fts_results:
+        try:
+            fts_ranked.append((r["id"], abs(r.get("rank") or 0) + (r.get("weight") or 0)))
+        except Exception:
+            continue
 
-    # Mode 2: Graph expansion from FTS hits
+    # Mode 2: Graph expansion from FTS hits (same per-edge tolerance)
     graph_ranked: list[tuple[str, float]] = []
     if expand_graph and fts_ranked:
         seen = {nid for nid, _ in fts_ranked}
         for nid, fts_score in fts_ranked[:5]:  # expand top 5 FTS hits
             edges = store.edges_from(nid)
             for edge in edges:
-                target = edge["to_id"]
+                try:
+                    target = edge["to_id"]
+                    edge_score = (edge["weight"] or 0) * fts_score
+                except Exception:
+                    continue
                 if target not in seen:
                     seen.add(target)
-                    graph_ranked.append((target, edge["weight"] * fts_score))
+                    graph_ranked.append((target, edge_score))
 
     # Mode 3: Vector search (if available)
     # Transmogrifier normalizes register for embeddings only — FTS5 stays raw
@@ -337,17 +347,28 @@ def hybrid_search(
         if vec_ranked:
             sources["vector"] = vec_ranked
         if all_ids:
-            sources["node_weight"] = _node_weight_scores(store, all_ids)
-            sources["recency"] = _recency_score(store, all_ids)
+            # Ranking-signal sources degrade independently: losing one
+            # (bad rows, broken table) drops that signal, not retrieval.
+            try:
+                sources["node_weight"] = _node_weight_scores(store, all_ids)
+            except Exception:
+                pass
+            try:
+                sources["recency"] = _recency_score(store, all_ids)
+            except Exception:
+                pass
             # Stigmergic injection-usefulness — separate channel from topology.
             # Weight is the user's explicit override (ranking.pheromone_weight>0)
             # else the auto-ramped learned weight (0 until trails mature).
-            phero_weight = cfg_weights.get("pheromone", 0) or _learned_pheromone_weight(store)
-            if phero_weight > 0:
-                phero = _pheromone_scores(store, all_ids)
-                if phero:
-                    sources["pheromone"] = phero
-                    cfg_weights = {**cfg_weights, "pheromone": phero_weight}
+            try:
+                phero_weight = cfg_weights.get("pheromone", 0) or _learned_pheromone_weight(store)
+                if phero_weight > 0:
+                    phero = _pheromone_scores(store, all_ids)
+                    if phero:
+                        sources["pheromone"] = phero
+                        cfg_weights = {**cfg_weights, "pheromone": phero_weight}
+            except Exception:
+                pass
 
         merged = _weighted_ensemble(sources, weights=cfg_weights)
     else:
@@ -376,34 +397,37 @@ def hybrid_search(
     for nid, score in merged:
         if len(results) >= top_k:
             break
-        node = store.get_node(nid)
-        hops = 0
-        while node is not None and node.get("status") == "superseded":
-            successor = (node.get("extra") or {}).get("superseded_by")
-            if not successor or hops >= 5:
-                node = None
-                fenced_ids.add(nid)
-                break
-            if successor in candidate_ids:
-                # Dedup, not a fence: the successor ranks as its own candidate.
-                node = None
-                break
-            node = store.get_node(successor)
-            hops += 1
-        if node is None:
-            continue
-        if not include_archived and node.get("status") == "archived":
-            fenced_ids.add(node["id"])
-            continue
-        if not include_expired and node_expired(node):
-            continue
-        if node["id"] in seen:
-            continue
-        seen.add(node["id"])
-        node["confidence"] = round(score, 4)
-        node["rrf_score"] = round(score, 6)  # backward compat
-        node["edges_out"] = store.edges_from(node["id"])[:5]
-        results.append(node)
+        try:
+            node = store.get_node(nid)
+            hops = 0
+            while node is not None and node.get("status") == "superseded":
+                successor = (node.get("extra") or {}).get("superseded_by")
+                if not successor or hops >= 5:
+                    node = None
+                    fenced_ids.add(nid)
+                    break
+                if successor in candidate_ids:
+                    # Dedup, not a fence: the successor ranks as its own candidate.
+                    node = None
+                    break
+                node = store.get_node(successor)
+                hops += 1
+            if node is None:
+                continue
+            if not include_archived and node.get("status") == "archived":
+                fenced_ids.add(node["id"])
+                continue
+            if not include_expired and node_expired(node):
+                continue
+            if node["id"] in seen:
+                continue
+            seen.add(node["id"])
+            node["confidence"] = round(score, 4)
+            node["rrf_score"] = round(score, 6)  # backward compat
+            node["edges_out"] = store.edges_from(node["id"])[:5]
+            results.append(node)
+        except Exception:
+            continue  # one malformed candidate never zeroes retrieval
 
     if fence_stats is not None:
         if not include_archived and len(results) < top_k:
@@ -517,37 +541,56 @@ def _append_operational(
             for k, v in ops.items()
         }
 
+    # Per-node rendering guards: a malformed operational node (e.g. a
+    # garbage extra that hydrates as a string) is skipped, never allowed
+    # to take the whole context block down with it.
+    def _extra_of(n: dict) -> dict:
+        extra = n.get("extra")
+        return extra if isinstance(extra, dict) else {}
+
     if ops["constraints"]:
         lines.append("\n### Active constraints")
         for c in ops["constraints"][:5 if verbose else 3]:
-            extra = c.get("extra") or {}
-            action = extra.get("action", "warn")
-            lines.append(f"- [{action}] {c['title']}")
-            if verbose and extra.get("trigger"):
-                lines.append(f"  trigger: {extra['trigger']}")
+            try:
+                extra = _extra_of(c)
+                action = extra.get("action", "warn")
+                lines.append(f"- [{action}] {c['title']}")
+                if verbose and extra.get("trigger"):
+                    lines.append(f"  trigger: {extra['trigger']}")
+            except Exception:
+                continue
 
     if ops["watches"]:
         lines.append("\n### Watches")
         for w in ops["watches"][:5 if verbose else 3]:
-            extra = w.get("extra") or {}
-            parts = [f"! {w['title']}"]
-            if extra.get("owner"):
-                parts.append(f"@{extra['owner']}")
-            if extra.get("expires"):
-                parts.append(f"(expires {extra['expires']})")
-            lines.append(f"- {' '.join(parts)}")
+            try:
+                extra = _extra_of(w)
+                parts = [f"! {w['title']}"]
+                if extra.get("owner"):
+                    parts.append(f"@{extra['owner']}")
+                if extra.get("expires"):
+                    parts.append(f"(expires {extra['expires']})")
+                lines.append(f"- {' '.join(parts)}")
+            except Exception:
+                continue
 
     if verbose and ops["checkpoints"]:
         lines.append("\n### Checkpoints")
         for cp in ops["checkpoints"][:5]:
-            trig = (cp.get("extra") or {}).get("trigger", "")
-            lines.append(f"- [ ] {cp['title']}" + (f" (trigger: {trig})" if trig else ""))
+            try:
+                trig = _extra_of(cp).get("trigger", "")
+                lines.append(f"- [ ] {cp['title']}" + (f" (trigger: {trig})" if trig else ""))
+            except Exception:
+                continue
 
     if verbose and ops["directives"]:
         lines.append("\n### Directives")
         for d in ops["directives"][:5]:
-            scope = (d.get("extra") or {}).get("scope", "")
-            lines.append(f"- {d['title']}" + (f" [scope: {scope}]" if scope else ""))
+            try:
+                scope = _extra_of(d).get("scope", "")
+                lines.append(f"- {d['title']}" + (f" [scope: {scope}]" if scope else ""))
+            except Exception:
+                continue
 
 
 # ── Full tier ─────────────────────────────────────────────────────────
