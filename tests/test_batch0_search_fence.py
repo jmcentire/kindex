@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -129,6 +130,51 @@ def test_r3_1_fts_include_archived_escape_hatch(fence_store):
                                            include_archived=True)}
     assert "live1" in ids
     assert "arch1" in ids, "escape hatch must reveal archived nodes"
+
+
+def test_r3_1_include_archived_uses_fts_and_preserves_rank(fence_store):
+    """R3.1 mechanism guard: archive escape-hatch searches stay indexed.
+
+    This is a green-now regression guard: the base projection already uses FTS,
+    while a later implementation regression silently swallowed malformed FTS
+    SQL and fell back to an unindexed LIKE scan with every rank set to zero.
+    Reachability/non-degeneracy: the fixture has live, archived, and
+    superseded matches; sqlite trace callbacks capture every statement for both
+    flag states, and returned rows expose real rank values.  The assertion is
+    on the prohibited mechanism (FTS in both calls) and non-degenerate ranking,
+    not merely plausible returned titles.
+    """
+    # Add a distinct-frequency live match so the FTS BM25 rank has at least two
+    # observable values independent of the shared fence fixture's equal text.
+    fence_store.add_node(
+        "Fence rank contrast",
+        content="quantumfence " * 8,
+        node_id="rank-contrast",
+    )
+    traces: list[str] = []
+    fence_store.conn.set_trace_callback(traces.append)
+    try:
+        default = fence_store.fts_search("quantumfence")
+        default_trace = list(traces)
+        traces.clear()
+        included = fence_store.fts_search(
+            "quantumfence", include_archived=True
+        )
+        included_trace = list(traces)
+    finally:
+        fence_store.conn.set_trace_callback(None)
+
+    assert any("nodes_fts" in sql.lower() and "match" in sql.lower()
+               for sql in included_trace), (
+        f"include_archived search did not execute an FTS MATCH query: {included_trace!r}"
+    )
+    assert any("nodes_fts" in sql.lower() and "match" in sql.lower()
+               for sql in default_trace), (
+        f"default search did not execute an FTS MATCH query: {default_trace!r}"
+    )
+    ranks = [row["rank"] for row in included]
+    assert len(ranks) >= 2, "fixture must produce multiple ranked matches"
+    assert len(set(ranks)) > 1, f"include_archived ranks collapsed: {ranks!r}"
 
 
 @pytest.mark.red_now
@@ -422,6 +468,10 @@ def test_r3_4_all_active_ranking_is_deterministic(tmp_path):
 def test_r3_5_cli_note_when_fenced_candidates_would_rank(tmp_path):
     """spec@1f0cdd71 R3.5; strat@e58068c2 oracle row R3.5 (red_now).
 
+    I3 defect report: the former assertion required the defective literal
+    ``3 archived/superseded`` even though this fixture contains only archived
+    nodes.  The expectation below is intentionally category-accurate.
+
     2 live + 3 archived matches: the default CLI search returns fewer than
     top_k live results while fenced candidates would have ranked, so the
     output appends the one-line note naming the count and the escape hatch.
@@ -445,11 +495,60 @@ def test_r3_5_cli_note_when_fenced_candidates_would_rank(tmp_path):
 
     r = _run_cli(tmp_path, "search", "quantumnote", data_dir=data_dir)
     assert r.returncode == 0, r.stderr
-    assert "3 archived/superseded results fenced" in r.stdout, (
+    assert "3 archived results fenced" in r.stdout, (
         f"missing/wrong fence note in: {r.stdout!r}")
     assert "--include-archived" in r.stdout, (
         "the note must name the escape hatch")
     assert "Quantumnote archived 0" not in r.stdout
+    included = _run_cli(
+        tmp_path, "search", "quantumnote", "--include-archived", data_dir=data_dir
+    )
+    assert included.returncode == 0, included.stderr
+    delivered = sum(
+        f"Quantumnote archived {i}" in included.stdout for i in range(3)
+    )
+    count = re.search(r"\b(\d+)\s+archived results fenced\b", r.stdout)
+    assert count and int(count.group(1)) == delivered, (
+        f"fence note count must equal additional archived items delivered: "
+        f"note={r.stdout!r}, included={included.stdout!r}"
+    )
+
+
+@pytest.mark.red_now
+def test_r3_5_cli_note_names_each_fenced_status_category(tmp_path):
+    """I3 defect follow-up: mixed fenced statuses must both be named exactly.
+
+    Two archived and one superseded candidate are fenced behind one live
+    result.  Amendment 4 requires the total fenced count plus both named
+    statuses; it does not require a particular separator or per-category
+    breakdown.
+    """
+    data_dir = tmp_path / "mixed-data"
+    s = Store(Config(data_dir=str(data_dir)))
+    s.add_node("Quantummix live", content="quantummix payload", node_id="live")
+    for i in range(2):
+        node_id = f"arch{i}"
+        s.add_node(f"Quantummix archived {i}", content="quantummix payload",
+                   node_id=node_id)
+        s.update_node(node_id, status="archived")
+    old_id = s.add_node("Quantummix superseded", content="quantummix payload",
+                        node_id="sup-old")
+    s.supersede_node(old_id, "replacement without quantummix")
+    s.close()
+
+    r = _run_cli(tmp_path, "search", "quantummix", data_dir=data_dir)
+    assert r.returncode == 0, r.stderr
+    note_lines = [line.lower() for line in r.stdout.splitlines()
+                  if "results fenced" in line.lower()]
+    assert note_lines, f"mixed-status fence note is missing: {r.stdout!r}"
+    note = " ".join(note_lines)
+    assert "archived" in note and "superseded" in note, (
+        f"mixed-status note must name both fenced categories: {note!r}"
+    )
+    count = re.search(r"\b(\d+)\s+[^\n]*results fenced\b", note)
+    assert count and int(count.group(1)) == 3, (
+        f"mixed-status note must report fenced-set size 3: {note!r}"
+    )
 
 
 def test_r3_5_no_note_when_top_k_satisfied_or_nothing_fenced(tmp_path):

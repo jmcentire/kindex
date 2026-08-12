@@ -2,16 +2,109 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr
 
 
+# ── Config-resolution test seam (V1, AMENDMENT 1 contract) ──────────────
+# A process-local binding that overrides HOME and all config/data paths.
+# When active, every config resolution resolves beneath the bound root;
+# module-level caches (MCP singletons) are invalidated on bind and release
+# so post-import callers see the binding immediately (R1.1, R1.2, R1.4).
+# See architecture.md AMENDMENT 1 for the full contract.
+
+_bound_root: Path | None = None
+_cache_invalidate_callbacks: list[Callable[[], None]] = []
+
+
+def _register_cache_invalidate(fn: Callable[[], None]) -> None:
+    """Register a callback fired on bind/unbind to clear module-level caches."""
+    _cache_invalidate_callbacks.append(fn)
+
+
+def _fire_cache_invalidate() -> None:
+    for fn in list(_cache_invalidate_callbacks):
+        try:
+            fn()
+        except Exception:
+            pass
+
+
+def bind_root(root: str | os.PathLike) -> None:
+    """Bind config resolution to an explicit root directory (R1.1–R1.5).
+
+    While a binding is active, every config resolution — data dir, config
+    file, and any derived path — resolves beneath ``root``. ``HOME``, the
+    environment, and the user config file are not consulted for path
+    resolution while bound. Module-level caches (including the MCP store
+    singleton) are invalidated immediately, so callers that imported the
+    module before binding see the new root on their next resolution.
+
+    Raises ``RuntimeError`` if a binding is already active — nested binding
+    is a test bug, not a feature. Use ``bound_root`` for scoped binding that
+    restores the prior state on exit.
+    """
+    global _bound_root
+    if _bound_root is not None:
+        raise RuntimeError(
+            f"bind_root called while already bound to {_bound_root}; "
+            f"unbind_root first or use bound_root()"
+        )
+    _bound_root = Path(root).resolve()
+    _fire_cache_invalidate()
+
+
+def unbind_root() -> None:
+    """Release the active config binding, restoring normal precedence (R1.4).
+
+    A no-op when no binding is active — never an error.
+    """
+    global _bound_root
+    if _bound_root is None:
+        return
+    _bound_root = None
+    _fire_cache_invalidate()
+
+
+def active_root() -> Path | None:
+    """Return the active binding root, or ``None`` when unbound (R1.5)."""
+    return _bound_root
+
+
+@contextlib.contextmanager
+def bound_root(root: str | os.PathLike) -> Iterator[Path]:
+    """Context manager that binds ``root`` on entry and releases on exit (R1.4).
+
+    Restores any *previously active* binding on exit (not just clearing to
+    None), so nested ``bound_root`` blocks work correctly. Releases even
+    if the body raises.
+    """
+    global _bound_root
+    prior = _bound_root
+    if prior is not None:
+        # Clear the prior binding so bind_root doesn't raise; we restore it
+        # on exit.
+        _bound_root = None
+        _fire_cache_invalidate()
+    bound = Path(root).resolve()
+    _bound_root = bound
+    _fire_cache_invalidate()
+    try:
+        yield bound
+    finally:
+        _bound_root = prior
+        _fire_cache_invalidate()
+
+
 # Config layers, loaded bottom-up and merged (like git config).
 # Global (user-level) is loaded first, then local (project-level) overrides.
+# These are the UNBOUND defaults; when a binding is active, _bound_global_paths
+# and _bound_local_paths resolve them under the bound root instead.
 _GLOBAL_PATHS = [
     Path.home() / ".config" / "kindex" / "kin.yaml",  # XDG-ish
     Path.home() / ".config" / "conv" / "conv.yaml",   # legacy
@@ -23,6 +116,102 @@ _LOCAL_PATHS = [
 ]
 # Flat list for backward compat (used by config set to find first existing)
 _SEARCH_PATHS = _LOCAL_PATHS + _GLOBAL_PATHS
+
+
+def _effective_global_paths() -> list[Path]:
+    """Global config paths, under the bound root when bound."""
+    if _bound_root is not None:
+        return [
+            _bound_root / ".config" / "kindex" / "kin.yaml",
+            _bound_root / ".config" / "conv" / "conv.yaml",
+        ]
+    return list(_GLOBAL_PATHS)
+
+
+def _effective_local_paths() -> list[Path]:
+    """Local config paths, under the bound root when bound."""
+    if _bound_root is not None:
+        return [
+            _bound_root / ".kin" / "config",
+            _bound_root / "kin.yaml",
+            _bound_root / "conv.yaml",
+        ]
+    return list(_LOCAL_PATHS)
+
+
+def _effective_search_paths() -> list[Path]:
+    """Flat search list (backward compat), bound-aware."""
+    return _effective_local_paths() + _effective_global_paths()
+
+
+def _effective_home() -> Path:
+    """HOME for resolution, under the bound root when bound (R1.5)."""
+    if _bound_root is not None:
+        return _bound_root
+    return Path.home()
+
+
+def _resolve_path(path: str | Path) -> Path:
+    """Expand ~ and resolve, using the bound root as HOME when bound (R1.5).
+
+    When a binding is active, ALL paths resolve beneath the bound root:
+    - ``~`` expands to the bound root instead of the real HOME
+    - absolute paths already under the root are returned as-is
+    - absolute paths OUTSIDE the root are anchored under the root
+      (e.g. ``/tmp/foo`` becomes ``<root>/tmp/foo``)
+    - relative traversals (``../escaped``) are collapsed so they cannot
+      escape above the root
+    This ensures no config resolution can escape the binding (R1.5).
+    When unbound, behavior is byte-identical to ``Path(path).expanduser().resolve()``.
+    """
+    s = str(path)
+    if s.startswith("~"):
+        resolved = (_effective_home() / s[1:].lstrip("/")).resolve()
+    else:
+        resolved = Path(s).expanduser().resolve()
+    if _bound_root is not None:
+        root = _bound_root
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            # Path is outside the bound root. Anchor it under the root,
+            # stripping parent traversals and leading separators so the
+            # result cannot escape above the root (R1.5). Use the
+            # expanded path (with ~ resolved) for the parts, not the
+            # raw string, so ~ doesn't become a literal component.
+            anchored_source = str(resolved) if s.startswith("~") else s
+            parts = []
+            for part in anchored_source.replace("\\", "/").split("/"):
+                if part in ("", ".", ".."):
+                    continue
+                parts.append(part)
+            anchored = root.joinpath(*parts) if parts else root
+            resolved = anchored.resolve()
+            # Final containment invariant: if the resolved path is
+            # somehow still outside the root, clamp to the root itself.
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                resolved = root
+    return resolved
+
+
+def _contained_resolve(path: str | Path) -> Path | None:
+    """Resolve a path and check containment AFTER resolution (R1.5).
+
+    Symlinks defeat pre-resolution containment because .resolve() follows
+    them outside the root. This helper resolves the path, then checks:
+    if a binding is active and the resolved path is outside the root,
+    return None (unusable candidate). When unbound, return the resolved
+    path unchanged.
+    """
+    resolved = Path(str(path)).expanduser().resolve()
+    if _bound_root is not None:
+        try:
+            resolved.relative_to(_bound_root)
+        except ValueError:
+            return None  # Symlink escaped the root — unusable
+    return resolved
 
 
 class ProfileEntry(BaseModel):
@@ -413,7 +602,7 @@ class Config(BaseModel):
 
     @property
     def data_path(self) -> Path:
-        return Path(self.data_dir).expanduser().resolve()
+        return _resolve_path(self.data_dir)
 
     @property
     def scheduler_log_path(self) -> Path:
@@ -425,7 +614,7 @@ class Config(BaseModel):
         happened to resolve from the cwd when setup-cron ran (issue #15).
         """
         base = self._legacy_data_dir or self.data_dir
-        return Path(base).expanduser().resolve() / "logs"
+        return _resolve_path(base) / "logs"
 
     @property
     def topics_dir(self) -> Path:
@@ -449,40 +638,62 @@ class Config(BaseModel):
 
     @property
     def claude_path(self) -> Path:
-        return Path(self.claude_dir).expanduser().resolve()
+        return _resolve_path(self.claude_dir)
 
     @property
     def codex_path(self) -> Path:
-        return Path(self.codex_dir).expanduser().resolve()
+        return _resolve_path(self.codex_dir)
 
     @property
     def gemini_path(self) -> Path:
-        return Path(self.gemini_dir).expanduser().resolve()
+        return _resolve_path(self.gemini_dir)
 
     @property
     def antigravity_path(self) -> Path:
-        return Path(self.antigravity_dir).expanduser().resolve()
+        return _resolve_path(self.antigravity_dir)
 
     @property
     def antigravity_cli_path(self) -> Path:
-        return Path(self.antigravity_cli_dir).expanduser().resolve()
+        return _resolve_path(self.antigravity_cli_dir)
 
     @property
     def opencode_path(self) -> Path:
-        return Path(self.opencode_dir).expanduser().resolve()
+        return _resolve_path(self.opencode_dir)
 
     @property
     def cursor_path(self) -> Path:
-        return Path(self.cursor_dir).expanduser().resolve()
+        return _resolve_path(self.cursor_dir)
 
     @property
     def resolved_project_dirs(self) -> list[Path]:
-        return [Path(d).expanduser().resolve() for d in self.project_dirs]
+        return [_resolve_path(d) for d in self.project_dirs]
+
+
+def _contain_data_dir(cfg: Config) -> Config:
+    """Rewrite cfg.data_dir to an absolute path under the bound root when
+    a binding is active (R1.1, R1.5). When unbound, data_dir is unchanged
+    (R1.3 byte-identical). This ensures that any code reading data_dir
+    directly — not just through data_path — stays inside the binding.
+    """
+    if _bound_root is None:
+        return cfg
+    resolved = _resolve_path(cfg.data_dir)
+    cfg.data_dir = str(resolved)
+    return cfg
 
 
 def _detect_user(project_path: str | Path | None = None) -> str:
-    """Auto-detect user identity from repo-local/global git config or OS username."""
+    """Auto-detect user identity from repo-local/global git config or OS username.
+
+    Under an active binding, git config reads outside the root (global
+    gitconfig, repo-local config above the root), so the git probes are
+    skipped and the OS username is used (R1.5: no read outside the binding).
+    """
     import subprocess
+
+    # Under a binding, skip git probes — they read outside the root (R1.5).
+    if _bound_root is not None:
+        return os.environ.get("USER", os.environ.get("USERNAME", "unknown"))
 
     commands: list[list[str]] = []
     if project_path:
@@ -547,20 +758,22 @@ def load_config(
     project_root = resolve_project_root(project_path)
 
     if config_path:
-        p = Path(config_path).expanduser().resolve()
+        p = _resolve_path(config_path)
         if p.exists():
             data = yaml.safe_load(p.read_text()) or {}
             kin_profile = data.pop("profile", None)
             cfg = _resolve_profile(Config(**data), profile, kin_profile)
+            cfg = _contain_data_dir(cfg)
             return _attach_project_path(cfg, project_root)
-        return _attach_project_path(_resolve_profile(Config(), profile, None),
-                                    project_root)
+        return _attach_project_path(
+            _contain_data_dir(_resolve_profile(Config(), profile, None)),
+            project_root)
 
     # Layer 1: global config (user-level)
     merged: dict = {}
-    for p in _GLOBAL_PATHS:
-        p = p.expanduser().resolve()
-        if p.is_file():
+    for p in _effective_global_paths():
+        p = _contained_resolve(p)
+        if p is not None and p.is_file():
             data = yaml.safe_load(p.read_text()) or {}
             merged = _deep_merge(merged, data)
             break  # use first global found
@@ -589,6 +802,7 @@ def load_config(
 
     cfg = Config(**merged) if merged else Config()
     cfg = _resolve_profile(cfg, profile, kin_profile)
+    cfg = _contain_data_dir(cfg)
     return _attach_project_path(cfg, project_root)
 
 
@@ -675,15 +889,24 @@ def degraded_ledger_path(config: Config | None = None,
         base = config._legacy_data_dir or config.data_dir
     else:
         base = "~/.kindex"
-    return Path(base).expanduser().resolve() / _DEGRADED_LEDGER_NAME
+    return _resolve_path(base) / _DEGRADED_LEDGER_NAME
 
 
 def record_degraded(cmd: str, error: BaseException,
                     config: Config | None = None,
                     override_dir: str | None = None) -> None:
     """Append one degraded event. Never raises — the ledger must not
-    become a second failure mode. Each event is a single O_APPEND write,
-    so two hooks failing simultaneously both land whole, never torn."""
+    become a second failure mode (R4.2).
+
+    The append is always a plain O_APPEND write — no lock, never blocks,
+    never loses an event. The size cap is the only operation that needs
+    a lock; if the cap cannot acquire it non-blocking, the cap is skipped
+    (the file grows past 1MB temporarily, which is acceptable). An append
+    that lands during a cap rewrite either survives the rewrite or is
+    recovered: the cap keeps a handle to the old inode after os.replace
+    and re-reads its tail for any lines that landed after the cap's read
+    (R4.1: no silent loss).
+    """
     import json
     from datetime import datetime
 
@@ -700,30 +923,81 @@ def record_degraded(cmd: str, error: BaseException,
             "msg": str(error)[:200],
         }
         line = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+
+        # Append — always plain O_APPEND, no lock, never blocks.
         fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             os.write(fd, line)
         finally:
             os.close(fd)
-        _cap_degraded_ledger(path)
+
+        # Cap — try non-blocking lock; decline if unavailable.
+        _try_cap_degraded_ledger(path)
     except Exception:
         pass
 
 
-def _cap_degraded_ledger(path: Path) -> None:
-    """Over 1 MB, rewrite keeping the last 200 lines. The atomic replace
-    means readers never see a torn file and a failed rewrite leaves the
-    original (with the fresh append) intact; an append racing the rewrite
-    may be dropped — best effort, per the ledger contract."""
-    if path.stat().st_size <= _DEGRADED_MAX_BYTES:
-        return
-    lines = path.read_bytes().splitlines(keepends=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+def _try_cap_degraded_ledger(path: Path) -> None:
+    """Try to cap the ledger under a non-blocking lock. If the lock is
+    unavailable, decline (the file grows temporarily). When the cap runs,
+    it reads the file, trims, and os.replace. An append that lands after
+    the read but before the replace goes to the old inode — the cap
+    recovers it by re-reading the old inode's tail after the replace
+    (R4.1: no silent loss). Never blocks."""
+    import fcntl
+
     try:
-        tmp.write_bytes(b"".join(lines[-_DEGRADED_KEEP_LINES:]))
-        os.replace(tmp, path)
+        if path.stat().st_size <= _DEGRADED_MAX_BYTES:
+            return
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        lock_fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            return  # Lock unavailable — decline the cap, never block
+
+        # Keep a handle to the current inode so we can detect appends
+        # that land after our read but before os.replace.
+        old_fd = os.open(str(path), os.O_RDONLY)
+        try:
+            data = os.read(old_fd, _DEGRADED_MAX_BYTES * 2)
+            read_size = len(data)
+            lines = data.splitlines(keepends=True)
+            trimmed = b"".join(lines[-_DEGRADED_KEEP_LINES:])
+            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            try:
+                tmp.write_bytes(trimmed)
+                os.replace(tmp, path)
+            finally:
+                tmp.unlink(missing_ok=True)
+
+            # Check if appends landed after our read (old inode grew).
+            # The old fd still points to the pre-replace inode.
+            import os as _os
+            old_size = _os.fstat(old_fd).st_size
+            if old_size > read_size:
+                # Appends landed after our read — recover them.
+                _os.lseek(old_fd, read_size, _os.SEEK_SET)
+                tail = _os.read(old_fd, old_size - read_size)
+                if tail.strip():
+                    new_fd = os.open(str(path), os.O_WRONLY | os.O_APPEND, 0o600)
+                    try:
+                        os.write(new_fd, tail)
+                    finally:
+                        os.close(new_fd)
+        finally:
+            os.close(old_fd)
+    except Exception:
+        pass
     finally:
-        tmp.unlink(missing_ok=True)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(lock_fd)
 
 
 def read_degraded_events(config: Config | None = None,
@@ -780,15 +1054,42 @@ def resolve_project_root(project_path: str | Path | None = None) -> Path:
     2. KIN_PROJECT
     3. git worktree root for cwd
     4. cwd
+
+    When a config binding is active, the bound root wins over cwd, and
+    explicit paths / KIN_PROJECT are contained under the root via
+    _resolve_path so no path outside the binding is read (R1.5).
     """
     raw = project_path or os.environ.get("KIN_PROJECT")
-    start = Path(raw).expanduser() if raw else Path.cwd()
+    if raw:
+        start = _resolve_path(raw)
+    elif _bound_root is not None:
+        start = _bound_root
+    else:
+        start = Path.cwd()
     start = start.resolve()
     if start.is_file():
         start = start.parent
 
-    git_root = _git_root(start)
-    return git_root or start
+    # Under an active binding, skip the git probe entirely — it shells
+    # out with the starting directory and walks parent directories on the
+    # real filesystem, which is a forbidden read outside the binding (R1.5).
+    # The exit clamp below guarantees the returned value is contained.
+    if _bound_root is not None:
+        git_root = None
+    else:
+        git_root = _git_root(start)
+    result = git_root or start
+
+    # Containment invariant (R1.5): if a binding is active, the project
+    # root must never resolve outside the bound root. Clamp at the exit
+    # so every input shape — explicit arg, env var, git walk, cwd — is
+    # contained by one check, not by per-input special cases.
+    if _bound_root is not None:
+        try:
+            result.relative_to(_bound_root)
+        except ValueError:
+            result = _bound_root
+    return result
 
 
 def _git_root(start: Path) -> Path | None:
@@ -819,6 +1120,8 @@ def _project_config_paths(project_root: Path) -> list[Path]:
         project_root / "conv.yaml",
     ]
 
+    # When bound, the parent walk must not escape the bound root (R1.5).
+    walk_limit = _bound_root
     current = project_root
     for _ in range(10):
         kin_entry = current / ".kin"
@@ -831,12 +1134,20 @@ def _project_config_paths(project_root: Path) -> list[Path]:
         parent = current.parent
         if parent == current:
             break
+        if walk_limit is not None and parent != walk_limit:
+            try:
+                if walk_limit not in parent.resolve().parents:
+                    break
+            except OSError:
+                break
         current = parent
 
     seen: set[Path] = set()
     out: list[Path] = []
     for path in candidates:
-        resolved = path.expanduser().resolve()
+        resolved = _contained_resolve(path)
+        if resolved is None:
+            continue  # Symlink escaped the root — unusable
         if resolved not in seen:
             seen.add(resolved)
             out.append(resolved)
@@ -865,7 +1176,7 @@ def _resolve_kin_chain(path: Path, remaining: int = 5, seen: set[str] | None = N
     chain = [data]
 
     for parent_ref in data.get("inherits", []):
-        parent = (resolved.parent / parent_ref).expanduser().resolve()
+        parent = _resolve_path(resolved.parent / parent_ref)
         chain.extend(_resolve_kin_chain(parent, remaining - 1, seen))
     return chain
 
@@ -901,9 +1212,16 @@ def _maybe_upgrade_kin_file(path: Path) -> Path | None:
     """If path is a plain file named .kin, migrate it to .kin/config.
 
     Returns the new config path, or None if no upgrade was needed.
+    Under an active binding, refuse to upgrade — it mutates the filesystem
+    and the path may be a symlink or traversal outside the root (R1.5).
     """
     if not path.is_file() or path.name != ".kin":
         return None
+    if _bound_root is not None:
+        try:
+            path.resolve().relative_to(_bound_root)
+        except ValueError:
+            return None  # Outside the binding — refuse
     try:
         content = path.read_bytes()
         path.unlink()
@@ -922,7 +1240,12 @@ def resolve_kin_config(path: Path) -> Path:
     Handles both old-style (.kin file) and new-style (.kin/config).
     Auto-upgrades old files on discovery.
     """
-    path = path.expanduser().resolve()
+    resolved = _contained_resolve(path)
+    if resolved is None:
+        # Symlink escaped the root — return a path that won't match any
+        # file or dir so callers skip it (R1.5).
+        return Path("/dev/null/__binding_escaped__")
+    path = resolved
     if path.is_file():
         if path.name == ".kin":
             upgraded = _maybe_upgrade_kin_file(path)

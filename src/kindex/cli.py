@@ -115,18 +115,19 @@ def cmd_search(args):
         results = [r for r in results if _mine_match(r)]
         fenced_nodes = [r for r in fenced_nodes if _mine_match(r)]
 
-    # The fence never lies by omission: when default search comes up short
-    # of top_k and fenced candidates would otherwise have ranked, say so.
-    fence_note = ""
-    fenced = len(fenced_nodes)
-    if not include_archived and fenced and len(results) < args.top_k:
-        fence_note = (f"({fenced} archived/superseded results fenced; use "
-                      f"--include-archived / include_archived=True to see them)")
+    # The fence note is derived in a single place both surfaces call (R3.1).
+    from .retrieve import build_fence_note
+    fence_note = build_fence_note(results, fenced_nodes, args.top_k,
+                                  include_archived,
+                                  candidate_count=fence_stats.get("candidate_count", 0))
 
     if not results:
         print("No results.", file=sys.stderr)
         if fence_note:
-            print(fence_note, file=sys.stderr)
+            if args.json:
+                print(fence_note, file=sys.stderr)
+            else:
+                print(fence_note)
         return
 
     if args.json:
@@ -139,7 +140,6 @@ def cmd_search(args):
         } for r in results]
         print(_dumps(out, indent=2))
         if fence_note:
-            # stderr so machine-readable stdout stays parseable JSON
             print(fence_note, file=sys.stderr)
     else:
         print(f"# Kindex:{len(results)} results for \"{query}\"\n")
@@ -2462,7 +2462,7 @@ def _profile_create(args):
         print("Error: --data-dir is required for profile create", file=sys.stderr)
         sys.exit(2)
 
-    from .config import _GLOBAL_PATHS
+    from .config import _effective_global_paths
 
     # An explicit --config is the write target (mirrors `kin config set`);
     # otherwise fall through to the global kin.yaml discovery.
@@ -2472,14 +2472,30 @@ def _profile_create(args):
         path.parent.mkdir(parents=True, exist_ok=True)
     else:
         path = None
-        for p in _GLOBAL_PATHS:
-            p = p.expanduser().resolve()
-            if p.is_file():
+        for p in _effective_global_paths():
+            from .config import _contained_resolve
+            p = _contained_resolve(p)
+            if p is not None and p.is_file():
                 path = p
                 break
         if path is None:
-            path = (Path.home() / ".config" / "kindex" / "kin.yaml").resolve()
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path = _effective_global_paths()[0]
+            from .config import _contained_resolve, _bound_root as _br
+            contained = _contained_resolve(path)
+            if contained is None:
+                # Symlink escaped the root — don't write through it.
+                if _br is not None:
+                    path = _br / "kin.yaml"
+                else:
+                    path = Path.home() / "kin.yaml"
+            else:
+                path = contained
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            except (FileNotFoundError, OSError):
+                # Dangling symlink or broken parent — fall back to
+                # a path that doesn't go through the symlink.
+                path = Path.home() / "kin.yaml"
 
     # Round-trip the existing yaml: load, modify, dump — unknown keys survive.
     data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
@@ -2494,7 +2510,12 @@ def _profile_create(args):
     data["profiles"] = profiles
     if getattr(args, "set_default", False):
         data["default_profile"] = name
-    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    except (FileNotFoundError, OSError) as e:
+        print(f"Error: cannot write config to {path}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"Created profile '{name}' in {path}")
     print(f"  data_dir: {profile_data_dir}")
@@ -5763,18 +5784,36 @@ def _config_write(key: str, value: str, config_path: str | None = None,
     import yaml
 
     if config_path:
-        path = Path(config_path).expanduser().resolve()
+        from .config import _resolve_path
+        path = _resolve_path(config_path)
     elif global_:
-        from .config import _GLOBAL_PATHS
+        from .config import _effective_global_paths, _contained_resolve
         path = None
-        for p in _GLOBAL_PATHS:
-            p = p.expanduser().resolve()
-            if p.exists():
+        for p in _effective_global_paths():
+            p = _contained_resolve(p)
+            if p is not None and p.exists():
                 path = p
                 break
         if path is None:
-            path = Path.home() / ".config" / "kindex" / "kin.yaml"
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path = _effective_global_paths()[0]
+            contained = _contained_resolve(path)
+            if contained is None:
+                # Symlink escaped the root — don't write through it.
+                # Fall back to a path inside the root that doesn't go
+                # through the symlink.
+                from .config import _bound_root as _br
+                if _br is not None:
+                    path = _br / "kin.yaml"
+                else:
+                    path = Path.home() / "kin.yaml"
+            else:
+                path = contained
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            except (FileNotFoundError, OSError):
+                # Dangling symlink or broken parent — fall back to
+                # a path that doesn't go through the symlink.
+                path = Path.home() / "kin.yaml"
     else:
         from .config import _maybe_upgrade_kin_file, _project_config_paths, resolve_project_root
         # Auto-upgrade old .kin file before searching local paths
@@ -5796,7 +5835,12 @@ def _config_write(key: str, value: str, config_path: str | None = None,
         data = {}
 
     _dotset(data, key, _coerce_value(value))
-    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    except (FileNotFoundError, OSError) as e:
+        print(f"Error: cannot write config to {path}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ── parser ─────────────────────────────────────────────────────────────

@@ -396,7 +396,7 @@ def export_understand_anything(
                 "target": target,
                 "type": edge_type,
                 "direction": "outbound",
-                "weight": edge.get("weight", 0.5),
+                "weight": round(edge.get("weight", 0.5), 2),
             })
     ua_edges.sort(key=lambda e: (e["source"], e["target"], e["type"]))
 

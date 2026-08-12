@@ -278,6 +278,13 @@ def hybrid_search(
             key holds how many archived/superseded candidates were dropped
             while assembling results (feeds the CLI/MCP fence note).
 
+    Candidate window: FTS5 fetches up to 3*top_k candidates, graph expansion
+    walks 1 hop from the top 5 FTS hits, and vector search fetches up to
+    top_k. After merge, results are consumed in ranked order until top_k
+    live (non-expired, non-fenced) results or the candidate window is
+    exhausted. A short result set when the candidate window is exhausted
+    is genuine exhaustion, not a silent under-fill.
+
     Returns list of node dicts with 'confidence' and 'rrf_score' keys.
     """
     # Mode 1: FTS5 search (raw query — register is intentional signal for
@@ -402,14 +409,20 @@ def hybrid_search(
             orig = node
             hops = 0
             while node is not None and node.get("status") == "superseded":
+                # When include_archived is True, the caller opted into
+                # retired content — show the superseded node itself,
+                # do not redirect to its successor (R3.1 identity: the
+                # flag must reveal exactly what the default withheld).
+                if include_archived:
+                    break  # fall through to normal inclusion path
                 successor = (node.get("extra") or {}).get("superseded_by")
                 if not successor or hops >= 5:
-                    node = None
-                    # Fenced — but only counted if the caller could ever
-                    # see it: an expired candidate stays invisible with or
-                    # without the escape hatch.
+                    # No reachable successor. Fence it — but only counted
+                    # if the caller could ever see it: an expired candidate
+                    # stays invisible with or without the escape hatch.
                     if include_expired or not node_expired(orig):
                         fenced_nodes[nid] = orig
+                    node = None
                     break
                 if successor in candidate_ids:
                     # Dedup, not a fence: the successor ranks as its own candidate.
@@ -444,12 +457,22 @@ def hybrid_search(
             # would stay invisible even through the escape hatch, so it
             # never counts toward the note.
             try:
-                unfenced = store.fts_search(query, limit=top_k * 3,
+                # R3.1 identity (Amendment 4): the fenced set is exactly
+                # what the default query withheld AND what include_archived
+                # reveals. Derive it purely from the FTS matches the flag
+                # would surface minus what the default already showed.
+                # No redirect exception: a superseded node whose successor
+                # doesn't match the query is still withheld by default and
+                # revealed by the flag, so it must be counted.
+                unfenced = store.fts_search(query, limit=10000,
                                             include_archived=True)
                 for r in unfenced:
-                    if (r.get("status") == "archived"
-                            and r["id"] not in fenced_nodes
-                            and (include_expired or not node_expired(r))):
+                    if r["id"] in fenced_nodes:
+                        continue
+                    if not (include_expired or not node_expired(r)):
+                        continue
+                    status = r.get("status")
+                    if status in ("archived", "superseded"):
                         fenced_nodes[r["id"]] = r
             except Exception:
                 pass
@@ -457,8 +480,52 @@ def hybrid_search(
         # Callers that post-filter results (tags/owner) apply the same
         # predicates to these before deciding on the fence note.
         fence_stats["fenced_nodes"] = list(fenced_nodes.values())
+        # Report the total candidate pool size so build_fence_note can
+        # distinguish "corpus exhausted" (candidates ≤ top_k) from
+        # "window truncated" (candidates > top_k but results < top_k
+        # because candidates were filtered/expired/fenced).
+        fence_stats["candidate_count"] = len(candidate_ids)
 
     return results
+
+
+def build_fence_note(
+    results: list[dict],
+    fenced_nodes: list[dict],
+    top_k: int,
+    include_archived: bool,
+    candidate_count: int = 0,
+) -> str:
+    """Build the fence note string from the actual fenced set (R3.1, R5.1).
+
+    Single source of truth for both CLI and MCP surfaces. The wording names
+    exactly the categories present in the fenced set — derived from the
+    actual node statuses, not a fixed string.
+
+    The candidate window disclosure is emitted when the window was genuinely
+    the limiting factor — i.e., the candidate pool exceeded top_k but the
+    results are still short because candidates were filtered, expired, or
+    fenced. When the corpus is simply exhausted (candidate pool ≤ top_k),
+    the window played no part and stays silent (R5.1).
+
+    Returns an empty string when results fill top_k (no note needed).
+    """
+    if len(results) >= top_k:
+        return ""
+    parts = []
+    fenced = len(fenced_nodes)
+    if not include_archived and fenced:
+        statuses = {n.get("status", "archived") for n in fenced_nodes}
+        cats = "/".join(sorted(statuses))
+        parts.append(f"{fenced} {cats} results fenced; use "
+                     f"--include-archived / include_archived=True to see them")
+    # Emit the window disclosure when the window was the limiting factor:
+    # the candidate pool exceeded top_k but results are short (candidates
+    # were filtered/expired/fenced). Stay silent when the corpus was
+    # simply exhausted (candidate pool ≤ top_k).
+    if candidate_count > top_k or fenced:
+        parts.append("candidate window (3*top_k FTS + top_k vector)")
+    return f"({'; '.join(parts)})" if parts else ""
 
 
 def auto_select_tier(available_tokens: int | None = None) -> str:

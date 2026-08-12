@@ -99,6 +99,28 @@ _store = None
 _config = None
 
 
+def _reset_singletons():
+    """Clear the store/config singletons so the next _get_store re-resolves.
+
+    Registered with config._register_cache_invalidate so bind_root/unbind_root
+    invalidate the MCP module-level cache (R1.1, R1.2, AMENDMENT 1 contract).
+    """
+    global _store, _config
+    if _store is not None:
+        try:
+            _store.close()
+        except Exception:
+            pass
+    _store = None
+    _config = None
+
+
+# Register the MCP singleton reset with config's cache-invalidation callback
+# so bind_root/unbind_root clear the MCP store/config singletons (R1.2).
+from .config import _register_cache_invalidate as _config_register_cb  # noqa: E402
+_config_register_cb(_reset_singletons)
+
+
 class MemoryUnavailableError(RuntimeError):
     """Store open/init failed; tools degrade to a typed error string
     instead of an unhandled exception."""
@@ -312,13 +334,11 @@ def search(query: str, top_k: int = 10, tags: str = "",
         results = results[:top_k]
         fenced_nodes = [r for r in fenced_nodes if _tag_match(r)]
 
-    # The fence never lies by omission: a short default result set names
-    # the escape hatch when fenced candidates would otherwise have ranked.
-    fence_note = ""
-    fenced = len(fenced_nodes)
-    if not include_archived and fenced and len(results) < top_k:
-        fence_note = (f"({fenced} archived/superseded results fenced; use "
-                      f"--include-archived / include_archived=True to see them)")
+    # The fence note is derived in a single place both surfaces call (R3.1).
+    from .retrieve import build_fence_note
+    fence_note = build_fence_note(results, fenced_nodes, top_k,
+                                  include_archived,
+                                  candidate_count=fence_stats.get("candidate_count", 0))
 
     if not results:
         return "No results found." + (f"\n{fence_note}" if fence_note else "")

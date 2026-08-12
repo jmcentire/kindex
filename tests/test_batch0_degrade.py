@@ -451,80 +451,80 @@ def test_r2_4_poisoned_section_yields_partial_prime(tmp_path):
 # -- R2.5: MCP store failure becomes a typed tool result ------------------
 
 
-@pytest.mark.skip(
-    reason="DESCOPED for 0.30.0 by Validator ruling (run batch0, kindex node "
-           "bfed298fcb46). This test cannot isolate the MCP module's config "
-           "resolution in-process: module-level caching plus HOME-time resolution "
-           "mean it reads the developer's LIVE graph when one exists (observed "
-           "twice during judge runs). R2.5 itself IS verified — receipted "
-           "fresh-interpreter probe R-20260811T180533Z-24442 returns the typed "
-           "error on a corrupt store. Remediation: rewrite with subprocess "
-           "isolation (spawn python with HOME set at process start)."
-)
 @pytest.mark.red_now
 def test_r2_5_mcp_store_open_failure_returns_typed_error(tmp_path,
                                                          monkeypatch):
-    """spec@1f0cdd71 R2.5; strat@e58068c2 oracle row R2.5 (red_now);
-    arch@59540239 MCP boundary component.
+    """run-v8 spec@58916cd0 R6.1; strat@ede46bf4 T0.7 (red_now);
+    arch@de100e45 Amendment 1 MCP/universal-binding contract.
 
     A Store open/init failure on the MCP surface yields the literal
     tool-result prefix ``Error: memory unavailable (`` plus a
-    degraded.jsonl event in the base data dir, instead of an unhandled
-    exception.
+    degraded.jsonl event below the binding, instead of an unhandled exception.
 
-    Fixture (Validator-verified recipe; re-opened fixture-only
-    2026-08-11): the MCP module resolves its own config, so patched
-    module singletons do not govern store construction. The broken store
-    is therefore planted where the module's own resolution will find it:
-    HOME is overridden to a tmp dir and the corrupt DB bytes are placed
-    at HOME/.kindex/<dbname> BEFORE the module is imported; the module is
-    imported fresh under that HOME and evicted from sys.modules again
-    afterwards, so no cached config from other tests can leak a live or
-    healthy store into this test, and no live graph can ever be touched.
-
-    Reachability: the corrupt DB at the module's own resolution path
-    guarantees the store accessor's failure branch is entered; the
-    asserted ledger side effect proves the degraded path (not an earlier
-    gate) produced the string. The base build raises out of search()
-    here, which is the red form of this test.
-
-    Red if: the store getter re-raises (unhandled exception out of the
-    tool function), the literal prefix changes, or no degraded event is
-    written.
+    Reversion: removing the V1 seam, leaving MCP's pre-import cache ahead of
+    it, or re-raising Store initialization turns this red.  Reachability/non-
+    degeneracy: MCP is imported under a controlled temporary HOME before the
+    bind; within ``bound_root`` a healthy Store discovers the actual DB path,
+    that exact file is replaced with corrupt bytes, MCP singletons are cleared,
+    and ``search`` must traverse its accessor's failure branch.  The literal
+    typed result plus a parsed ledger event proves the failure was reached, not
+    skipped.  A canary at the unbound default keeps its mtime and remains the
+    only file there, proving the real/default graph was neither read nor opened.
+    Base evidence: 0.30.1 lacks ``bound_root`` and therefore fails for the exact
+    isolation gap that caused this test's descope; no unrelated subprocess or
+    environment-start dependency is involved.
     """
+    import kindex.config as config_mod
+
     home = tmp_path / "home"
-    base = home / ".kindex"
-    base.mkdir(parents=True)
+    default_data = home / ".kindex"
+    default_data.mkdir(parents=True)
+    canary = default_data / "real-graph-canary"
+    canary.write_text("must remain untouched")
+    canary_mtime = canary.stat().st_mtime_ns
     monkeypatch.setenv("HOME", str(home))
     for k in list(os.environ):
         if k.startswith("KIN_"):
             monkeypatch.delenv(k, raising=False)
 
-    # Discover the DB filename from a healthy throwaway store (declared
-    # surface), then plant corrupt bytes at the module's resolution path.
-    probe = Store(Config(data_dir=str(tmp_path / "probe")))
-    db_name = Path(probe.db_path).name
-    probe.close()
-    (base / db_name).write_bytes(b"this is not a sqlite database. " * 64)
-
-    sys.modules.pop("kindex.mcp_server", None)
     try:
-        try:
-            import kindex.mcp_server as mcp_mod
-        except (ImportError, SystemExit):
-            pytest.skip("kindex.mcp_server unavailable (mcp extra missing "
-                        "or incompatible) -- MCP coverage requires a "
-                        "working [mcp] extra")
+        import kindex.mcp_server as mcp_mod
+    except (ImportError, SystemExit):
+        pytest.skip("kindex.mcp_server unavailable (mcp extra missing or "
+                    "incompatible) -- authoritative MCP coverage requires it")
+
+    root = tmp_path / "bound-mcp-root"
+    result = None
+    with config_mod.bound_root(root):
+        assert config_mod.active_root() == root.resolve()
+        cfg = config_mod.load_config()
+        assert Path(cfg.data_path).resolve().is_relative_to(root.resolve())
+        probe = Store(cfg)
+        db_path = Path(probe.db_path)
+        probe.close()
+        assert db_path.resolve().is_relative_to(root.resolve())
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.write_bytes(b"this is not a sqlite database. " * 64)
+
+        monkeypatch.setattr(mcp_mod, "_store", None)
+        monkeypatch.setattr(mcp_mod, "_config", None)
         result = mcp_mod.search("anything")
-    finally:
-        sys.modules.pop("kindex.mcp_server", None)
+        monkeypatch.setattr(mcp_mod, "_store", None)
+        monkeypatch.setattr(mcp_mod, "_config", None)
 
     assert isinstance(result, str)
     assert result.startswith("Error: memory unavailable ("), result
-    ledger = base / "degraded.jsonl"
-    assert ledger.exists(), "MCP store failure must also write a degraded event"
-    evt = _ledger_events(ledger)[-1]
+    assert config_mod.active_root() is None
+    ledgers = list(root.rglob("degraded.jsonl"))
+    assert len(ledgers) == 1, (
+        f"MCP failure must write one bound degraded ledger, found {ledgers}"
+    )
+    evt = _ledger_events(ledgers[0])[-1]
     assert str(evt.get("error_class", "")).strip()
+    assert canary.stat().st_mtime_ns == canary_mtime
+    assert set(default_data.iterdir()) == {canary}, (
+        "MCP accessor created a DB or ledger at the unbound default location"
+    )
 
 
 # -- R2.6: concurrent appends are line-atomic -----------------------------

@@ -1219,16 +1219,22 @@ class Store:
         """Full-text search using FTS5 BM25 ranking.
 
         Archived and superseded nodes are fenced from default results;
-        include_archived=True restores archived candidates (the pre-fence
-        behavior) for callers that legitimately need retired content.
+        include_archived=True restores both archived and superseded
+        candidates (the pre-fence behavior) for callers that legitimately
+        need retired content (R3.1: the fence note names both, the flag
+        delivers both).
         """
         import re
         # Strip punctuation and FTS5 special chars, keep only words
         tokens = re.findall(r'\w+', query.lower())
         if not tokens:
             return []
-        status_fence = ("status != 'superseded'" if include_archived
-                        else "status NOT IN ('archived', 'superseded')")
+        if include_archived:
+            fts_fence = "1=1"
+            like_fence = "1=1"
+        else:
+            fts_fence = "n.status NOT IN ('archived', 'superseded')"
+            like_fence = "status NOT IN ('archived', 'superseded')"
         # Build FTS5 query: quoted phrase OR individual tokens
         phrase = " ".join(tokens)
         safe_phrase = phrase.replace('"', '""')
@@ -1238,16 +1244,23 @@ class Store:
             rows = self.conn.execute(
                 f"""SELECT n.*, rank FROM nodes_fts
                    JOIN nodes n ON n.id = nodes_fts.id
-                   WHERE nodes_fts MATCH ? AND n.{status_fence}
+                   WHERE nodes_fts MATCH ? AND {fts_fence}
                    ORDER BY rank LIMIT ?""",
                 (fts_query, limit),
             ).fetchall()
         except sqlite3.OperationalError:
-            # Fallback: simple LIKE search if FTS query syntax fails
+            # Fallback: simple LIKE search if FTS query syntax fails.
+            # This is a degraded path — log it so a malformed fence or
+            # broken FTS index announces itself rather than silently
+            # returning plausible wrong results (R5.1/I4).
+            import sys
+            print(f"Warning: FTS search degraded to LIKE fallback for "
+                  f"query {fts_query!r} (fence: {fts_fence})",
+                  file=sys.stderr)
             rows = self.conn.execute(
                 f"""SELECT *, 0 as rank FROM nodes
                    WHERE (title LIKE ? OR content LIKE ?)
-                     AND {status_fence}
+                     AND {like_fence}
                    ORDER BY weight DESC LIMIT ?""",
                 (f"%{phrase}%", f"%{phrase}%", limit),
             ).fetchall()
@@ -1255,35 +1268,46 @@ class Store:
 
     # ── Weight decay ───────────────────────────────────────────────────
 
-    # Runs closer together than this are no-ops that do NOT advance the
-    # decay.last_run stamp, so sub-day slices accumulate instead of being
-    # rounded away: a slice only survives if it changes the stored 4-dp
-    # weight, and even a floor-adjacent node (w=0.0101, H=90d) needs
-    # ~0.65 days for its delta to reach that resolution. Without this
-    # gate a 5-minute cron cadence would suppress every write and decay
-    # would silently stop.
-    _DECAY_MIN_INTERVAL_DAYS = 1.0
+    # The fold is unconditional (no interval gate) so weight at time T
+    # matches the closed form w0 * 0.5^((T - max(A,S))/H) regardless of
+    # run schedule (R2.1). The write decision is the only threshold: a
+    # sub-day slice that doesn't change the 4-dp weight is a no-op write,
+    # but the interval is never discarded (R2.4) — per-row accounting via
+    # meta keys (decay.row.<id>) tracks the unrounded weight and the time
+    # of the last ACTUAL decay. When a write is suppressed (4-dp delta too
+    # small), the row's stamp and unrounded weight are preserved so the next
+    # fold computes from the true weight over the accumulated interval,
+    # avoiding cumulative 4-dp rounding error. When the write succeeds,
+    # the meta key is cleaned up (the global stamp and stored weight suffice
+    # until the next suppression).
 
     def apply_weight_decay(self, node_half_life_days: int = 90,
                            edge_half_life_days: int = 30) -> int:
         """Decay weights over the interval since the previous decay run.
 
-        Cadence-independent: each run folds in only
-        (max(last_accessed, previous_run), now] for nodes and
-        (max(created_at, previous_run), now] for edges, so the slices
-        telescope to w0 * 0.5^(elapsed/half_life) no matter how often the
-        cron fires (the old code multiplied the FULL elapsed-age factor
-        into the already-decayed weight on every run). The checkpoint is
-        the meta key 'decay.last_run'; the first run after upgrade stamps
-        it and applies no decay — a cold start never retro-punishes.
+        Schedule-independent: the fold is unconditional and the global stamp
+        always advances, so weight at time T equals ``w0 * 0.5^((T -
+        max(last_accessed, S)) / H)`` for every run schedule including
+        sub-day intervals (R2.1). The write threshold (4-dp delta) is the
+        only suppression, but per-row accounting (meta key ``decay.row.<id>``)
+        stores the unrounded weight and last-decay timestamp so a suppressed
+        write does not discard the interval or accumulate rounding error —
+        the next fold computes from the true weight over the full accumulated
+        interval (R2.4 anti-starvation). Running twice in immediate succession
+        is a no-op the second time because the interval is ~zero (R2.2).
+        The first run after upgrade stamps the checkpoint and decays nothing
+        — cold start never retro-punishes (R2.3).
         Returns count of affected nodes.
         """
+        import json as _json
+
         now = datetime.now()
 
         # Checkpoint read, row updates, and stamp are ONE serialized unit:
         # BEGIN IMMEDIATE takes the write lock up front, so two concurrent
         # runs cannot both read the same checkpoint and double-apply an
-        # interval (the loser blocks, then sees the fresh stamp and gates).
+        # interval (the loser blocks, then sees the fresh stamp and folds
+        # ~zero).
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             began = True
@@ -1302,14 +1326,20 @@ class Store:
                     prev = None
             if prev is None:
                 # Cold start (or corrupt stamp): establish accounting, decay nothing.
-                self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
+                self.set_meta("decay.last_run", now.isoformat())
                 return 0
-            if (now - prev).total_seconds() / 86400.0 < self._DECAY_MIN_INTERVAL_DAYS:
-                if began:
+
+            # Monotonic guard (R2.3): a backwards clock reading must not
+            # erase the checkpoint or retro-punish. If now < prev, treat
+            # the run as a no-op — leave the stamp and per-row accounting
+            # untouched.
+            if now < prev:
+                if began and self.conn.in_transaction:
                     self.conn.rollback()
                 return 0
 
-            # Node decay over (max(last_accessed, prev), now]
+            # Node decay over (max(last_accessed, row_prev), now] — unconditional
+            # fold, per-row accounting for the write threshold.
             rows = self.conn.execute(
                 "SELECT id, weight, last_accessed FROM nodes").fetchall()
             count = 0
@@ -1318,20 +1348,67 @@ class Store:
                     last = datetime.fromisoformat(row["last_accessed"])
                 except (ValueError, TypeError):
                     continue
-                start = max(last, prev)
+                # Per-row state: {ts, w_true, w_stored} where ts is the
+                # last decay time, w_true is the unrounded weight at that
+                # time, and w_stored is the 4-dp weight we wrote to the row.
+                # Falls back to the global stamp and stored weight when the
+                # row has never been suppressed (no meta key).
+                # On the next fold, if the row's current weight differs
+                # from w_stored, an external write (e.g. reinforcement)
+                # changed the weight between folds — discard the snapshot
+                # and use the row's current stored weight as w0 (R2.1).
+                row_meta_raw = self.get_meta(f"_wtr.node.{row['id']}")
+                row_prev = prev
+                true_weight = float(row["weight"])
+                if row_meta_raw:
+                    try:
+                        row_meta = _json.loads(row_meta_raw)
+                        row_prev = datetime.fromisoformat(row_meta["ts"])
+                        w_stored = float(row_meta["w_stored"])
+                        if w_stored == float(row["weight"]):
+                            # Row untouched since last fold — use the
+                            # unrounded snapshot to avoid cumulative
+                            # 4-dp rounding error (R2.1).
+                            true_weight = float(row_meta["w_true"])
+                        # else: external write happened — true_weight
+                        # stays as the row's current stored weight.
+                    except (ValueError, TypeError, KeyError):
+                        row_prev = prev
+                        true_weight = float(row["weight"])
+                start = max(last, row_prev)
                 days_since = (now - start).total_seconds() / 86400.0
                 if days_since <= 0:
                     continue
                 decay = 0.5 ** (days_since / node_half_life_days)
-                new_weight = max(0.01, round(row["weight"] * decay, 4))
-                if new_weight != round(row["weight"], 4):
+                new_true = true_weight * decay
+                new_weight = max(0.01, round(new_true, 4))
+                if new_weight != round(float(row["weight"]), 4):
                     self.conn.execute(
                         "UPDATE nodes SET weight = ? WHERE id = ?",
                         (new_weight, row["id"]),
                     )
                     count += 1
+                    stored_weight = new_weight
+                else:
+                    stored_weight = float(row["weight"])
+                # Always write the per-row meta — the true weight must be
+                # preserved for the next fold's rounding-error avoidance.
+                # The cost is O(changed + suppressed) rows, not O(graph):
+                # rows with days_since <= 0 (just accessed, no interval)
+                # are skipped by the continue above and never reach here.
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (f"_wtr.node.{row['id']}",
+                     _json.dumps({
+                         "ts": now.isoformat(),
+                         "w_true": new_true,
+                         "w_stored": stored_weight,
+                     })),
+                )
 
-            # Edge decay over (max(created_at, prev), now]
+            # Edge decay over (max(created_at, prev), now] — unconditional.
+            # Edges use the global stamp and per-row accounting for the
+            # same rounding-error reason as nodes.
             edge_rows = self.conn.execute(
                 "SELECT id, weight, created_at FROM edges").fetchall()
             for row in edge_rows:
@@ -1339,21 +1416,49 @@ class Store:
                     created = datetime.fromisoformat(row["created_at"])
                 except (ValueError, TypeError):
                     continue
-                start = max(created, prev)
+                row_meta_raw = self.get_meta(f"_wtr.edge.{row['id']}")
+                row_prev = prev
+                true_weight = float(row["weight"])
+                if row_meta_raw:
+                    try:
+                        row_meta = _json.loads(row_meta_raw)
+                        row_prev = datetime.fromisoformat(row_meta["ts"])
+                        w_stored = float(row_meta["w_stored"])
+                        if w_stored == float(row["weight"]):
+                            true_weight = float(row_meta["w_true"])
+                    except (ValueError, TypeError, KeyError):
+                        row_prev = prev
+                        true_weight = float(row["weight"])
+                start = max(created, row_prev)
                 days_since = (now - start).total_seconds() / 86400.0
                 if days_since <= 0:
                     continue
                 decay = 0.5 ** (days_since / edge_half_life_days)
-                new_weight = max(0.01, round(row["weight"] * decay, 4))
-                if new_weight != round(row["weight"], 4):
+                new_true = true_weight * decay
+                new_weight = max(0.01, round(new_true, 4))
+                if new_weight != round(float(row["weight"]), 4):
                     self.conn.execute(
                         "UPDATE edges SET weight = ? WHERE id = ?",
                         (new_weight, row["id"]),
                     )
+                    stored_weight = new_weight
+                else:
+                    stored_weight = float(row["weight"])
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (f"_wtr.edge.{row['id']}",
+                     _json.dumps({
+                         "ts": now.isoformat(),
+                         "w_true": new_true,
+                         "w_stored": stored_weight,
+                     })),
+                )
 
+            # Stamp always advances — even if no write crossed the 4-dp
+            # threshold, the interval is accounted for (R2.1, R2.4).
             # Stamp + decay commit together (set_meta commits): a crash
             # mid-run rolls the whole slice back, never double-applies.
-            self.set_meta("decay.last_run", now.isoformat(timespec="seconds"))
+            self.set_meta("decay.last_run", now.isoformat())
             return count
         except BaseException:
             if began and self.conn.in_transaction:

@@ -8,6 +8,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
 
+
+def _binding_refused() -> list[str] | None:
+    """Under an active config binding, refuse to touch the machine's real
+    scheduler (launchd/crontab) — R1.5: no write outside the binding.
+    Returns a message list if refused, None if unbound (proceed)."""
+    from .config import _bound_root
+    if _bound_root is not None:
+        return ["Refused: config binding active — cannot modify machine scheduler"]
+    return None
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -848,6 +858,9 @@ def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
     Creates ~/Library/LaunchAgents/com.kindex.cron.plist
     Uses config.reminders.check_interval for the initial interval.
     """
+    refused = _binding_refused()
+    if refused:
+        return refused
     actions = []
     kin_path = _find_kin_path()
     launch_agents = Path.home() / "Library" / "LaunchAgents"
@@ -937,6 +950,9 @@ def reload_launchd() -> bool:
 
 def uninstall_launchd(dry_run: bool = False) -> list[str]:
     """Remove the launchd plist."""
+    refused = _binding_refused()
+    if refused:
+        return refused
     actions = []
     plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
 
@@ -985,6 +1001,9 @@ def install_crontab(config: "Config", dry_run: bool = False) -> list[str]:
     redirect match; the schedule field is ignored so an adaptively
     repacked interval (scheduling._apply_crontab) survives re-runs.
     """
+    refused = _binding_refused()
+    if refused:
+        return refused
     actions = []
     kin_path = _find_kin_path()
     log_dir = config.scheduler_log_path
@@ -1061,6 +1080,9 @@ def install_reminder_daemon(config: "Config", dry_run: bool = False) -> list[str
     ``--all-profiles`` sweeps every configured profile graph, not just the
     default one. Interval is the reminder check_interval capped at 5 minutes.
     """
+    refused = _binding_refused()
+    if refused:
+        return refused
     actions = []
     kin_path = _find_kin_path()
     launch_agents = Path.home() / "Library" / "LaunchAgents"
@@ -1092,6 +1114,9 @@ def install_reminder_daemon(config: "Config", dry_run: bool = False) -> list[str
 
 def uninstall_reminder_daemon(dry_run: bool = False) -> list[str]:
     """Remove the dedicated reminder-check launchd plist."""
+    refused = _binding_refused()
+    if refused:
+        return refused
     actions = []
     plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.reminders.plist"
 

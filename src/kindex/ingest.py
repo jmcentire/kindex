@@ -979,13 +979,19 @@ def _node_time(node: dict) -> str:
 
 
 def _kin_index_node(node: dict) -> dict:
+    # Weight is included but rounded to 2 decimal places so decay-only
+    # movement (typically <0.001 per fold) does not churn git history.
+    # A genuine weight change (reinforcement +0.05, access boost, manual
+    # edit) crosses a 2-dp boundary and is visible. This preserves the
+    # information 0.30.1 carried while keeping the file stable against
+    # the unconditional decay fold (R2.1).
     return {
         "domains": sorted(node.get("domains") or []),
         "id": node["id"],
         "title": node["title"],
         "type": node["type"],
         "updated_at": _node_time(node),
-        "weight": node["weight"],
+        "weight": round(node["weight"], 2),
     }
 
 

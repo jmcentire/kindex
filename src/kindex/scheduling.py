@@ -57,6 +57,13 @@ def repack_schedule(store: "Store", config: "Config") -> dict:
     if not config.reminders.enabled:
         return {"action": "skipped", "reason": "reminders disabled"}
 
+    # Under a config binding, refuse to modify the machine's real scheduler
+    # (R1.5: no write outside the binding). The scheduler spans all profiles
+    # and is machine-level state outside the bound root.
+    from .config import _bound_root
+    if _bound_root is not None:
+        return {"action": "skipped", "reason": "config binding active"}
+
     interval = compute_optimal_interval(store, config)
 
     # Check current interval from meta table
@@ -75,6 +82,9 @@ def repack_schedule(store: "Store", config: "Config") -> dict:
 
 def apply_schedule(interval: int, config: "Config") -> dict:
     """Apply a new cron interval to the system scheduler (launchd or crontab)."""
+    from .config import _bound_root
+    if _bound_root is not None:
+        return {"action": "skipped", "reason": "config binding active"}
     if platform.system() == "Darwin":
         return _apply_launchd(interval, config)
     return _apply_crontab(interval, config)
