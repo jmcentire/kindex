@@ -11,7 +11,10 @@
 **`NO KNOWN OPEN BLOCKER` — a statement about my knowledge, not about the code.**
 
 Head `29fb27d` / tester `db73dfe`. Judge `fixed28`: 0 failed / 43 passed red-now,
-0 / 17 green-now. Full suite 1736 passed. Nothing committed, tagged, or published.
+0 / 17 green-now. Full suite 1736 passed. **Superseded 2026-08-13:** 0.31.0 shipped (commit `39e5f20`, tag `v0.31.0`). The
+lane SHAs cited above no longer resolve — the worktrees were `git archive` exports
+with no ancestry and `.harness/` was removed at teardown, so this verdict's evidence
+chain is not independently checkable. See `~/Code/fucked_up_factory.md` §3.
 
 The two R1.5 symlink escapes below are closed and, unlike most fixes in this run,
 their guards are **proven**: flipping the containment branch from `return None` to
