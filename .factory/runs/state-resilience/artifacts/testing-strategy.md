@@ -7,6 +7,9 @@ execution, artifact integrity, and the verdict.
 
 Base revision: `666e20864fdcd3a21d5683f2c23085cf32d23257`.
 
+Amendment 1 (Tester-raised specification defect): bind time-dependent CLI/MCP
+tests to the Architecture A9 `operation_now` seams rather than ambient time.
+
 ## T0 — Lane and oracle rules
 
 - **T0.1 Isolation.** The Tester receives only the three frozen artifacts, their
@@ -24,9 +27,10 @@ Base revision: `666e20864fdcd3a21d5683f2c23085cf32d23257`.
   and the smallest mutation/reversion that turns it red. A test that cannot
   discriminate is not handed over.
 - **T0.5 Hermeticity.** No network, provider key, live graph, home-directory
-  state, sleep, or ambient clock. Use temp SQLite stores, stripped provider env,
-  deterministic extraction fallback or a test-owned fake, and injected UTC
-  instants.
+  state, sleep, or wall-clock-dependent assertion. Use temp SQLite stores,
+  stripped provider env, deterministic extraction fallback or a test-owned fake,
+  explicit Store instants, and the declared adapter `operation_now` seams for
+  time-dependent CLI/MCP calls.
 - **T0.6 Interface-only oracle.** Tests exercise the interfaces declared in the
   Architecture Specification. If a declared interface is incoherent or absent
   in a way that prevents authoring, report `SPEC_DEFECT` rather than reading the
@@ -81,6 +85,10 @@ Candidate dictionaries expose the schema field names in A2 plus a computed
 `review_token` on show. Node dictionaries expose the five new typed fields.
 Human error strings begin `Error: <machine_code>:`; JSON/MCP behavior may be
 asserted on exact machine fields, not prose paragraphs.
+
+The declared in-process clock seams are `kindex.cli.operation_now` and
+`kindex.mcp_server.operation_now`. They are test bindings only; no CLI/MCP caller
+may submit its own operation time.
 
 ## T3 — Schema and migration suite
 

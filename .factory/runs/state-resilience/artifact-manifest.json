@@ -13,6 +13,17 @@
     "simulacrum_exception": "anthropic",
     "antigravity_receipt": "rejected-noncontained"
   },
+  "amendments": [
+    {
+      "id": "amendment-1-adapter-clock-seam",
+      "raised_by": "independent-tester",
+      "reason": "Testing T0.5 prohibited ambient-clock dependence while Architecture A9 declared no in-process CLI/MCP clock seam.",
+      "supersedes": {
+        "architecture_sha256": "974d03e3dd3417499863f5f95a6243f1713ed6bbed062291e7bd0818ca7f70e4",
+        "testing_sha256": "d6346d66ab36f47d4043562199b1c8ea4d0870ea249a5145aa390acc567dc13e"
+      }
+    }
+  ],
   "artifacts": {
     "task": {
       "path": "TASK.md",
@@ -24,11 +35,11 @@
     },
     "architecture": {
       "path": "artifacts/architecture.md",
-      "sha256": "974d03e3dd3417499863f5f95a6243f1713ed6bbed062291e7bd0818ca7f70e4"
+      "sha256": "349bccc30abda3b0f694209e99307f665c419d0d5d48bd239d68f47b288bc9a6"
     },
     "testing": {
       "path": "artifacts/testing-strategy.md",
-      "sha256": "d6346d66ab36f47d4043562199b1c8ea4d0870ea249a5145aa390acc567dc13e"
+      "sha256": "d41c761e2c15a0571778f01fbe947bbe3f10da7fc03e4a192227863eba9f3ea6"
     },
     "tool_policy": {
       "path": "artifacts/tool-policy.md",

@@ -7,6 +7,10 @@ internal decomposition may improve without weakening those contracts.
 
 Base revision: `666e20864fdcd3a21d5683f2c23085cf32d23257`.
 
+Amendment 1 (Tester-raised specification defect): declare an internal adapter
+clock seam so CLI/MCP lifecycle tests do not depend on wall time. This is not a
+caller-controlled time override.
+
 ## A1 — Component and state ownership
 
 | Component | Files | Owns |
@@ -358,6 +362,13 @@ MCP tools use the same names prefixed by their server mapping:
 `candidate_list`, `candidate_show`, `candidate_accept`, `candidate_reject`,
 `candidate_prune`, `candidate_erase`, `verify`, and `invalidate`; existing
 `search` and `context` gain `trusted_only: bool = False`.
+
+Time-dependent CLI and MCP adapter functions obtain one normalized UTC instant
+per operation through a declared module seam named `operation_now() -> str` in
+each adapter module and pass that value to the corresponding Store `now` or
+evaluation-time parameter. In-process tests may monkeypatch this seam. It is not
+exposed as a CLI option or MCP argument, so a caller cannot choose a past time to
+bypass candidate expiry.
 
 Adapters catch the typed Store errors and return stable `Error: <code>: ...`
 messages. JSON output is ordinary typed dictionaries/lists; human output uses
