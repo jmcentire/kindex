@@ -1,7 +1,11 @@
-"""Run batch0 acceptance suite -- S1: end-of-session capture (Stop hook).
+"""Historical batch0 Stop-hook suite under state-resilience supersession.
 
 Tester-lane authored, blind to the implementation; the oracle is the signed
-run artifacts only. Citation shorthand used in every docstring below:
+batch0 artifacts for envelope/setup behavior only. Automatic promotion is now
+superseded by state-resilience product P2.1 (product ece927181a13), architecture
+A6 (c96a1839b7b7), and strategy T1/T5 (d41c761e2c15): extractable content is a
+pending candidate and creates zero durable nodes/edges. The older citation
+shorthand remains historical provenance for assertions not superseded here:
 
   spec@1f0cdd71  = product-specification.md
       sha256 1f0cdd7134ad671d3795252cbaedde858ae82dd0ef4d5a65d7d09a048bca617b
@@ -34,7 +38,7 @@ from kindex.store import Store
 _SESSION_ID = "b0b0c0de-1111-2222-3333-444455556666"
 
 # Distinctive transcript material. The read-only suite proves the no-key
-# keyword extractor deterministically mints a "cache invalidation" node from
+# keyword extractor deterministically derives a "cache invalidation" subject from
 # this sentence (tests/test_compact_hook.py::
 # test_envelope_extracts_from_transcript_text), so its appearance is a sound
 # transcript-was-consumed probe.
@@ -43,8 +47,8 @@ TRANSCRIPT_SENTENCE = (
     "TTL configuration in the deploy pipeline."
 )
 # Long, extractable --text material (same provenance:
-# tests/test_compact_hook.py::test_plain_text_still_extracts mints a
-# "retry logic" node from it).
+# tests/test_compact_hook.py::test_plain_text_still_extracts derives a
+# "retry logic" review subject from it).
 TEXT_SENTENCE = (
     "During this refactor we learned that the retry logic never honored "
     "the backoff ceiling configured for the API client."
@@ -112,29 +116,43 @@ def _nodes(tmp_path):
         store.close()
 
 
+def _candidates(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    try:
+        return [
+            store.get_capture_candidate(row["id"])
+            for row in store.list_capture_candidates(limit=500)
+        ]
+    finally:
+        store.close()
+
+
 # -- R1.1: the envelope preempts --text -----------------------------------
 
 
 @pytest.mark.red_now
 def test_r1_1_envelope_preempts_text_flag(tmp_path):
-    """spec@1f0cdd71 R1.1; strat@e58068c2 oracle row R1.1 (red_now).
+    """Historical R1.1 plus state-resilience P2.1/T5.2 (red_now).
 
     With a parseable envelope on stdin AND ``--text "Session ended"`` on
     argv, extraction MUST consume the transcript, not the 13-char literal.
-    Observable: a node minted from transcript material exists.
+    Observable: zero durable nodes and a transcript-derived pending candidate.
 
     Red if: the Stop hook path again lets --text preempt the stdin envelope
-    (the S1 defect) -- extraction then runs on "Session ended", mints no
-    transcript-derived node, and the cache-invalidation assertion fails.
+    (no cache-invalidation candidate), or direct node promotion returns.
     """
     transcript = _write_transcript(tmp_path, [TRANSCRIPT_SENTENCE])
     r = _run_compact_hook(tmp_path, _envelope(tmp_path, transcript),
                           "--text", "Session ended")
     assert r.returncode == 0, r.stderr
-    titles = _nodes(tmp_path)
-    assert any("cache invalidation" in t for t in titles), (
+    assert _nodes(tmp_path) == {}
+    candidates = _candidates(tmp_path)
+    assert any("cache invalidation" in row["title"] for row in candidates), (
         "transcript was not consumed; envelope did not preempt --text")
-    assert not any("session ended" in t.lower() for t in titles)
+    assert not any("session ended" in row["title"].lower()
+                   for row in candidates)
+    assert all(row["status"] == "pending" for row in candidates)
 
 
 @pytest.mark.parametrize("stdin_text", [
@@ -144,23 +162,21 @@ def test_r1_1_envelope_preempts_text_flag(tmp_path):
     "null",                       # parseable JSON, not an object
     "[1, 2, 3]",                  # parseable JSON, not an object
 ])
+@pytest.mark.red_now
 def test_r1_1_non_envelope_stdin_falls_back_to_text(tmp_path, stdin_text):
-    """spec@1f0cdd71 R1.1 (last sentence); strat@e58068c2 oracle row R1.1
-    green-now + edge-case list (empty vs whitespace vs non-JSON stdin).
+    """Historical R1.1 plus state-resilience P2.1/T5.2 (red_now).
 
     When stdin is not a parseable envelope, --text remains the effective
-    input, exactly as today: exit 0 and the --text material is extracted.
-    Green-now: on base --text always wins, so this passes unfixed too.
+    input: exit 0, zero durable nodes, and a retry-logic pending candidate.
 
     Red if: the fix over-rotates and ignores --text entirely (requiring an
-    envelope), or the new envelope parser crashes on garbage stdin
-    (arch@59540239 trust boundary: malformed stdin is not-an-envelope,
-    never a crash).
+    envelope), the parser crashes on garbage, or staging reverts to promotion.
     """
     r = _run_compact_hook(tmp_path, stdin_text, "--text", TEXT_SENTENCE)
     assert r.returncode == 0, r.stderr
     assert "Traceback" not in r.stderr
-    assert any("retry logic" in t for t in _nodes(tmp_path)), (
+    assert _nodes(tmp_path) == {}
+    assert any("retry logic" in row["title"] for row in _candidates(tmp_path)), (
         "non-envelope stdin must fall back to the --text path")
 
 
@@ -169,16 +185,15 @@ def test_r1_1_non_envelope_stdin_falls_back_to_text(tmp_path, stdin_text):
 
 @pytest.mark.red_now
 def test_r1_3_envelope_with_missing_transcript_mints_nothing(tmp_path):
-    """spec@1f0cdd71 R1.3 + R1.1 (a parseable envelope makes --text inert);
-    strat@e58068c2 oracle row R1.3 (red_now).
+    """Historical R1.3 plus state-resilience P2.1/T5.2 (red_now).
 
-    Envelope whose transcript_path does not exist: no extraction, no minted
-    nodes, exit 0. --text here is long and extractable on purpose: once the
+    Envelope whose transcript_path does not exist: no candidates/nodes, exit
+    0. --text here is long and extractable on purpose: once the
     envelope is recognized, the missing transcript must NOT fall back to
     --text extraction.
 
-    Red if: --text again preempts the envelope (base defect: the retry-logic
-    node gets minted from --text), or a missing transcript crashes the hook
+    Red if: --text again preempts the envelope (a retry-logic subject appears),
+    direct promotion occurs, or a missing transcript crashes the hook
     (nonzero exit).
     """
     missing = tmp_path / "gone.jsonl"  # never created
@@ -187,29 +202,31 @@ def test_r1_3_envelope_with_missing_transcript_mints_nothing(tmp_path):
     assert r.returncode == 0, r.stderr
     assert _nodes(tmp_path) == {}, (
         "missing transcript must mean no extraction at all")
+    assert _candidates(tmp_path) == []
 
 
-# -- R1.4: no content-empty nodes (existing invariant, guarded) -----------
+# -- R1.4/P2.1: no content-empty candidates or durable nodes --------------
 
 
+@pytest.mark.red_now
 def test_r1_4_no_empty_content_nodes_on_envelope_path(tmp_path):
-    """spec@1f0cdd71 R1.4 (issue-#14 invariant holds); strat@e58068c2 oracle
-    row R1.4 (green-now).
+    """Historical R1.4 plus state-resilience P2.1/T5.1 (red_now).
 
-    The envelope+transcript path never mints a node with empty content,
-    before or after the fix.
+    The envelope+transcript path creates zero nodes and only complete pending
+    candidates with non-empty content.
 
-    Red if: the capture path regresses to minting title-only/blank nodes
-    (e.g. envelope fields or keyword linking hints minted as nodes).
+    Red if: direct promotion returns or a title-only/partial candidate is staged.
     """
     transcript = _write_transcript(tmp_path, [TRANSCRIPT_SENTENCE])
     r = _run_compact_hook(tmp_path, _envelope(tmp_path, transcript))
     assert r.returncode == 0, r.stderr
-    nodes = _nodes(tmp_path)
-    assert nodes, "sanity: the envelope path should mint from the transcript"
-    for node in nodes.values():
-        assert node.get("content", "").strip(), (
-            f"content-empty node minted: {node.get('title')!r}")
+    assert _nodes(tmp_path) == {}
+    candidates = _candidates(tmp_path)
+    assert candidates, "sanity: the envelope path should stage the transcript"
+    for candidate in candidates:
+        assert candidate["status"] == "pending"
+        assert candidate.get("content", "").strip(), (
+            f"content-empty candidate staged: {candidate.get('title')!r}")
 
 
 # -- R1.5: transcript tolerance under concurrent writes -------------------
@@ -217,21 +234,15 @@ def test_r1_4_no_empty_content_nodes_on_envelope_path(tmp_path):
 
 @pytest.mark.red_now
 def test_r1_5_truncated_and_garbage_lines_tolerated(tmp_path):
-    """spec@1f0cdd71 R1.5; strat@e58068c2 oracle row R1.5 (red_now,
-    TENTATIVE marker per the strategy's own footnote).
+    """Historical R1.5 plus state-resilience P2.1/T5.5 (red_now).
 
     A transcript with one non-JSON garbage line and a final line truncated
     mid-JSON (the mid-write shape when the Stop hook fires) must yield
-    extraction from the parseable remainder: exit 0, no crash, and the good
-    line's material minted. Never zero output solely because the final line
-    was partial.
+    extraction from the parseable remainder: exit 0, no crash, zero nodes, and
+    the good line's material staged as a pending candidate.
 
-    Red if: a malformed/truncated line makes extraction raise (crash,
-    nonzero exit) or abort with zero nodes despite a parseable remainder.
-
-    TENTATIVE per strat@e58068c2 R1.5 footnote: if this passes on the
-    unfixed base (the issue-#14 hardening may already cover it), the
-    Validator reclassifies it as a green-now guard and records that.
+    Red if: malformed input aborts extraction, no candidate survives, or direct
+    node promotion returns.
     """
     good_line = json.dumps({
         "type": "assistant",
@@ -253,7 +264,9 @@ def test_r1_5_truncated_and_garbage_lines_tolerated(tmp_path):
     r = _run_compact_hook(tmp_path, _envelope(tmp_path, transcript))
     assert r.returncode == 0, r.stderr
     assert "Traceback" not in r.stderr
-    assert any("cache invalidation" in t for t in _nodes(tmp_path)), (
+    assert _nodes(tmp_path) == {}
+    assert any("cache invalidation" in row["title"]
+               for row in _candidates(tmp_path)), (
         "extraction must succeed on the parseable remainder")
 
 

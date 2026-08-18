@@ -409,67 +409,65 @@ def test_r2_1_decay_checkpoint_never_moves_backwards(tmp_path, monkeypatch):
         store.close()
 
 
-_V7_TABLES = [
-    "activity_log", "edges", "injection_pheromone", "meta", "nodes",
-    "nodes_fts", "nodes_fts_config", "nodes_fts_data", "nodes_fts_docsize",
-    "nodes_fts_idx", "reminders", "suggestions",
-]
-_V7_NODE_COLS = [
-    "aka", "audience", "content", "created_at", "domains", "extra", "id",
-    "intent", "last_accessed", "prov_activity", "prov_source", "prov_when",
-    "prov_who", "prov_why", "status", "title", "type", "updated_at", "weight",
-]
-_V7_EDGE_COLS = [
-    "created_at", "from_id", "id", "provenance", "to_id", "type", "weight",
-]
-_V7_INDEXES = [
-    "idx_activity_action", "idx_activity_timestamp", "idx_edges_from",
-    "idx_edges_to", "idx_nodes_audience", "idx_nodes_status", "idx_nodes_type",
-    "idx_nodes_updated", "idx_nodes_weight", "idx_pheromone_node",
-    "idx_pheromone_strength", "idx_reminders_next_due",
-    "idx_reminders_priority", "idx_reminders_status", "idx_suggestions_status",
-    "idx_suggestions_status_created", "idx_suggestions_status_pair",
-]
+def _schema_inventory(conn):
+    tables = tuple(sorted(row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%'"
+    )))
+    columns = {
+        table: tuple(sorted(row[1] for row in conn.execute(
+            f"PRAGMA table_info({table})"
+        )))
+        for table in tables
+    }
+    indexes = tuple(sorted(
+        (row[0], row[1] or "")
+        for row in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' "
+            "AND name NOT LIKE 'sqlite_autoindex%'"
+        )
+    ))
+    return tables, columns, indexes
 
 
-def test_i1_schema_version_and_inventory_unchanged_after_decay(tmp_path):
-    """I1: decay keeps SCHEMA_VERSION 7 and the full v7 inventory.
+@pytest.mark.red_now
+def test_i6_schema_v8_inventory_is_unchanged_by_decay(tmp_path):
+    """P6.1/I6/T1: decay reaches a declared version-8 Store; version drift,
+    missing v8 fields, or any before/after DDL difference is forbidden, while
+    exact v8 inventory stability is demanded. Reinstating the historical global
+    version-7 oracle is the smallest reversion that turns red.
 
-    Reversion: adding per-row accounting through a table/column/index or bumping
-    the version turns this green-now guard red.  Reachability/non-degeneracy: a
-    Store is initialized, a node is inserted, and decay executes before
-    sqlite_master and PRAGMA inventories are read; the checkpoint is therefore
-    exercised as a meta row, not inferred from an untouched DB.  Exact sorted
-    inventories discriminate additive as well as destructive schema drift.
-    Base evidence: 0.30.1 passes with version 7; the fixed build must match it
-    byte-for-byte at the schema surface.
+    Reachability/non-degeneracy: inventory is captured from a fresh v8 Store,
+    then a real node and decay checkpoint execute before the exact second
+    inventory. The assertion permits the user-authorized v8 migration and no
+    decay-owned schema change.
     """
     store = _store(tmp_path, "schema")
     try:
-        store.add_node("Schema probe", node_id="schema", weight=0.5)
-        store.apply_weight_decay()
-        assert store_mod.SCHEMA_VERSION == 7
+        assert store_mod.SCHEMA_VERSION == 8
         version = store.conn.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()
-        assert version and version[0] == "7"
-        tables = sorted(row[0] for row in store.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%'"
-        ))
-        node_cols = sorted(row[1] for row in store.conn.execute(
-            "PRAGMA table_info(nodes)"
-        ))
-        edge_cols = sorted(row[1] for row in store.conn.execute(
-            "PRAGMA table_info(edges)"
-        ))
-        indexes = sorted(row[0] for row in store.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' "
-            "AND name NOT LIKE 'sqlite_autoindex%'"
-        ))
-        assert tables == _V7_TABLES, f"table inventory changed: {tables}"
-        assert node_cols == _V7_NODE_COLS, f"nodes columns changed: {node_cols}"
-        assert edge_cols == _V7_EDGE_COLS, f"edges columns changed: {edge_cols}"
-        assert indexes == _V7_INDEXES, f"index inventory changed: {indexes}"
+        assert version and version[0] == "8"
+        assert {"verified_at", "verified_by", "prov_method", "valid_at",
+                "invalid_at"} <= {
+            row[1] for row in store.conn.execute("PRAGMA table_info(nodes)")
+        }
+        assert "updated_at" in {
+            row[1] for row in store.conn.execute("PRAGMA table_info(edges)")
+        }
+        assert "kind" in {
+            row[1] for row in store.conn.execute("PRAGMA table_info(suggestions)")
+        }
+        assert "capture_candidates" in {
+            row[0] for row in store.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        before = _schema_inventory(store.conn)
+        store.add_node("Schema probe", node_id="schema", weight=0.5)
+        store.apply_weight_decay()
+        after = _schema_inventory(store.conn)
+        assert after == before
     finally:
         store.close()

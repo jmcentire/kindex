@@ -283,73 +283,57 @@ def test_r4_3_floor_and_negligible_skip_preserved(tmp_path):
         s.close()
 
 
-# -- I1: no schema change (cross-cutting constraint guard) ----------------
-
-# Schema inventory of a fresh kindex 0.29.0 store, captured from the
-# released wheel in the sanctioned authoring-baseline venv (T0.5). This is
-# the comparison BASIS for spec@1f0cdd71 I1 ("no schema change;
-# SCHEMA_VERSION remains 7; no new columns, tables, or indexes") -- the
-# invariant itself comes from the spec; the inventory is historical
-# released-artifact state, not an oracle read from the code under test.
-_V7_TABLES = [
-    "activity_log", "edges", "injection_pheromone", "meta", "nodes",
-    "nodes_fts", "nodes_fts_config", "nodes_fts_data", "nodes_fts_docsize",
-    "nodes_fts_idx", "reminders", "suggestions",
-]
-_V7_NODE_COLS = [
-    "aka", "audience", "content", "created_at", "domains", "extra", "id",
-    "intent", "last_accessed", "prov_activity", "prov_source", "prov_when",
-    "prov_who", "prov_why", "status", "title", "type", "updated_at",
-    "weight",
-]
-_V7_EDGE_COLS = [
-    "created_at", "from_id", "id", "provenance", "to_id", "type", "weight",
-]
-_V7_INDEXES = [
-    "idx_activity_action", "idx_activity_timestamp", "idx_edges_from",
-    "idx_edges_to", "idx_nodes_audience", "idx_nodes_status",
-    "idx_nodes_type", "idx_nodes_updated", "idx_nodes_weight",
-    "idx_pheromone_node", "idx_pheromone_strength",
-    "idx_reminders_next_due", "idx_reminders_priority",
-    "idx_reminders_status", "idx_suggestions_status",
-    "idx_suggestions_status_created", "idx_suggestions_status_pair",
-]
+# -- P6/I6: decay makes no mutation to the authorized v8 schema -----------
 
 
-def test_i1_no_schema_change_version_stays_7(tmp_path):
-    """spec@1f0cdd71 I1 + R4.2 implementation constraint ("a single
-    meta-table key ... this is a row, not schema"); arch@59540239 state
-    notes (green-now: schema v7 holds on both sides -- one executable check
-    per hard constraint).
+def _schema_inventory(store):
+    tables = tuple(sorted(r[0] for r in store.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%'")))
+    columns = {
+        table: tuple(sorted(r[1] for r in store.conn.execute(
+            f"PRAGMA table_info({table})")))
+        for table in tables
+    }
+    indexes = tuple(sorted((r[0], r[1] or "") for r in store.conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' "
+        "AND name NOT LIKE 'sqlite_autoindex%'")))
+    return tables, columns, indexes
 
-    A fresh store, including after a decay run (the surface most tempted to
-    add schema for its checkpoint), still reports meta schema_version 7 and
-    exactly the 0.29.0 table/column/index inventory.
 
-    Red if: the run adds a table, column, or index, bumps schema_version,
-    or stores the decay checkpoint anywhere but a meta row.
+@pytest.mark.red_now
+def test_p6_i6_decay_preserves_current_declared_v8_inventory(tmp_path):
+    """State-resilience P6.1/I6 and T1: a fresh v8 Store is inventoried before
+    and after real decay; a version-7 oracle, missing declared v8 fields, or any
+    DDL drift is forbidden, while exact before/after stability is demanded.
+    Restoring the superseded batch0 v7 constant is the smallest reversion red.
+
+    The checkpoint still executes as a meta row; this assertion authorizes only
+    the frozen state-resilience v8 inventory, not later decay-owned schema.
     """
     s = _mk_store(tmp_path)
     try:
-        s.add_node("Schema probe", content="probe", node_id="p1", weight=0.5)
-        s.apply_weight_decay()  # the checkpoint must be a meta ROW, not DDL
         assert s.conn.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "7"
-        tables = sorted(r[0] for r in s.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%'"))
-        assert tables == _V7_TABLES, f"table set changed: {tables}"
-        node_cols = sorted(r[1] for r in s.conn.execute(
-            "PRAGMA table_info(nodes)"))
-        assert node_cols == _V7_NODE_COLS, f"nodes columns changed: {node_cols}"
-        edge_cols = sorted(r[1] for r in s.conn.execute(
-            "PRAGMA table_info(edges)"))
-        assert edge_cols == _V7_EDGE_COLS, f"edges columns changed: {edge_cols}"
-        indexes = sorted(r[0] for r in s.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' "
-            "AND name NOT LIKE 'sqlite_autoindex%'"))
-        assert indexes == _V7_INDEXES, f"index set changed: {indexes}"
+        ).fetchone()[0] == "8"
+        assert {"verified_at", "verified_by", "prov_method", "valid_at",
+                "invalid_at"} <= {
+            r[1] for r in s.conn.execute("PRAGMA table_info(nodes)")
+        }
+        assert "updated_at" in {
+            r[1] for r in s.conn.execute("PRAGMA table_info(edges)")
+        }
+        assert "kind" in {
+            r[1] for r in s.conn.execute("PRAGMA table_info(suggestions)")
+        }
+        assert "capture_candidates" in {
+            r[0] for r in s.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        before = _schema_inventory(s)
+        s.add_node("Schema probe", content="probe", node_id="p1", weight=0.5)
+        s.apply_weight_decay()  # the checkpoint must be a meta ROW, not DDL
+        assert _schema_inventory(s) == before
     finally:
         s.close()
 

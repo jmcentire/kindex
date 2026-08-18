@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+
+import pytest
 
 from kindex.config import Config
 from kindex.store import Store
@@ -72,6 +75,18 @@ def _nodes(tmp_path):
         store.close()
 
 
+def _candidates(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    store = Store(cfg)
+    try:
+        return [
+            store.get_capture_candidate(row["id"])
+            for row in store.list_capture_candidates(limit=500)
+        ]
+    finally:
+        store.close()
+
+
 def _reinforce_queue(tmp_path):
     cfg = Config(data_dir=str(tmp_path / "data"))
     store = Store(cfg)
@@ -82,7 +97,13 @@ def _reinforce_queue(tmp_path):
         store.close()
 
 
+@pytest.mark.red_now
 def test_envelope_fields_do_not_become_nodes(tmp_path):
+    """P2.1/P2.2: a real envelope reaches compact-hook; durable nodes and
+    envelope metadata in candidate payload/source are forbidden, while complete
+    transcript-derived candidates are demanded. Restoring direct node minting
+    is the smallest reversion that turns red.
+    """
     transcript = _write_transcript(tmp_path, [
         "We learned that the cache invalidation bug was caused by a stale "
         "TTL configuration in the deploy pipeline.",
@@ -90,16 +111,26 @@ def test_envelope_fields_do_not_become_nodes(tmp_path):
     r = _run_hook(tmp_path, _envelope(tmp_path, transcript))
     assert r.returncode == 0, r.stderr
 
-    nodes = _nodes(tmp_path)
+    assert _nodes(tmp_path) == {}
+    candidates = _candidates(tmp_path)
+    assert candidates
     for junk in ("session_id", "transcript_path", "cwd", "hook_event_name",
                  "PreCompact", "auto", _SESSION_ID, str(transcript)):
-        assert junk not in nodes
-    # Whatever was minted came from the transcript and carries content
-    for node in nodes.values():
-        assert node.get("content", "").strip()
+        assert all(junk not in candidate["title"] for candidate in candidates)
+        assert all(junk not in candidate["content"] for candidate in candidates)
+    for candidate in candidates:
+        assert candidate["status"] == "pending"
+        assert candidate["content"].strip()
+        assert re.fullmatch(r"[0-9a-f]{64}", candidate["source_digest"])
+        assert candidate["source_digest"] != str(transcript)
 
 
+@pytest.mark.red_now
 def test_envelope_extracts_from_transcript_text(tmp_path):
+    """P2.1/T5.1: transcript extraction reaches compact-hook; a durable node
+    is forbidden and a content-bearing pending cache-invalidation candidate is
+    demanded. Replacing staging with add_node turns this red.
+    """
     transcript = _write_transcript(tmp_path, [
         "We learned that the cache invalidation bug was caused by a stale "
         "TTL configuration in the deploy pipeline.",
@@ -107,13 +138,23 @@ def test_envelope_extracts_from_transcript_text(tmp_path):
     r = _run_hook(tmp_path, _envelope(tmp_path, transcript))
     assert r.returncode == 0, r.stderr
 
-    assert any("cache invalidation" in title for title in _nodes(tmp_path))
+    assert _nodes(tmp_path) == {}
+    assert any(
+        "cache invalidation" in candidate["title"]
+        for candidate in _candidates(tmp_path)
+    )
 
 
+@pytest.mark.red_now
 def test_envelope_without_transcript_creates_nothing(tmp_path):
+    """P2.1/T5.2: a parseable envelope without transcript reaches the hook;
+    node/candidate creation is forbidden and both stores must remain empty.
+    Falling back to envelope text is the smallest mutation that turns red.
+    """
     r = _run_hook(tmp_path, _envelope(tmp_path))
     assert r.returncode == 0, r.stderr
     assert _nodes(tmp_path) == {}
+    assert _candidates(tmp_path) == []
 
 
 def test_envelope_still_enqueues_reinforce(tmp_path):
@@ -126,19 +167,29 @@ def test_envelope_still_enqueues_reinforce(tmp_path):
     assert any(job.get("transcript_path") == str(transcript) for job in queue)
 
 
+@pytest.mark.red_now
 def test_plain_text_still_extracts(tmp_path):
+    """P2.1/T5.2: non-envelope stdin reaches explicit text extraction;
+    durable minting is forbidden and one retry-logic candidate is demanded.
+    Dropping the non-envelope fallback is the smallest mutation that turns red.
+    """
     text = ("During this refactor we learned that the retry logic never "
             "honored the backoff ceiling configured for the API client.")
     r = _run_hook(tmp_path, text)
     assert r.returncode == 0, r.stderr
 
-    nodes = _nodes(tmp_path)
-    assert any("retry logic" in title for title in nodes)
-    for node in nodes.values():
-        assert node.get("content", "").strip()
+    assert _nodes(tmp_path) == {}
+    candidates = _candidates(tmp_path)
+    assert any("retry logic" in candidate["title"] for candidate in candidates)
+    assert all(candidate["content"].strip() for candidate in candidates)
 
 
+@pytest.mark.red_now
 def test_title_only_keyword_concepts_are_not_minted(tmp_path):
+    """P2.1/T5.4: title-only keyword hints reach automatic extraction;
+    candidate and node creation are both forbidden. Removing the content-bearing
+    gate is the smallest mutation that turns red.
+    """
     # Quoted terms produce title-only concepts in the keyword fallback;
     # those are linking hints, not knowledge worth minting as blank nodes.
     text = ('The "flux capacitor" and the "warp drive" subsystems were '
@@ -146,13 +197,23 @@ def test_title_only_keyword_concepts_are_not_minted(tmp_path):
     r = _run_hook(tmp_path, text)
     assert r.returncode == 0, r.stderr
     assert _nodes(tmp_path) == {}
+    assert _candidates(tmp_path) == []
 
 
+@pytest.mark.red_now
 def test_short_plain_text_keeps_original_floor(tmp_path):
+    """P2.1/T5.2: 33-character non-envelope text reaches the legacy floor;
+    durable nodes are forbidden and a caches-auth-tokens candidate is demanded.
+    Applying the envelope length floor globally is the smallest mutation red.
+    """
     # 33 chars — below the 50-char envelope floor, above the plain-text 10
     r = _run_hook(tmp_path, "learned that X caches auth tokens")
     assert r.returncode == 0, r.stderr
-    assert any("caches auth tokens" in title for title in _nodes(tmp_path))
+    assert _nodes(tmp_path) == {}
+    assert any(
+        "caches auth tokens" in candidate["title"]
+        for candidate in _candidates(tmp_path)
+    )
 
 
 def test_transcript_with_non_object_json_lines_does_not_crash(tmp_path):
