@@ -22,6 +22,14 @@
         "architecture_sha256": "974d03e3dd3417499863f5f95a6243f1713ed6bbed062291e7bd0818ca7f70e4",
         "testing_sha256": "d6346d66ab36f47d4043562199b1c8ea4d0870ea249a5145aa390acc567dc13e"
       }
+    },
+    {
+      "id": "amendment-2-remove-public-prune-clock",
+      "raised_by": "independent-coder",
+      "reason": "Architecture A9 retained a public candidate prune --now option that contradicted Amendment 1's no-caller-controlled-time boundary.",
+      "supersedes": {
+        "architecture_sha256": "349bccc30abda3b0f694209e99307f665c419d0d5d48bd239d68f47b288bc9a6"
+      }
     }
   ],
   "artifacts": {
@@ -35,7 +43,7 @@
     },
     "architecture": {
       "path": "artifacts/architecture.md",
-      "sha256": "349bccc30abda3b0f694209e99307f665c419d0d5d48bd239d68f47b288bc9a6"
+      "sha256": "c96a1839b7b722bb3f281a5ed62d1ed95598cee69fcfc1eae42bb8d2c63bac39"
     },
     "testing": {
       "path": "artifacts/testing-strategy.md",

@@ -11,6 +11,10 @@ Amendment 1 (Tester-raised specification defect): declare an internal adapter
 clock seam so CLI/MCP lifecycle tests do not depend on wall time. This is not a
 caller-controlled time override.
 
+Amendment 2 (Coder-raised specification defect): remove the stale public
+`candidate prune --now` sketch that contradicted Amendment 1. Prune uses the
+same internal operation clock seam as other time-dependent adapter actions.
+
 ## A1 — Component and state ownership
 
 | Component | Files | Owns |
@@ -350,7 +354,7 @@ kin candidate list [--status ...] [--limit N] [--json]
 kin candidate show ID [--json]
 kin candidate accept ID --review-token TOKEN --by WHO --method METHOD [--valid-at TS] [--invalid-at TS] [--json]
 kin candidate reject ID --by WHO --code CODE [--json]
-kin candidate prune [--now TS] [--json]
+kin candidate prune [--json]
 kin candidate erase ID [--json]
 kin verify NODE --by WHO --method METHOD [--verified-at TS] [--valid-at TS] [--invalid-at TS] [--json]
 kin invalidate NODE --by WHO --code CODE [--at TS] [--json]
