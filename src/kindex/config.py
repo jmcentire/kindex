@@ -281,6 +281,12 @@ class BudgetConfig(BaseModel):
     monthly: float = 5.00
 
 
+class CaptureConfig(BaseModel):
+    """Quarantined automatic-capture retention settings."""
+
+    candidate_ttl_days: int = Field(default=7, gt=0)
+
+
 class AttentionConfig(BaseModel):
     enabled: bool = False
     tick_interval: int = 3
@@ -571,6 +577,7 @@ class Config(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    capture: CaptureConfig = Field(default_factory=CaptureConfig)
     attention: AttentionConfig = Field(default_factory=AttentionConfig)
     sim: SimConfig = Field(default_factory=SimConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)

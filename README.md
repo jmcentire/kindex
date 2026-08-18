@@ -70,7 +70,7 @@ Or add `.mcp.json` to any repo for project-scope access:
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
 ```
 
-The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
+The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
 
 For coding agents, install both the MCP server and the instruction file. The
 instruction file tells the model how to use kindex: start a session tag, read
@@ -386,7 +386,7 @@ kin ingest all
 # Session tags — named work context handles
 kin tag start auth-refactor --focus "OAuth2 flow" --remaining "tokens,tests"
 kin tag segment --focus "Token storage" --summary "Flow design done"
-kin tag resume auth-refactor   # context block for new session
+kin tag resume auth-refactor   # admission-controlled context for new session
 kin tag end --summary "All done"
 
 # Reminders — never forget, never nag
@@ -395,6 +395,57 @@ kin remind create "reply to Kevin" --at "in 30 minutes" --priority urgent
 kin remind list
 kin remind snooze --reminder-id <id> --duration 1h
 kin remind done --reminder-id <id>
+```
+
+## Trust, Capture Review, and Bounded Resume
+
+Kindex keeps automatic extraction separate from durable knowledge. The
+pre-compact hook stages review candidates; it does not create graph nodes or
+edges. Inspect and resolve candidates explicitly:
+
+```bash
+kin candidate list --status pending
+kin candidate show <candidate-id>                 # exact untrusted payload + freshness token
+kin candidate accept <candidate-id> \
+  --review-token <token> --by "reviewer" --method "manual-review"
+kin candidate reject <candidate-id> --by "reviewer" --code not_relevant
+kin candidate prune                               # expire candidates whose TTL elapsed
+kin candidate erase <candidate-id>                # remove any candidate or receipt
+```
+
+The review token detects changes between show and accept. It is not
+authentication, authorization, or proof of reviewer identity. Candidate source
+text is retained only as a SHA-256 digest, and accepted, rejected, or expired
+candidates are reduced to minimal receipts. Human candidate output is visibly
+delimited because its content is untrusted.
+
+Verification is also explicit and records asserted local audit text:
+
+```bash
+kin verify <node-id> --by "reviewer" --method "source-check" \
+  --valid-at 2026-08-18T12:00:00Z
+kin invalidate <node-id> --by "reviewer" --code superseded \
+  --at 2026-09-01T00:00:00Z
+
+# Ordinary search/context remain legacy-compatible recall.
+kin search deployment
+kin search deployment --trusted-only
+kin context --topic deployment --trusted-only
+```
+
+Trusted-only search/context and `kin tag resume` admit only active, explicitly
+verified, currently valid, non-contradicted knowledge. Resume output includes an
+authority warning and machine-reason omission counts. Its legacy `--tokens`
+option is an exact UTF-8 byte budget by default; direct library callers can pass
+a provider's exact token counter when they require a provider-token guarantee.
+Non-positive resume budgets return no output.
+
+Automatic candidates expire after seven days by default. Configure a positive
+retention period in global or project config:
+
+```yaml
+capture:
+  candidate_ttl_days: 7
 ```
 
 ## Editing & Superseding
@@ -681,8 +732,8 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 ### Core
 | Command | Description |
 |---------|-------------|
-| `kin search <query>` | Hybrid FTS5 + graph search with RRF merging (--tags, --mine) |
-| `kin context` | Formatted context block for AI injection (--level, --tokens) |
+| `kin search <query>` | Hybrid FTS5 + graph search with RRF merging (--tags, --mine, --trusted-only) |
+| `kin context` | Formatted context block for AI injection (--level, --tokens, --trusted-only) |
 | `kin add <text>` | Quick capture with auto-extraction and linking (--tags, --type) |
 | `kin show <id>` | Full node details with edges, provenance, and state |
 | `kin list` | List nodes (--type, --status, --tags, --audience, --mine, --limit) |
@@ -702,6 +753,9 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin decay` | Apply weight decay to stale nodes/edges |
 | `kin recent` | Recently active nodes |
 | `kin tag [action]` | Session tags: start, update, segment, pause, end, resume, list, show |
+| `kin candidate [action]` | Quarantined capture review: list, show, accept, reject, prune, erase |
+| `kin verify <node>` | Assert verification and optional RFC 3339 valid interval |
+| `kin invalidate <node>` | Record asserted invalidation actor, code, and exclusive end time |
 | `kin remind [action]` | Reminders: create, list, show, snooze, done, cancel, check, exec |
 | `kin mode [action]` | Conversation modes: activate, list, show, create, export, import, seed |
 
@@ -862,6 +916,9 @@ budget:
   daily: 0.50
   weekly: 2.00
   monthly: 5.00
+
+capture:
+  candidate_ttl_days: 7          # positive TTL for quarantined automatic captures
 
 attention:
   enabled: false                  # default; runtime override with `kin attention on/off`

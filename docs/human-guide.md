@@ -77,6 +77,68 @@ visible. The instruction files are what make agents use Kindex proactively:
 start/resume a tag, search before adding, capture durable decisions, and end
 the tag with a summary.
 
+## Review Automatic Capture Before Promotion
+
+Automatic pre-compact extraction is quarantined. A successful hook stages
+candidate records and creates no durable knowledge nodes or edges. Review them
+through the CLI or the matching MCP tools (`candidate_list`,
+`candidate_show`, `candidate_accept`, `candidate_reject`, `candidate_prune`,
+and `candidate_erase`):
+
+```bash
+kin candidate list --status pending
+kin candidate show <candidate-id>
+kin candidate accept <candidate-id> \
+  --review-token <token> --by "reviewer" --method "manual-review"
+kin candidate reject <candidate-id> --by "reviewer" --code not_relevant
+kin candidate prune
+kin candidate erase <candidate-id>
+```
+
+`candidate show` returns the exact untrusted proposal and a deterministic
+freshness token. Accept recomputes that token inside its write transaction and
+refuses stale, expired, contradictory, or same-title state. The token is not
+authentication or proof of reviewer identity; `--by` and `--method` are
+asserted audit text within the local trust boundary. Accepted, rejected, and
+expired candidates have their raw payload removed, while explicit erase also
+removes the minimal receipt. Candidate source material is stored only as a
+digest.
+
+Candidate retention defaults to seven days and must be positive:
+
+```yaml
+capture:
+  candidate_ttl_days: 7
+```
+
+## Use Trusted Projections Deliberately
+
+Ordinary search and context keep their existing recall behavior, including
+legacy unverified nodes. Add `--trusted-only` when the result must be an
+admission-controlled projection:
+
+```bash
+kin verify <node-id> --by "reviewer" --method "source-check" \
+  --valid-at 2026-08-18T12:00:00Z
+kin search "deployment constraints" --trusted-only
+kin context --topic deployment --trusted-only
+kin invalidate <node-id> --by "reviewer" --code superseded \
+  --at 2026-09-01T00:00:00Z
+```
+
+Time arguments must be timezone-aware RFC 3339 values. Trusted projections
+admit only active, explicitly verified, currently valid nodes that are not in a
+current explicit contradiction. They report omitted knowledge by machine
+reason; Kindex does not infer semantic contradictions or select a winning
+claim.
+
+`kin tag resume` and MCP `tag_resume` use trusted admission by default. Their
+legacy `tokens` argument is an exact UTF-8 byte budget, not an estimated model
+token count. A direct library caller can supply the target provider's exact
+counter when a provider-token guarantee is required. The complete resume block,
+including warnings and omission notices, remains inside the selected budget;
+a non-positive budget emits an empty block.
+
 ## Use Reminders
 
 Reminders are stored in Kindex and fired by a checker. Creating a reminder does

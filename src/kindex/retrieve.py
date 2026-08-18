@@ -14,7 +14,7 @@ Auto-selects based on estimated available token budget when level is not specifi
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING
@@ -257,6 +257,8 @@ def hybrid_search(
     include_expired: bool = False,
     include_archived: bool = False,
     fence_stats: dict | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> list[dict]:
     """Hybrid search combining FTS5 + graph expansion + vector search.
 
@@ -277,6 +279,10 @@ def hybrid_search(
         fence_stats: Optional dict the caller owns; on return its "fenced"
             key holds how many archived/superseded candidates were dropped
             while assembling results (feeds the CLI/MCP fence note).
+        trusted_only: Admission-control results through the same explicit
+            verification, valid-time, and contradiction predicate as resume.
+            False preserves ordinary recall behavior for legacy callers.
+        evaluation_time: One RFC 3339/datetime instant used by trusted filtering.
 
     Candidate window: FTS5 fetches up to 3*top_k candidates, graph expansion
     walks 1 hop from the top 5 FTS hits, and vector search fetches up to
@@ -401,6 +407,14 @@ def hybrid_search(
     results = []
     seen: set[str] = set()
     fenced_nodes: dict[str, dict] = {}
+    trust_omissions: Counter[str] = Counter()
+    trusted_at = None
+    trusted_today = None
+    if trusted_only:
+        from .trust import _operation_time
+
+        trusted_at = _operation_time(evaluation_time)
+        trusted_today = trusted_at.date().isoformat()
     for nid, score in merged:
         if len(results) >= top_k:
             break
@@ -432,11 +446,22 @@ def hybrid_search(
                 hops += 1
             if node is None:
                 continue
-            if not include_expired and node_expired(node):
+            if (trusted_only or not include_expired) and node_expired(
+                node, today=trusted_today if trusted_only else None
+            ):
+                if trusted_only:
+                    trust_omissions["invalidated"] += 1
                 continue
             if not include_archived and node.get("status") == "archived":
                 fenced_nodes[node["id"]] = node
                 continue
+            if trusted_only:
+                from .trust import node_trust_decision
+
+                decision = node_trust_decision(store, node, at=trusted_at)
+                if not decision.eligible:
+                    trust_omissions[decision.reason] += 1
+                    continue
             if node["id"] in seen:
                 continue
             seen.add(node["id"])
@@ -485,8 +510,30 @@ def hybrid_search(
         # "window truncated" (candidates > top_k but results < top_k
         # because candidates were filtered/expired/fenced).
         fence_stats["candidate_count"] = len(candidate_ids)
+        if trusted_only:
+            fence_stats["trusted_omissions"] = dict(sorted(trust_omissions.items()))
 
     return results
+
+
+def build_trust_note(omissions: dict[str, int] | None) -> str:
+    """Human-only disclosure for admission-controlled recall."""
+    omissions = omissions or {}
+    labels = (
+        ("legacy/unverified", "unverified"),
+        ("not-yet-valid", "not_yet_valid"),
+        ("invalidated/expired", "invalidated"),
+        ("mutual contradiction", "mutual_contradiction"),
+        ("inactive", "inactive"),
+    )
+    parts = [
+        f"{label}={omissions.get(reason, 0)}"
+        for label, reason in labels
+        if omissions.get(reason, 0)
+    ]
+    if not parts:
+        return "(trusted-only admission: no candidates omitted)"
+    return f"(trusted-only omissions: {'; '.join(parts)})"
 
 
 def build_fence_note(
@@ -562,6 +609,8 @@ def format_context_block(
     level: str | None = None,
     max_tokens_approx: int | None = None,
     adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> str:
     """Format search results as a context block for CLAUDE.md injection.
 
@@ -581,7 +630,22 @@ def format_context_block(
         level = auto_select_tier(max_tokens_approx)
 
     budget = max_tokens_approx or TIER_BUDGETS.get(level, 1500)
-    formatter = partial(_TIER_FORMATTERS.get(level, _format_abridged), adapter=adapter)
+    if trusted_only:
+        from .trust import _operation_time
+
+        evaluation_time = _operation_time(evaluation_time)
+    formatter_fn = _TIER_FORMATTERS.get(level, _format_abridged)
+    if trusted_only:
+        formatter = partial(
+            formatter_fn,
+            adapter=adapter,
+            trusted_only=True,
+            evaluation_time=evaluation_time,
+        )
+    else:
+        # Preserve the exact legacy call shape for ordinary recall, including
+        # callers that provide a compatible custom tier formatter.
+        formatter = partial(formatter_fn, adapter=adapter)
 
     # Try with all results, then progressively trim until within budget
     for n in range(len(results), 0, -1):
@@ -605,37 +669,65 @@ def _gather_domains(results: list[dict]) -> set[str]:
     return domains
 
 
-def _append_operational(
-    store: Store, lines: list[str], verbose: bool = False, adapter: str | None = None
-) -> None:
-    """Append active operational nodes (constraints, watches, etc.) to output.
+def _trusted_context_nodes(
+    store: Store,
+    nodes: list[dict],
+    *,
+    trusted_only: bool,
+    evaluation_time: str | datetime | None,
+) -> list[dict]:
+    """Apply trusted admission to formatter-owned auxiliary pulls."""
+    if not trusted_only:
+        return nodes
+    from .store import node_expired
+    from .trust import _operation_time, filter_trusted_nodes
 
-    When ``adapter`` names a client, nodes scoped to a different client (e.g. an
-    Antigravity hook-protocol directive) are dropped, mirroring the attention and
-    prime injection paths. With no adapter, every operational node surfaces — the
-    right default for human-facing ``kin context``/``kin status``.
-    """
+    at = _operation_time(evaluation_time)
+    today = at.date().isoformat()
+    current = [node for node in nodes if not node_expired(node, today=today)]
+    trusted, _ = filter_trusted_nodes(store, current, at=at)
+    return trusted
+
+
+def _append_operational(
+    store: Store,
+    lines: list[str],
+    verbose: bool = False,
+    adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
+) -> None:
+    """Append current operational nodes, optionally trust-admitted."""
     ops = store.operational_summary()
     if adapter is not None:
         ops = {
-            k: [n for n in v if not adapter_scoped_out(n.get("tags"), adapter)]
-            for k, v in ops.items()
+            key: [
+                node for node in values
+                if not adapter_scoped_out(node.get("tags"), adapter)
+            ]
+            for key, values in ops.items()
+        }
+    if trusted_only:
+        ops = {
+            key: _trusted_context_nodes(
+                store,
+                values,
+                trusted_only=True,
+                evaluation_time=evaluation_time,
+            )
+            for key, values in ops.items()
         }
 
-    # Per-node rendering guards: a malformed operational node (e.g. a
-    # garbage extra that hydrates as a string) is skipped, never allowed
-    # to take the whole context block down with it.
-    def _extra_of(n: dict) -> dict:
-        extra = n.get("extra")
+    def _extra_of(node: dict) -> dict:
+        extra = node.get("extra")
         return extra if isinstance(extra, dict) else {}
 
     if ops["constraints"]:
         lines.append("\n### Active constraints")
-        for c in ops["constraints"][:5 if verbose else 3]:
+        for constraint in ops["constraints"][:5 if verbose else 3]:
             try:
-                extra = _extra_of(c)
-                action = extra.get("action", "warn")
-                lines.append(f"- [{action}] {c['title']}")
+                extra = _extra_of(constraint)
+                lines.append(f"- [{extra.get('action', 'warn')}] {constraint['title']}")
                 if verbose and extra.get("trigger"):
                     lines.append(f"  trigger: {extra['trigger']}")
             except Exception:
@@ -643,33 +735,39 @@ def _append_operational(
 
     if ops["watches"]:
         lines.append("\n### Watches")
-        for w in ops["watches"][:5 if verbose else 3]:
+        for watch in ops["watches"][:5 if verbose else 3]:
             try:
-                extra = _extra_of(w)
-                parts = [f"! {w['title']}"]
+                extra = _extra_of(watch)
+                values = [f"! {watch['title']}"]
                 if extra.get("owner"):
-                    parts.append(f"@{extra['owner']}")
+                    values.append(f"@{extra['owner']}")
                 if extra.get("expires"):
-                    parts.append(f"(expires {extra['expires']})")
-                lines.append(f"- {' '.join(parts)}")
+                    values.append(f"(expires {extra['expires']})")
+                lines.append(f"- {' '.join(values)}")
             except Exception:
                 continue
 
     if verbose and ops["checkpoints"]:
         lines.append("\n### Checkpoints")
-        for cp in ops["checkpoints"][:5]:
+        for checkpoint in ops["checkpoints"][:5]:
             try:
-                trig = _extra_of(cp).get("trigger", "")
-                lines.append(f"- [ ] {cp['title']}" + (f" (trigger: {trig})" if trig else ""))
+                trigger = _extra_of(checkpoint).get("trigger", "")
+                lines.append(
+                    f"- [ ] {checkpoint['title']}"
+                    + (f" (trigger: {trigger})" if trigger else "")
+                )
             except Exception:
                 continue
 
     if verbose and ops["directives"]:
         lines.append("\n### Directives")
-        for d in ops["directives"][:5]:
+        for directive in ops["directives"][:5]:
             try:
-                scope = _extra_of(d).get("scope", "")
-                lines.append(f"- {d['title']}" + (f" [scope: {scope}]" if scope else ""))
+                scope = _extra_of(directive).get("scope", "")
+                lines.append(
+                    f"- {directive['title']}"
+                    + (f" [scope: {scope}]" if scope else "")
+                )
             except Exception:
                 continue
 
@@ -677,7 +775,12 @@ def _append_operational(
 # ── Full tier ─────────────────────────────────────────────────────────
 
 def _format_full(
-    store: Store, results: list[dict], query: str, adapter: str | None = None
+    store: Store,
+    results: list[dict],
+    query: str,
+    adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> str:
     """Full context — everything Kindex knows about the active domain."""
     all_domains = _gather_domains(results)
@@ -724,6 +827,12 @@ def _format_full(
 
     # Open questions
     questions = store.all_nodes(node_type="question", status="active", limit=5)
+    questions = _trusted_context_nodes(
+        store,
+        questions,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
     if questions:
         lines.append("\n### Open questions")
         for q in questions:
@@ -733,6 +842,12 @@ def _format_full(
 
     # Recent decisions (active only — retired decisions stay retired)
     decisions = store.all_nodes(node_type="decision", status="active", limit=5)
+    decisions = _trusted_context_nodes(
+        store,
+        decisions,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
     if decisions:
         lines.append("\n### Recent decisions")
         for d in decisions:
@@ -742,7 +857,14 @@ def _format_full(
                 lines.append(f"  Rationale: {_strip_frontmatter(d['content'])[:200]}")
 
     # Operational nodes
-    _append_operational(store, lines, verbose=True, adapter=adapter)
+    _append_operational(
+        store,
+        lines,
+        verbose=True,
+        adapter=adapter,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
 
     return "\n".join(lines) + "\n"
 
@@ -750,7 +872,12 @@ def _format_full(
 # ── Abridged tier ─────────────────────────────────────────────────────
 
 def _format_abridged(
-    store: Store, results: list[dict], query: str, adapter: str | None = None
+    store: Store,
+    results: list[dict],
+    query: str,
+    adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> str:
     """Abridged — key nodes, trimmed content, edges preserved."""
     all_domains = _gather_domains(results)
@@ -787,6 +914,12 @@ def _format_abridged(
 
     # Open questions (brief)
     questions = store.all_nodes(node_type="question", status="active", limit=3)
+    questions = _trusted_context_nodes(
+        store,
+        questions,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
     if questions:
         lines.append("\n### Open questions")
         for q in questions:
@@ -794,6 +927,12 @@ def _format_abridged(
 
     # Recent decisions (brief; active only)
     decisions = store.all_nodes(node_type="decision", status="active", limit=3)
+    decisions = _trusted_context_nodes(
+        store,
+        decisions,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
     if decisions:
         lines.append("\n### Recent decisions")
         for d in decisions:
@@ -801,7 +940,14 @@ def _format_abridged(
             lines.append(f"- {when}: {d['title']}")
 
     # Active constraints and watches (brief)
-    _append_operational(store, lines, verbose=False, adapter=adapter)
+    _append_operational(
+        store,
+        lines,
+        verbose=False,
+        adapter=adapter,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
 
     return "\n".join(lines) + "\n"
 
@@ -809,7 +955,12 @@ def _format_abridged(
 # ── Summarized tier ───────────────────────────────────────────────────
 
 def _format_summarized(
-    store: Store, results: list[dict], query: str, adapter: str | None = None
+    store: Store,
+    results: list[dict],
+    query: str,
+    adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> str:
     """Summarized — paragraph-form narrative per domain cluster."""
     all_domains = _gather_domains(results)
@@ -841,6 +992,12 @@ def _format_summarized(
 
     # Open questions as a single line
     questions = store.all_nodes(node_type="question", status="active", limit=2)
+    questions = _trusted_context_nodes(
+        store,
+        questions,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
     if questions:
         q_titles = [q["title"] for q in questions]
         lines.append(f"**Open questions:** {'; '.join(q_titles)}")
@@ -851,7 +1008,12 @@ def _format_summarized(
 # ── Executive tier ────────────────────────────────────────────────────
 
 def _format_executive(
-    store: Store, results: list[dict], query: str, adapter: str | None = None
+    store: Store,
+    results: list[dict],
+    query: str,
+    adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> str:
     """Executive — 2-3 sentences per active thread. Minimum to orient."""
     all_domains = _gather_domains(results)
@@ -870,6 +1032,12 @@ def _format_executive(
     block = f"Kindex [{domain_str}]: {'. '.join(summaries)}."
 
     questions = store.all_nodes(node_type="question", status="active", limit=1)
+    questions = _trusted_context_nodes(
+        store,
+        questions,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+    )
     if questions:
         block += f" Open: {questions[0]['title']}"
 
@@ -879,7 +1047,12 @@ def _format_executive(
 # ── Index tier ────────────────────────────────────────────────────────
 
 def _format_index(
-    store: Store, results: list[dict], query: str, adapter: str | None = None
+    store: Store,
+    results: list[dict],
+    query: str,
+    adapter: str | None = None,
+    trusted_only: bool = False,
+    evaluation_time: str | datetime | None = None,
 ) -> str:
     """Index — node titles and edge types only. Just the map."""
     titles = []

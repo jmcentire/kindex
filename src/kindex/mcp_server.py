@@ -59,6 +59,10 @@ mcp = FastMCP(
         "accept append/expires only)\n"
         "- `supersede`: replace an additive node when its content must actually change — "
         "creates a fresh node linked via a supersedes edge, history preserved\n"
+        "- `candidate_list`/`candidate_show`: inspect quarantined automatic captures; "
+        "use `candidate_accept` or `candidate_reject` only after explicit review\n"
+        "- `verify`/`invalidate`: assert verification and valid-time state; use "
+        "`trusted_only=True` on search/context for admission-controlled recall\n"
         "- `link`: when you notice two concepts relate — specify the relationship type "
         "(relates_to, depends_on, implements, contradicts, blocks, context_of)\n"
         "- `learn`: after reading long files/outputs — bulk-extracts multiple concepts at once\n"
@@ -243,6 +247,46 @@ def _json(obj: Any, **kw) -> str:
     return json.dumps(obj, default=default, **kw)
 
 
+def operation_now() -> str:
+    """One normalized UTC instant for a time-dependent MCP operation.
+
+    The seam is intentionally monkeypatchable in-process and is not exposed as
+    an MCP argument.
+    """
+    from datetime import datetime, timezone
+
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _state_error(exc: ValueError) -> str:
+    """Stable machine prefix for state-resilience adapter errors."""
+    from .store import (
+        CandidateNotFoundError,
+        CandidateStateError,
+        InvalidIntervalError,
+        StaleReviewError,
+        TitleCollisionError,
+    )
+
+    if isinstance(exc, CandidateNotFoundError):
+        code = "candidate_not_found"
+    elif isinstance(exc, CandidateStateError):
+        code = "candidate_state"
+    elif isinstance(exc, StaleReviewError):
+        code = "stale_review"
+    elif isinstance(exc, TitleCollisionError):
+        code = "title_collision"
+    elif isinstance(exc, InvalidIntervalError):
+        code = "invalid_interval"
+    else:
+        code = "invalid_input"
+    return f"Error: {code}: {exc}"
+
+
 def _node_summary(node: dict) -> str:
     """One-line summary of a node."""
     ntype = node.get("type", "concept")
@@ -296,7 +340,8 @@ def _node_detail(store, node: dict) -> str:
 
 @_tool()
 def search(query: str, top_k: int = 10, tags: str = "",
-           include_archived: bool = False) -> str:
+           include_archived: bool = False,
+           trusted_only: bool = False) -> str:
     """Search the knowledge graph with hybrid FTS5 + graph traversal.
 
     USE THIS: before starting work on a topic, before adding nodes (to avoid
@@ -310,15 +355,20 @@ def search(query: str, top_k: int = 10, tags: str = "",
         top_k: Maximum results to return.
         tags: Comma-separated tags to filter results (only nodes with these tags).
         include_archived: Include archived nodes (fenced from default search).
+        trusted_only: Admit only current, explicitly verified, non-contradicted
+            knowledge. False preserves ordinary legacy-compatible recall.
     """
     store, _ = _get_store()
     from .retrieve import hybrid_search
 
     fence_stats: dict = {}
     fetch_k = top_k * 3 if tags else top_k
+    evaluation_time = operation_now() if trusted_only else None
     results = hybrid_search(store, query, top_k=fetch_k,
                             include_archived=include_archived,
-                            fence_stats=fence_stats)
+                            fence_stats=fence_stats,
+                            trusted_only=trusted_only,
+                            evaluation_time=evaluation_time)
 
     # The tag filter applies identically to results and fenced candidates
     # so the fence note reflects the same filter set the results use.
@@ -339,9 +389,14 @@ def search(query: str, top_k: int = 10, tags: str = "",
     fence_note = build_fence_note(results, fenced_nodes, top_k,
                                   include_archived,
                                   candidate_count=fence_stats.get("candidate_count", 0))
+    trust_note = ""
+    if trusted_only:
+        from .retrieve import build_trust_note
+        trust_note = build_trust_note(fence_stats.get("trusted_omissions"))
 
     if not results:
-        return "No results found." + (f"\n{fence_note}" if fence_note else "")
+        notes = [note for note in (fence_note, trust_note) if note]
+        return "No results found." + (f"\n{' '.join(notes)}" if notes else "")
 
     from .retrieve import _node_age_str, _staleness_caveat
 
@@ -358,6 +413,8 @@ def search(query: str, top_k: int = 10, tags: str = "",
             lines.append(f"   {content}")
     if fence_note:
         lines.append(fence_note)
+    if trust_note:
+        lines.append(trust_note)
     return "\n".join(lines)
 
 
@@ -528,6 +585,7 @@ def context(
     topic: str = "",
     level: str = "abridged",
     max_tokens: int = 0,
+    trusted_only: bool = False,
 ) -> str:
     """Get a formatted context block for injection into conversation.
 
@@ -535,29 +593,235 @@ def context(
         topic: Topic to search for (auto-detects from cwd if empty).
         level: Context tier (full, abridged, summarized, executive, index).
         max_tokens: Token budget (overrides level with auto-selection if set).
+        trusted_only: Admit only current, explicitly verified,
+            non-contradicted knowledge. False preserves ordinary recall.
     """
     store, _ = _get_store()
-    from .retrieve import format_context_block, hybrid_search
+    from .retrieve import build_trust_note, format_context_block, hybrid_search
     from .store import node_expired, node_retired
+
+    evaluation_time = None
+    fence_stats: dict = {}
+    if trusted_only:
+        evaluation_time = operation_now()
 
     client = _mcp_client()
     if topic:
-        results = hybrid_search(store, topic, top_k=15)
+        results = hybrid_search(
+            store,
+            topic,
+            top_k=15,
+            trusted_only=trusted_only,
+            evaluation_time=evaluation_time,
+            fence_stats=fence_stats,
+        )
     else:
         # Fall back to recent high-weight nodes (skip expired and
         # retired knowledge — archived/superseded stays retired here too)
-        results = [r for r in store.recent_nodes(n=15)
-                   if not node_expired(r) and not node_retired(r)]
+        recent = store.recent_nodes(n=15)
+        if trusted_only:
+            from .trust import parse_rfc3339
+            today = parse_rfc3339(
+                evaluation_time, field="evaluation_time"
+            ).date().isoformat()
+            expired_count = sum(
+                1 for result in recent if node_expired(result, today=today)
+            )
+            inactive_count = sum(
+                1 for result in recent
+                if not node_expired(result, today=today) and node_retired(result)
+            )
+            results = [
+                result for result in recent
+                if not node_expired(result, today=today) and not node_retired(result)
+            ]
+        else:
+            results = [
+                result for result in recent
+                if not node_expired(result) and not node_retired(result)
+            ]
+        if trusted_only:
+            from .trust import filter_trusted_nodes
+            results, omissions = filter_trusted_nodes(
+                store, results, at=evaluation_time
+            )
+            omissions["invalidated"] = (
+                omissions.get("invalidated", 0) + expired_count
+            )
+            omissions["inactive"] = omissions.get("inactive", 0) + inactive_count
+            fence_stats["trusted_omissions"] = omissions
     results = _scope_results(results, client)
 
     if not results:
-        return "No relevant knowledge found."
+        result = "No relevant knowledge found."
+        if trusted_only:
+            result += "\n" + build_trust_note(fence_stats.get("trusted_omissions"))
+        return result
 
     kwargs = {"level": level}
     if max_tokens > 0:
         kwargs = {"max_tokens_approx": max_tokens}
 
-    return format_context_block(store, results, query=topic, adapter=client, **kwargs)
+    result = format_context_block(
+        store,
+        results,
+        query=topic,
+        adapter=client,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+        **kwargs,
+    )
+    if trusted_only:
+        result = result.rstrip() + "\n" + build_trust_note(
+            fence_stats.get("trusted_omissions")
+        )
+    return result
+
+
+@_tool()
+def candidate_list(status: str = "", limit: int = 20) -> Any:
+    """List quarantined automatic-capture receipts without payload fields.
+
+    Args:
+        status: Optional pending/conflicted/accepted/rejected/expired filter.
+        limit: Maximum receipts to return.
+    """
+    store, _ = _get_store()
+    try:
+        return store.list_capture_candidates(status=status, limit=limit)
+    except ValueError as exc:
+        return _state_error(exc)
+
+
+@_tool()
+def candidate_show(candidate_id: str) -> Any:
+    """Show the exact untrusted candidate payload plus its freshness token.
+
+    The returned token proves snapshot freshness only. It is not caller
+    authentication, authorization, or proof of reviewer identity.
+    """
+    store, _ = _get_store()
+    candidate = store.get_capture_candidate(candidate_id)
+    if candidate is None:
+        from .store import CandidateNotFoundError
+        return _state_error(CandidateNotFoundError(f"Candidate not found: {candidate_id}"))
+    candidate["review_token"] = store.candidate_review_token(candidate_id)
+    return candidate
+
+
+@_tool()
+def candidate_accept(
+    candidate_id: str,
+    review_token: str,
+    reviewed_by: str,
+    prov_method: str,
+    valid_at: str = "",
+    invalid_at: str = "",
+) -> Any:
+    """Accept a fresh candidate with asserted reviewer and verification method."""
+    store, _ = _get_store()
+    operation_instant = operation_now()
+    try:
+        return store.accept_capture_candidate(
+            candidate_id,
+            review_token=review_token,
+            reviewed_by=reviewed_by,
+            prov_method=prov_method,
+            valid_at=valid_at or None,
+            invalid_at=invalid_at or None,
+            now=operation_instant,
+        )
+    except ValueError as exc:
+        return _state_error(exc)
+
+
+@_tool()
+def candidate_reject(
+    candidate_id: str,
+    reviewed_by: str,
+    code: str,
+) -> Any:
+    """Reject and minimize a live capture candidate."""
+    store, _ = _get_store()
+    operation_instant = operation_now()
+    try:
+        return store.reject_capture_candidate(
+            candidate_id,
+            reviewed_by=reviewed_by,
+            disposition_code=code,
+            now=operation_instant,
+        )
+    except ValueError as exc:
+        return _state_error(exc)
+
+
+@_tool()
+def candidate_prune() -> Any:
+    """Expire due pending/conflicted candidates; never promotes knowledge."""
+    store, _ = _get_store()
+    operation_instant = operation_now()
+    try:
+        return {"pruned": store.prune_capture_candidates(now=operation_instant)}
+    except ValueError as exc:
+        return _state_error(exc)
+
+
+@_tool()
+def candidate_erase(candidate_id: str) -> Any:
+    """Erase a candidate or minimized review receipt by exact ID."""
+    store, _ = _get_store()
+    return {"id": candidate_id, "erased": store.erase_capture_candidate(candidate_id)}
+
+
+@_tool()
+def verify(
+    node_id: str,
+    verified_by: str,
+    prov_method: str,
+    verified_at: str = "",
+    valid_at: str = "",
+    invalid_at: str = "",
+) -> Any:
+    """Assert node verification and an optional half-open valid interval.
+
+    Reviewer identity is asserted audit text within the local trust boundary;
+    this tool does not authenticate it.
+    """
+    store, _ = _get_store()
+    operation_instant = operation_now()
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if node is None:
+        return "Error: invalid_input: Node not found: " + node_id
+    try:
+        return store.verify_node(
+            node["id"],
+            verified_by=verified_by,
+            prov_method=prov_method,
+            verified_at=verified_at or operation_instant,
+            valid_at=valid_at or None,
+            invalid_at=invalid_at or None,
+        )
+    except ValueError as exc:
+        return _state_error(exc)
+
+
+@_tool()
+def invalidate(node_id: str, invalidated_by: str, code: str, at: str = "") -> Any:
+    """Set a node's exclusive valid-time end without deleting it."""
+    store, _ = _get_store()
+    operation_instant = operation_now()
+    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    if node is None:
+        return "Error: invalid_input: Node not found: " + node_id
+    try:
+        return store.invalidate_node(
+            node["id"],
+            invalidated_by=invalidated_by,
+            disposition_code=code,
+            invalid_at=at or operation_instant,
+        )
+    except ValueError as exc:
+        return _state_error(exc)
 
 
 @_tool()
@@ -1446,7 +1710,9 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
 
     Args:
         name: Tag name to resume (shows active/paused tags if empty).
-        tokens: Token budget for context block.
+        tokens: Exact UTF-8 byte budget for the resume block. The argument name
+            is retained for compatibility; provider-token guarantees require a
+            direct library caller to supply that provider's exact counter.
     """
     store, _ = _get_store()
     from .sessions import format_resume_context, list_tags
@@ -1464,7 +1730,12 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
                          f"{extra.get('current_focus', '')[:60]}")
         return "\n".join(lines)
 
-    return format_resume_context(store, name, max_tokens=tokens)
+    return format_resume_context(
+        store,
+        name,
+        max_tokens=tokens,
+        evaluation_time=operation_now(),
+    )
 
 
 # ── Tasks ─────────────────────────────────────────────────────────────

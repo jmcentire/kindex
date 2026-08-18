@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Audience scopes for tenancy model
 AUDIENCES = ("private", "team", "org", "public")
@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     prov_activity TEXT NOT NULL DEFAULT '', -- meeting / debug-session / etc.
     prov_why TEXT NOT NULL DEFAULT '',      -- what question prompted capture
     prov_source TEXT NOT NULL DEFAULT '',   -- url / file path / session id
+    -- explicit trust assertions (NULL means legacy/unverified)
+    verified_at TEXT,
+    verified_by TEXT,
+    prov_method TEXT,
+    valid_at TEXT,
+    invalid_at TEXT,
     -- scoring
     weight REAL NOT NULL DEFAULT 0.5,
     domains TEXT NOT NULL DEFAULT '',       -- JSON array
@@ -99,6 +105,7 @@ CREATE TABLE IF NOT EXISTS edges (
     weight REAL NOT NULL DEFAULT 0.5,
     provenance TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT '',
     UNIQUE(from_id, to_id, type)
 );
 
@@ -162,6 +169,7 @@ CREATE TABLE IF NOT EXISTS suggestions (
     concept_b TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'bridge',
     status TEXT NOT NULL DEFAULT 'pending',  -- pending/accepted/rejected
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -171,6 +179,40 @@ CREATE INDEX IF NOT EXISTS idx_suggestions_status_created
     ON suggestions(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_suggestions_status_pair
     ON suggestions(status, concept_a, concept_b);
+
+-- Automatic extraction is staged here for explicit review. Candidate rows are
+-- deliberately separate from nodes/edges/FTS so no query can accidentally
+-- promote or recall unreviewed material.
+CREATE TABLE IF NOT EXISTS capture_candidates (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    content TEXT,
+    node_type TEXT,
+    domains TEXT,
+    connections TEXT,
+    source_digest TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    reviewed_by TEXT,
+    review_method TEXT,
+    disposition_code TEXT,
+    conflict_ids TEXT NOT NULL DEFAULT '[]',
+    conflict_codes TEXT NOT NULL DEFAULT '[]',
+    created_node_id TEXT,
+    CHECK (status IN ('pending','conflicted','accepted','rejected','expired'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_candidates_status_created
+    ON capture_candidates(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_capture_candidates_status_expires
+    ON capture_candidates(status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_candidates_live_payload
+    ON capture_candidates(payload_digest)
+    WHERE status IN ('pending', 'conflicted');
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS meta (

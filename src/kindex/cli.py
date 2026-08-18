@@ -28,6 +28,19 @@ def _dumps(obj, **kw):
     return json.dumps(obj, default=_json_default, **kw)
 
 
+def operation_now() -> str:
+    """One normalized UTC instant for a time-dependent CLI operation.
+
+    This module seam is intentionally monkeypatchable in-process, but it is not
+    exposed as a command-line option.
+    """
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 def _config(args):
     from .config import load_config
     try:
@@ -81,12 +94,16 @@ def cmd_search(args):
     store = _store(args)
     query = " ".join(args.query)
     include_archived = bool(getattr(args, "include_archived", False))
+    trusted_only = bool(getattr(args, "trusted_only", False))
+    evaluation_time = operation_now() if trusted_only else None
 
     from .retrieve import hybrid_search
     fence_stats: dict = {}
     results = hybrid_search(store, query, top_k=args.top_k,
                             include_archived=include_archived,
-                            fence_stats=fence_stats)
+                            fence_stats=fence_stats,
+                            trusted_only=trusted_only,
+                            evaluation_time=evaluation_time)
 
     # Post-filters apply identically to results and fenced candidates so
     # the fence note reflects the same filter set the results use.
@@ -120,6 +137,10 @@ def cmd_search(args):
     fence_note = build_fence_note(results, fenced_nodes, args.top_k,
                                   include_archived,
                                   candidate_count=fence_stats.get("candidate_count", 0))
+    trust_note = ""
+    if trusted_only:
+        from .retrieve import build_trust_note
+        trust_note = build_trust_note(fence_stats.get("trusted_omissions"))
 
     if not results:
         print("No results.", file=sys.stderr)
@@ -128,6 +149,8 @@ def cmd_search(args):
                 print(fence_note, file=sys.stderr)
             else:
                 print(fence_note)
+        if trust_note and not args.json:
+            print(trust_note)
         return
 
     if args.json:
@@ -159,6 +182,8 @@ def cmd_search(args):
             print()
         if fence_note:
             print(fence_note)
+        if trust_note:
+            print(trust_note)
 
     store.close()
 
@@ -190,7 +215,17 @@ def cmd_context(args):
     level = getattr(args, "level", None)
     tokens = getattr(args, "tokens", None)
 
-    results = hybrid_search(store, topic, top_k=args.depth or 10)
+    trusted_only = bool(getattr(args, "trusted_only", False))
+    evaluation_time = operation_now() if trusted_only else None
+    fence_stats: dict = {}
+    results = hybrid_search(
+        store,
+        topic,
+        top_k=args.depth or 10,
+        trusted_only=trusted_only,
+        evaluation_time=evaluation_time,
+        fence_stats=fence_stats,
+    )
 
     if args.format == "json":
         tier = level or auto_select_tier(tokens)
@@ -199,10 +234,229 @@ def cmd_context(args):
         } for r in results]}, indent=2))
     else:
         block = format_context_block(store, results, query=topic,
-                                     level=level, max_tokens_approx=tokens)
+                                     level=level, max_tokens_approx=tokens,
+                                     trusted_only=trusted_only,
+                                     evaluation_time=evaluation_time)
+        if trusted_only:
+            from .retrieve import build_trust_note
+            block = block.rstrip() + "\n" + build_trust_note(
+                fence_stats.get("trusted_omissions")
+            )
         print(block)
 
     store.close()
+
+
+# ── state-resilience review and trust surfaces ───────────────────────
+
+def _state_error_code(exc: ValueError) -> str:
+    from .store import (
+        CandidateNotFoundError,
+        CandidateStateError,
+        InvalidIntervalError,
+        StaleReviewError,
+        TitleCollisionError,
+    )
+
+    if isinstance(exc, CandidateNotFoundError):
+        return "candidate_not_found"
+    if isinstance(exc, CandidateStateError):
+        return "candidate_state"
+    if isinstance(exc, StaleReviewError):
+        return "stale_review"
+    if isinstance(exc, TitleCollisionError):
+        return "title_collision"
+    if isinstance(exc, InvalidIntervalError):
+        return "invalid_interval"
+    return "invalid_input"
+
+
+def _print_state_error(exc: ValueError) -> None:
+    print(f"Error: {_state_error_code(exc)}: {exc}", file=sys.stderr)
+
+
+def _neutralize_untrusted(value: object, *, keep_layout: bool = False) -> str:
+    """Make hostile candidate text inert on a human terminal."""
+    text = str(value if value is not None else "")
+    chars: list[str] = []
+    for char in text:
+        code = ord(char)
+        if keep_layout and char in ("\n", "\t"):
+            chars.append(char)
+        elif code < 32 or 127 <= code <= 159:
+            chars.append(f"\\u{code:04x}")
+        else:
+            chars.append(char)
+    return "".join(chars)
+
+
+def _candidate_show_payload(store, candidate_id: str) -> dict:
+    candidate = store.get_capture_candidate(candidate_id)
+    if candidate is None:
+        from .store import CandidateNotFoundError
+
+        raise CandidateNotFoundError(f"Candidate not found: {candidate_id}")
+    candidate["review_token"] = store.candidate_review_token(candidate_id)
+    return candidate
+
+
+def _print_candidate_human(candidate: dict) -> None:
+    print("=== BEGIN UNTRUSTED CAPTURE CANDIDATE ===")
+    print(f"ID: {_neutralize_untrusted(candidate.get('id'))}")
+    print(f"Status: {_neutralize_untrusted(candidate.get('status'))}")
+    print(f"Created: {_neutralize_untrusted(candidate.get('created_at'))}")
+    print(f"Expires: {_neutralize_untrusted(candidate.get('expires_at'))}")
+    if candidate.get("title") is not None:
+        print(f"Title: {_neutralize_untrusted(candidate.get('title'))}")
+        print(f"Type: {_neutralize_untrusted(candidate.get('node_type'))}")
+        print(f"Domains: {_neutralize_untrusted(_dumps(candidate.get('domains') or []))}")
+        print("Content:")
+        print("--- BEGIN CANDIDATE CONTENT ---")
+        print(_neutralize_untrusted(candidate.get("content"), keep_layout=True))
+        print("--- END CANDIDATE CONTENT ---")
+        print(
+            "Connections: "
+            + _neutralize_untrusted(_dumps(candidate.get("connections") or []))
+        )
+    print(f"Source digest: {candidate.get('source_digest', '')}")
+    print(f"Payload digest: {candidate.get('payload_digest', '')}")
+    print(f"Conflict IDs: {_dumps(candidate.get('conflict_ids') or [])}")
+    print(f"Conflict codes: {_dumps(candidate.get('conflict_codes') or [])}")
+    if candidate.get("created_node_id"):
+        print(f"Created node: {candidate['created_node_id']}")
+    print(f"Review token: {candidate.get('review_token', '')}")
+    print("=== END UNTRUSTED CAPTURE CANDIDATE ===")
+
+
+def cmd_candidate(args):
+    """Review quarantined automatic-capture candidates."""
+    store = _store(args)
+    action = args.candidate_action
+    candidate_id = getattr(args, "candidate_id", None)
+    operation_instant = (
+        operation_now() if action in ("accept", "reject", "prune") else None
+    )
+    try:
+        if action == "list":
+            result = store.list_capture_candidates(
+                status=getattr(args, "status", "") or "",
+                limit=getattr(args, "limit", 20),
+            )
+            if args.json:
+                print(_dumps(result, indent=2))
+            elif not result:
+                print("No capture candidates.")
+            else:
+                for candidate in result:
+                    print(
+                        f"[{candidate['status']}] {candidate['id']} "
+                        f"created={candidate['created_at']} expires={candidate['expires_at']}"
+                    )
+            return
+        if not candidate_id and action != "prune":
+            raise ValueError(f"candidate ID is required for {action}")
+        if action == "show":
+            result = _candidate_show_payload(store, candidate_id)
+        elif action == "accept":
+            result = store.accept_capture_candidate(
+                candidate_id,
+                review_token=getattr(args, "review_token", None) or "",
+                reviewed_by=getattr(args, "by", None) or "",
+                prov_method=getattr(args, "method", None) or "",
+                valid_at=getattr(args, "valid_at", None),
+                invalid_at=getattr(args, "invalid_at", None),
+                now=operation_instant,
+            )
+        elif action == "reject":
+            result = store.reject_capture_candidate(
+                candidate_id,
+                reviewed_by=getattr(args, "by", None) or "",
+                disposition_code=getattr(args, "code", None) or "",
+                now=operation_instant,
+            )
+        elif action == "prune":
+            count = store.prune_capture_candidates(now=operation_instant)
+            result = {"pruned": count}
+        elif action == "erase":
+            result = {"id": candidate_id, "erased": store.erase_capture_candidate(candidate_id)}
+        else:
+            raise ValueError(f"Unknown candidate action: {action}")
+
+        if args.json:
+            print(_dumps(result, indent=2))
+        elif action == "show":
+            _print_candidate_human(result)
+        elif action == "accept" and result.get("status") == "conflicted":
+            print(
+                f"Candidate {candidate_id} remains conflicted: "
+                f"{', '.join(result.get('conflict_codes') or [])}"
+            )
+        elif action == "accept":
+            print(f"Accepted {candidate_id} -> node {result.get('created_node_id')}")
+        elif action == "reject":
+            print(f"Rejected {candidate_id}")
+        elif action == "prune":
+            print(f"Expired {result['pruned']} capture candidate(s).")
+        elif action == "erase":
+            print(f"Erased {candidate_id}: {result['erased']}")
+    except ValueError as exc:
+        _print_state_error(exc)
+    finally:
+        store.close()
+
+
+def _resolve_cli_node(store, identity: str) -> dict:
+    node = store.get_node(identity) or store.get_node_by_title(identity)
+    if node is None:
+        raise ValueError(f"Node not found: {identity}")
+    return node
+
+
+def cmd_verify(args):
+    store = _store(args)
+    operation_instant = operation_now()
+    try:
+        node = _resolve_cli_node(store, args.node)
+        result = store.verify_node(
+            node["id"],
+            verified_by=args.by or "",
+            prov_method=args.method or "",
+            verified_at=getattr(args, "verified_at", None) or operation_instant,
+            valid_at=getattr(args, "valid_at", None),
+            invalid_at=getattr(args, "invalid_at", None),
+        )
+        if args.json:
+            print(_dumps(result, indent=2))
+        else:
+            print(
+                f"Verified {result['id']} by {result['verified_by']} "
+                f"via {result['prov_method']} at {result['verified_at']}"
+            )
+    except ValueError as exc:
+        _print_state_error(exc)
+    finally:
+        store.close()
+
+
+def cmd_invalidate(args):
+    store = _store(args)
+    operation_instant = operation_now()
+    try:
+        node = _resolve_cli_node(store, args.node)
+        result = store.invalidate_node(
+            node["id"],
+            invalidated_by=args.by or "",
+            disposition_code=args.code or "",
+            invalid_at=getattr(args, "at", None) or operation_instant,
+        )
+        if args.json:
+            print(_dumps(result, indent=2))
+        else:
+            print(f"Invalidated {result['id']} at {result['invalid_at']}")
+    except ValueError as exc:
+        _print_state_error(exc)
+    finally:
+        store.close()
 
 
 # ── add ────────────────────────────────────────────────────────────────
@@ -1474,7 +1728,7 @@ def cmd_decay(args):
 def cmd_compact_hook(args):
     """Pre-compact hook: capture session discoveries before context compaction.
 
-    Reads from stdin or --text, extracts knowledge, and adds to graph.
+    Reads from stdin or --text, extracts knowledge, and stages review candidates.
     Designed to be called by Claude Code's PreCompact hook.
     """
     store = _store(args)
@@ -1546,35 +1800,73 @@ def cmd_compact_hook(args):
     from .extract import extract
 
     existing = [n["title"] for n in store.all_nodes(limit=200)]
-    extraction = extract(text, existing, cfg, ledger)
+    try:
+        extraction = extract(text, existing, cfg, ledger)
+    except Exception as exc:
+        try:
+            from .config import record_degraded
+            record_degraded("compact-hook-extract", exc, config=cfg)
+        except Exception:
+            pass
+        store.close()
+        return
 
-    count = 0
-    for concept in extraction.get("concepts", []):
-        # Keyword fallback emits title-only concepts (useful for linking,
-        # not worth minting) — never create content-empty nodes here.
-        if not (concept.get("content") or "").strip():
+    import hashlib
+
+    source_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    staged_ids: list[str] = []
+    proposals = extraction.get("connections", [])
+    if not isinstance(proposals, list):
+        proposals = []
+    concepts = extraction.get("concepts", [])
+    if not isinstance(concepts, list):
+        concepts = []
+    capture_instant = operation_now()
+    for concept in concepts:
+        if not isinstance(concept, dict):
             continue
-        if not store.get_node_by_title(concept["title"]):
-            store.add_node(
-                title=concept["title"],
-                content=concept.get("content", ""),
-                node_type=concept.get("type", "concept"),
-                domains=concept.get("domains", []),
-                prov_activity="compact-hook",
-                prov_source="pre-compact",
+        # Keyword fallback emits title-only concepts (useful for linking,
+        # not worth staging) — never create content-empty candidates.
+        content = concept.get("content") or ""
+        title = concept.get("title") or ""
+        if not isinstance(content, str) or not content.strip() or not isinstance(title, str):
+            continue
+        title_key = title.strip().casefold()
+        related_proposals = [
+            proposal for proposal in proposals
+            if isinstance(proposal, dict)
+            and (
+                str(proposal.get("from_title", "")).strip().casefold() == title_key
+                or str(proposal.get("to_title", "")).strip().casefold() == title_key
             )
-            count += 1
+        ]
+        try:
+            staged_ids.append(
+                store.add_capture_candidate(
+                    title=title,
+                    content=content,
+                    node_type=concept.get("type", "concept"),
+                    domains=concept.get("domains", []),
+                    connections=related_proposals,
+                    source_digest=source_digest,
+                    now=capture_instant,
+                )
+            )
+        except Exception as exc:
+            # Host compaction must continue, and failure must never fall back to
+            # durable node/edge creation.
+            try:
+                from .config import record_degraded
+                record_degraded("compact-hook-candidate", exc, config=cfg)
+            except Exception:
+                pass
 
-    for conn in extraction.get("connections", []):
-        from_node = store.get_node_by_title(conn.get("from_title", ""))
-        to_node = store.get_node_by_title(conn.get("to_title", ""))
-        if from_node and to_node:
-            store.add_edge(from_node["id"], to_node["id"],
-                           edge_type=conn.get("type", "relates_to"),
-                           provenance="compact-hook")
+    count = len(staged_ids)
 
     # Output context at executive level for re-injection after compaction
     if count > 0 or args.emit_context:
+        if count > 0:
+            print(f"# Kindex: staged {count} capture candidate(s) for review.")
         from .retrieve import format_context_block, hybrid_search
         topic = text[:100].split("\n")[0]
         results = hybrid_search(store, topic, top_k=5)
@@ -3175,6 +3467,9 @@ def cmd_cron(args):
         w_notified = results.get("watches_notified", 0)
         if w_expired or w_notified:
             print(f"  Watches:           {w_expired} expired, {w_notified} boosted")
+        candidate_pruned = results.get("capture_candidates_pruned", 0)
+        if candidate_pruned:
+            print(f"  Capture review:    {candidate_pruned} expired candidate(s) pruned")
         stats = results.get("stats", {})
         print(f"  Graph: {stats.get('nodes', 0)} nodes, "
               f"{stats.get('edges', 0)} edges, "
@@ -4988,8 +5283,15 @@ def cmd_tag(args):
             print("Usage: kin tag resume <name>", file=sys.stderr)
             store.close()
             return
-        tokens = getattr(args, "tokens", 1500) or 1500
-        block = format_resume_context(store, tag_name, max_tokens=tokens)
+        tokens = getattr(args, "tokens", 1500)
+        if tokens is None:
+            tokens = 1500
+        block = format_resume_context(
+            store,
+            tag_name,
+            max_tokens=tokens,
+            evaluation_time=operation_now(),
+        )
         print(block)
 
     elif action == "list":
@@ -5867,6 +6169,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mine", action="store_true", help="Only my nodes")
     s.add_argument("--include-archived", action="store_true",
                    help="Include archived nodes (fenced from default search)")
+    s.add_argument(
+        "--trusted-only",
+        action="store_true",
+        help=(
+            "Admission-control results to current explicitly verified knowledge; "
+            "default search remains legacy-compatible recall"
+        ),
+    )
     _common(s)
     s.set_defaults(func=cmd_search)
 
@@ -5878,8 +6188,59 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Context tier (auto-selects if omitted)")
     s.add_argument("--tokens", type=int, help="Available token budget (auto-selects tier)")
     s.add_argument("--format", choices=["claude", "raw", "json"], default="claude")
+    s.add_argument(
+        "--trusted-only",
+        action="store_true",
+        help=(
+            "Admission-control context to current explicitly verified knowledge; "
+            "default context remains recall"
+        ),
+    )
     _common(s)
     s.set_defaults(func=cmd_context)
+
+    # quarantined automatic-capture review
+    s = sub.add_parser(
+        "candidate",
+        help="List, inspect, review, prune, or erase quarantined captures",
+    )
+    s.add_argument(
+        "candidate_action",
+        choices=["list", "show", "accept", "reject", "prune", "erase"],
+    )
+    s.add_argument("candidate_id", nargs="?")
+    s.add_argument(
+        "--status",
+        choices=["pending", "conflicted", "accepted", "rejected", "expired"],
+        help="Candidate status filter (list)",
+    )
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--review-token", help="Freshness token returned by candidate show")
+    s.add_argument("--by", help="Asserted reviewer identifier")
+    s.add_argument("--method", help="Asserted verification method")
+    s.add_argument("--code", help="Bounded machine disposition code")
+    s.add_argument("--valid-at", help="Validity start (timezone-aware RFC 3339)")
+    s.add_argument("--invalid-at", help="Exclusive validity end (timezone-aware RFC 3339)")
+    _common(s)
+    s.set_defaults(func=cmd_candidate)
+
+    s = sub.add_parser("verify", help="Assert verification and optional valid time for a node")
+    s.add_argument("node", help="Node ID or exact title")
+    s.add_argument("--by", required=True, help="Asserted reviewer identifier")
+    s.add_argument("--method", required=True, help="Asserted verification method")
+    s.add_argument("--verified-at", help="Verification time (timezone-aware RFC 3339)")
+    s.add_argument("--valid-at", help="Validity start (timezone-aware RFC 3339)")
+    s.add_argument("--invalid-at", help="Exclusive validity end (timezone-aware RFC 3339)")
+    _common(s)
+    s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("invalidate", help="Set a node's exclusive valid-time end")
+    s.add_argument("node", help="Node ID or exact title")
+    s.add_argument("--by", required=True, help="Asserted actor identifier")
+    s.add_argument("--code", required=True, help="Bounded machine disposition code")
+    s.add_argument("--at", help="Invalidation time (timezone-aware RFC 3339)")
+    _common(s)
+    s.set_defaults(func=cmd_invalidate)
 
     # add
     s = sub.add_parser("add", help="Quick capture with auto-linking")
@@ -6508,7 +6869,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--done", help="Mark items as done / remove from remaining (comma-separated)")
     s.add_argument("--status", help="Filter by status (for list: active/paused/completed)")
     s.add_argument("--project", action="store_true", help="Filter by current project (for list)")
-    s.add_argument("--tokens", type=int, default=1500, help="Token budget for resume context")
+    s.add_argument(
+        "--tokens",
+        type=int,
+        default=1500,
+        help=(
+            "Resume budget in exact UTF-8 bytes (legacy flag name; "
+            "library callers may supply an exact provider counter)"
+        ),
+    )
     _common(s)
     s.set_defaults(func=cmd_tag)
 

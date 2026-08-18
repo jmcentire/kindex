@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import hmac
 import json
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,11 +26,15 @@ def _jdumps(obj):
     return json.dumps(obj, default=_json_default)
 
 from .config import Config
-from .schema import CREATE_TABLES, SCHEMA_VERSION, edit_class_for
+from .schema import ALL_NODE_TYPES, CREATE_TABLES, EDGE_TYPES, SCHEMA_VERSION, edit_class_for
 
 
 def _now() -> str:
     return datetime.now(tz=None).isoformat(timespec="seconds")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _uuid() -> str:
@@ -47,6 +53,26 @@ class ProfileMismatchError(RuntimeError):
     """The database is stamped for a different profile than the active one."""
 
 
+class CandidateNotFoundError(ValueError):
+    """A capture candidate does not exist."""
+
+
+class CandidateStateError(ValueError):
+    """A capture candidate is expired or already terminal."""
+
+
+class StaleReviewError(ValueError):
+    """The supplied candidate review token no longer matches durable state."""
+
+
+class TitleCollisionError(ValueError):
+    """Automated promotion would collide with an existing durable title."""
+
+
+class InvalidIntervalError(ValueError):
+    """A valid-time or evaluation-time value violates the UTC contract."""
+
+
 # Extra-JSON keys owned by dedicated subsystems (tasks, sessions,
 # coordination, locks). edit_node must never alter these.
 RESERVED_EXTRA_KEYS = frozenset({
@@ -56,6 +82,17 @@ RESERVED_EXTRA_KEYS = frozenset({
 
 _EXPIRES_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DIFF_TRUNCATE = 500
+_CAPTURE_CONTENT_LIMIT = 4000
+_CAPTURE_TITLE_LIMIT = 500
+_CAPTURE_WHY_LIMIT = 2000
+_AUDIT_TEXT_LIMIT = 128
+_LIVE_CANDIDATE_STATUSES = ("pending", "conflicted")
+_ALL_CANDIDATE_STATUSES = _LIVE_CANDIDATE_STATUSES + (
+    "accepted", "rejected", "expired",
+)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_TERMINAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_ANY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 # Lock-error remedy for the supersede path: neither `kin supersede` nor the
 # MCP supersede tool exposes a force flag (per contract), so the message must
@@ -84,6 +121,50 @@ def _trunc(value: Any, limit: int = _DIFF_TRUNCATE) -> str | None:
         return None
     s = value if isinstance(value, str) else _jdumps(value)
     return s if len(s) <= limit else s[:limit]
+
+
+def _canonical_dumps(value: Any) -> str:
+    """Canonical UTF-8 JSON text used for capture and review digests."""
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_default,
+    )
+
+
+def _clean_audit_text(value: str, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{field} must not be empty")
+    if len(cleaned) > _AUDIT_TEXT_LIMIT:
+        raise ValueError(f"{field} must be at most {_AUDIT_TEXT_LIMIT} characters")
+    if _ANY_CONTROL_RE.search(cleaned):
+        raise ValueError(f"{field} must not contain control characters")
+    return cleaned
+
+
+def _clean_capture_text(
+    value: str,
+    *,
+    field: str,
+    limit: int,
+    content: bool = False,
+) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{field} must not be empty")
+    if len(cleaned) > limit:
+        raise ValueError(f"{field} must be at most {limit} characters")
+    controls = _TERMINAL_CONTROL_RE if content else _ANY_CONTROL_RE
+    if controls.search(cleaned):
+        raise ValueError(f"{field} must not contain terminal control characters")
+    return cleaned
 
 
 def active_lock(node: dict) -> dict | None:
@@ -137,14 +218,21 @@ class Store:
     human-readable canonical source; the store indexes them.
     """
 
-    def __init__(self, config: Config, *, sqlite_timeout: float = 5.0):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        sqlite_timeout: float = 5.0,
+        migration_step_hook: Callable[[int, str], None] | None = None,
+    ):
         self.config = config
-                # Support both kindex.db (new) and conv.db (legacy)
+        # Support both kindex.db (new) and conv.db (legacy)
         new_db = config.data_path / "kindex.db"
         old_db = config.data_path / "conv.db"
         self.db_path = old_db if old_db.exists() and not new_db.exists() else new_db
         self._conn: sqlite3.Connection | None = None
         self._sqlite_timeout = max(0.0, float(sqlite_timeout))
+        self._migration_step_hook = migration_step_hook
         # Profile stamp guard: configs that carry an active_profile (added by
         # the profiles feature) bind this database to that profile name.
         self._expected_profile: str | None = getattr(config, "active_profile", None)
@@ -215,6 +303,9 @@ class Store:
                 current = int(row["value"])
                 if current < SCHEMA_VERSION:
                     self._migrate_schema(current)
+                # An already-current store performs no DDL on reopen. An
+                # upgraded store was fully verified inside its transaction.
+                return
         elif self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'"
         ).fetchone() is not None:
@@ -228,6 +319,7 @@ class Store:
             )
             self._conn.commit()
             self._migrate_schema(1)
+            return
 
         # Now safe to apply full schema (IF NOT EXISTS is idempotent
         # once columns are up to date).
@@ -366,12 +458,141 @@ class Store:
             except Exception:
                 pass
 
-        if current_version < SCHEMA_VERSION:
-            c.execute(
+        if current_version < 8:
+            self._migrate_v8()
+
+    def _migrate_v8(self) -> None:
+        """Atomically upgrade a version-7 store to the state-resilience schema.
+
+        Every v8 mutation, metadata verification, and version-stamp write shares
+        one ``BEGIN IMMEDIATE`` transaction. ``BaseException`` is intentional:
+        injected failures and cancellation must roll back just as reliably as a
+        normal SQLite error.
+        """
+        c = self._conn
+        step_index = 0
+
+        def execute(label: str, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+            nonlocal step_index
+            if self._migration_step_hook is not None:
+                self._migration_step_hook(step_index, label)
+            step_index += 1
+            return c.execute(sql, params)
+
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            execute("nodes.add_verified_at", "ALTER TABLE nodes ADD COLUMN verified_at TEXT")
+            execute("nodes.add_verified_by", "ALTER TABLE nodes ADD COLUMN verified_by TEXT")
+            execute("nodes.add_prov_method", "ALTER TABLE nodes ADD COLUMN prov_method TEXT")
+            execute("nodes.add_valid_at", "ALTER TABLE nodes ADD COLUMN valid_at TEXT")
+            execute("nodes.add_invalid_at", "ALTER TABLE nodes ADD COLUMN invalid_at TEXT")
+            execute(
+                "edges.add_updated_at",
+                "ALTER TABLE edges ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+            )
+            execute(
+                "edges.backfill_updated_at",
+                "UPDATE edges SET updated_at = created_at WHERE updated_at = ''",
+            )
+            execute(
+                "suggestions.add_kind",
+                "ALTER TABLE suggestions ADD COLUMN kind TEXT NOT NULL DEFAULT 'bridge'",
+            )
+            execute(
+                "suggestions.backfill_kind",
+                "UPDATE suggestions SET kind = 'bridge' WHERE kind IS NULL OR kind = ''",
+            )
+            execute(
+                "candidates.create_table",
+                """CREATE TABLE capture_candidates (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    content TEXT,
+                    node_type TEXT,
+                    domains TEXT,
+                    connections TEXT,
+                    source_digest TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    reviewed_at TEXT,
+                    reviewed_by TEXT,
+                    review_method TEXT,
+                    disposition_code TEXT,
+                    conflict_ids TEXT NOT NULL DEFAULT '[]',
+                    conflict_codes TEXT NOT NULL DEFAULT '[]',
+                    created_node_id TEXT,
+                    CHECK (status IN ('pending','conflicted','accepted','rejected','expired'))
+                )""",
+            )
+            execute(
+                "candidates.index_status_created",
+                "CREATE INDEX idx_capture_candidates_status_created "
+                "ON capture_candidates(status, created_at DESC)",
+            )
+            execute(
+                "candidates.index_status_expires",
+                "CREATE INDEX idx_capture_candidates_status_expires "
+                "ON capture_candidates(status, expires_at)",
+            )
+            execute(
+                "candidates.index_live_payload",
+                "CREATE UNIQUE INDEX idx_capture_candidates_live_payload "
+                "ON capture_candidates(payload_digest) "
+                "WHERE status IN ('pending', 'conflicted')",
+            )
+
+            node_cols = {
+                row["name"] for row in execute(
+                    "verify.nodes_columns", "PRAGMA table_info(nodes)"
+                ).fetchall()
+            }
+            if not {"verified_at", "verified_by", "prov_method", "valid_at", "invalid_at"} <= node_cols:
+                raise RuntimeError("v8 migration verification failed: node trust columns")
+            edge_cols = {
+                row["name"] for row in execute(
+                    "verify.edges_columns", "PRAGMA table_info(edges)"
+                ).fetchall()
+            }
+            if "updated_at" not in edge_cols:
+                raise RuntimeError("v8 migration verification failed: edge clock")
+            suggestion_cols = {
+                row["name"] for row in execute(
+                    "verify.suggestions_columns", "PRAGMA table_info(suggestions)"
+                ).fetchall()
+            }
+            if "kind" not in suggestion_cols:
+                raise RuntimeError("v8 migration verification failed: suggestion kind")
+            candidate_table = execute(
+                "verify.candidates_table",
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='capture_candidates'",
+            ).fetchone()
+            if candidate_table is None:
+                raise RuntimeError("v8 migration verification failed: candidate table")
+            index_rows = execute(
+                "verify.candidate_indexes",
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='capture_candidates'",
+            ).fetchall()
+            indexes = {row["name"] for row in index_rows}
+            required_indexes = {
+                "idx_capture_candidates_status_created",
+                "idx_capture_candidates_status_expires",
+                "idx_capture_candidates_live_payload",
+            }
+            if not required_indexes <= indexes:
+                raise RuntimeError("v8 migration verification failed: candidate indexes")
+
+            execute(
+                "meta.stamp_version_8",
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
             )
             c.commit()
+        except BaseException:
+            c.rollback()
+            raise
 
     def close(self) -> None:
         if self._conn:
@@ -384,15 +605,29 @@ class Store:
              actor: str = "", details: dict | None = None) -> None:
         """Record an action in the activity log."""
         try:
-            self.conn.execute(
-                """INSERT INTO activity_log (action, target_id, target_title, actor, details)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (action, target_id, target_title, actor,
-                 _jdumps(details or {})),
+            self._log_in_transaction(
+                self.conn, action, target_id, target_title, actor, details
             )
             self.conn.commit()
         except Exception:
             pass  # don't let logging break operations
+
+    @staticmethod
+    def _log_in_transaction(
+        conn: sqlite3.Connection,
+        action: str,
+        target_id: str = "",
+        target_title: str = "",
+        actor: str = "",
+        details: dict | None = None,
+    ) -> None:
+        """Write an activity row without committing or swallowing failures."""
+        conn.execute(
+            """INSERT INTO activity_log
+               (action, target_id, target_title, actor, details)
+               VALUES (?, ?, ?, ?, ?)""",
+            (action, target_id, target_title, actor, _jdumps(details or {})),
+        )
 
     def recent_activity(self, limit: int = 50) -> list[dict]:
         """Get recent activity log entries."""
@@ -473,8 +708,8 @@ class Store:
                        reason: str = "", source: str = "") -> int:
         """Add a bridge opportunity suggestion. Returns the suggestion ID."""
         cur = self.conn.execute(
-            """INSERT INTO suggestions (concept_a, concept_b, reason, source)
-               VALUES (?, ?, ?, ?)""",
+            """INSERT INTO suggestions (concept_a, concept_b, reason, source, kind)
+               VALUES (?, ?, ?, ?, 'bridge')""",
             (concept_a, concept_b, reason, source),
         )
         self.conn.commit()
@@ -486,7 +721,7 @@ class Store:
         """Get pending suggestions (bridge opportunities)."""
         try:
             rows = self.conn.execute(
-                "SELECT * FROM suggestions WHERE status = 'pending' "
+                "SELECT * FROM suggestions WHERE status = 'pending' AND kind = 'bridge' "
                 "ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -505,10 +740,10 @@ class Store:
         row = self.conn.execute(
             """
             SELECT 1 FROM suggestions
-             WHERE status = ? AND concept_a = ? AND concept_b = ?
+             WHERE status = ? AND kind = 'bridge' AND concept_a = ? AND concept_b = ?
             UNION ALL
             SELECT 1 FROM suggestions
-             WHERE status = ? AND concept_a = ? AND concept_b = ?
+             WHERE status = ? AND kind = 'bridge' AND concept_a = ? AND concept_b = ?
             LIMIT 1
             """,
             (status, concept_a, concept_b, status, concept_b, concept_a),
@@ -1165,22 +1400,854 @@ class Store:
             raise
         return True
 
+    # ── Verification and valid-time operations ─────────────────────────
+
+    def verify_node(
+        self,
+        node_id: str,
+        *,
+        verified_by: str,
+        prov_method: str,
+        verified_at: str | None = None,
+        valid_at: str | None = None,
+        invalid_at: str | None = None,
+    ) -> dict:
+        """Record an asserted verification without rewriting provenance time."""
+        from .trust import normalize_rfc3339, validate_interval
+
+        reviewer = _clean_audit_text(verified_by, field="verified_by")
+        method = _clean_audit_text(prov_method, field="prov_method")
+        verified = normalize_rfc3339(
+            verified_at or _utc_now(), field="verified_at"
+        )
+        valid, invalid = validate_interval(valid_at, invalid_at)
+
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT id, title FROM nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Node not found: {node_id}")
+            updated = _utc_now()
+            conn.execute(
+                """UPDATE nodes
+                      SET verified_at = ?, verified_by = ?, prov_method = ?,
+                          valid_at = ?, invalid_at = ?, updated_at = ?
+                    WHERE id = ?""",
+                (verified, reviewer, method, valid, invalid, updated, node_id),
+            )
+            self._log_in_transaction(
+                conn,
+                "verify_node",
+                node_id,
+                row["title"],
+                reviewer,
+                {
+                    "method": method,
+                    "verified_at": verified,
+                    "valid_at": valid,
+                    "invalid_at": invalid,
+                },
+            )
+            result_row = conn.execute(
+                "SELECT * FROM nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return self._row_to_dict(result_row)
+
+    def invalidate_node(
+        self,
+        node_id: str,
+        *,
+        invalidated_by: str,
+        disposition_code: str,
+        invalid_at: str | None = None,
+    ) -> dict:
+        """Record an exclusive valid-time end without deleting the node."""
+        from .trust import normalize_rfc3339, validate_interval
+
+        actor = _clean_audit_text(invalidated_by, field="invalidated_by")
+        code = _clean_audit_text(disposition_code, field="disposition_code")
+        invalid = normalize_rfc3339(
+            invalid_at or _utc_now(), field="invalid_at"
+        )
+
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT id, title, valid_at FROM nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Node not found: {node_id}")
+            _, invalid = validate_interval(row["valid_at"], invalid)
+            updated = _utc_now()
+            conn.execute(
+                "UPDATE nodes SET invalid_at = ?, updated_at = ? WHERE id = ?",
+                (invalid, updated, node_id),
+            )
+            self._log_in_transaction(
+                conn,
+                "invalidate_node",
+                node_id,
+                row["title"],
+                actor,
+                {"disposition_code": code, "invalid_at": invalid},
+            )
+            result_row = conn.execute(
+                "SELECT * FROM nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return self._row_to_dict(result_row)
+
+    # ── Automatic-capture candidate state ──────────────────────────────
+
+    @staticmethod
+    def _candidate_to_dict(row: sqlite3.Row | dict) -> dict:
+        candidate = dict(row)
+        for key in ("domains", "connections", "conflict_ids", "conflict_codes"):
+            value = candidate.get(key)
+            if isinstance(value, str):
+                try:
+                    candidate[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    candidate[key] = []
+        return candidate
+
+    @staticmethod
+    def _canonical_connections(connections: list[dict] | None) -> list[dict]:
+        if connections is not None and not isinstance(connections, list):
+            raise ValueError("connections must be a list")
+        canonical: list[dict] = []
+        for index, proposal in enumerate(connections or []):
+            if not isinstance(proposal, dict):
+                raise ValueError(f"connections[{index}] must be an object")
+            from_title = _clean_capture_text(
+                proposal.get("from_title", ""),
+                field=f"connections[{index}].from_title",
+                limit=_CAPTURE_TITLE_LIMIT,
+            )
+            to_title = _clean_capture_text(
+                proposal.get("to_title", ""),
+                field=f"connections[{index}].to_title",
+                limit=_CAPTURE_TITLE_LIMIT,
+            )
+            edge_type = _clean_capture_text(
+                proposal.get("type", "relates_to"),
+                field=f"connections[{index}].type",
+                limit=64,
+            )
+            if edge_type not in EDGE_TYPES:
+                raise ValueError(f"connections[{index}].type is not an allowed edge type")
+            why_raw = proposal.get("why", "")
+            if not isinstance(why_raw, str):
+                raise ValueError(f"connections[{index}].why must be text")
+            why = why_raw.strip()
+            if len(why) > _CAPTURE_WHY_LIMIT:
+                raise ValueError(
+                    f"connections[{index}].why must be at most {_CAPTURE_WHY_LIMIT} characters"
+                )
+            if _ANY_CONTROL_RE.search(why):
+                raise ValueError(
+                    f"connections[{index}].why must not contain control characters"
+                )
+            canonical.append(
+                {
+                    "from_title": from_title,
+                    "to_title": to_title,
+                    "type": edge_type,
+                    "why": why,
+                }
+            )
+        # Connection ordering is not semantic. Sort and deduplicate so replayed
+        # extraction produces the same review subject and payload digest.
+        return [
+            dict(items)
+            for items in sorted(
+                {tuple(sorted(item.items())) for item in canonical},
+                key=lambda item: tuple(value for _, value in item),
+            )
+        ]
+
+    def add_capture_candidate(
+        self,
+        *,
+        title: str,
+        content: str,
+        node_type: str = "concept",
+        domains: list[str] | None = None,
+        connections: list[dict] | None = None,
+        source_digest: str,
+        now: str | None = None,
+        ttl_days: int | None = None,
+    ) -> str:
+        """Atomically stage one automatic extraction for human/agent review."""
+        from .trust import normalize_rfc3339, parse_rfc3339
+
+        clean_title = _clean_capture_text(
+            title, field="title", limit=_CAPTURE_TITLE_LIMIT
+        )
+        clean_content = _clean_capture_text(
+            content,
+            field="content",
+            limit=_CAPTURE_CONTENT_LIMIT,
+            content=True,
+        )
+        if node_type not in ALL_NODE_TYPES:
+            raise ValueError(f"node_type is not allowed: {node_type}")
+        if domains is not None and not isinstance(domains, list):
+            raise ValueError("domains must be a list")
+        clean_domains: list[str] = []
+        for index, domain in enumerate(domains or []):
+            clean_domains.append(
+                _clean_capture_text(
+                    domain,
+                    field=f"domains[{index}]",
+                    limit=_AUDIT_TEXT_LIMIT,
+                )
+            )
+        clean_domains = sorted(set(clean_domains))
+        clean_connections = self._canonical_connections(connections)
+        if not isinstance(source_digest, str):
+            raise ValueError("source_digest must be a SHA-256 hex digest")
+        clean_source_digest = source_digest.strip().lower()
+        if not _SHA256_RE.fullmatch(clean_source_digest):
+            raise ValueError("source_digest must be a SHA-256 hex digest")
+
+        days = ttl_days
+        if days is None:
+            days = getattr(getattr(self.config, "capture", None), "candidate_ttl_days", 7)
+        if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+            raise ValueError("ttl_days must be a positive integer")
+        created = normalize_rfc3339(now or _utc_now(), field="now")
+        expires_dt = parse_rfc3339(created, field="now") + timedelta(days=days)
+        expires = normalize_rfc3339(expires_dt, field="expires_at")
+        payload = {
+            "title": clean_title,
+            "content": clean_content,
+            "node_type": node_type,
+            "domains": clean_domains,
+            "connections": clean_connections,
+        }
+        payload_digest = hashlib.sha256(
+            _canonical_dumps(payload).encode("utf-8")
+        ).hexdigest()
+        candidate_id = _uuid()
+
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                """SELECT id FROM capture_candidates
+                    WHERE payload_digest = ? AND status IN ('pending', 'conflicted')""",
+                (payload_digest,),
+            ).fetchone()
+            if existing is not None:
+                conn.rollback()
+                return existing["id"]
+            conn.execute(
+                """INSERT INTO capture_candidates
+                   (id, title, content, node_type, domains, connections,
+                    source_digest, payload_digest, status, created_at,
+                    updated_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+                (
+                    candidate_id,
+                    clean_title,
+                    clean_content,
+                    node_type,
+                    _canonical_dumps(clean_domains),
+                    _canonical_dumps(clean_connections),
+                    clean_source_digest,
+                    payload_digest,
+                    created,
+                    created,
+                    expires,
+                ),
+            )
+            self._log_in_transaction(
+                conn,
+                "stage_capture_candidate",
+                candidate_id,
+                "",
+                "",
+                {
+                    "source_digest": clean_source_digest,
+                    "payload_digest": payload_digest,
+                    "status": "pending",
+                },
+            )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return candidate_id
+
+    def list_capture_candidates(
+        self,
+        *,
+        status: str = "",
+        limit: int = 20,
+    ) -> list[dict]:
+        """List candidate receipts without exposing untrusted payload fields."""
+        if status and status not in _ALL_CANDIDATE_STATUSES:
+            raise ValueError(f"Unknown candidate status: {status}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        fields = (
+            "id, source_digest, payload_digest, status, created_at, updated_at, "
+            "expires_at, reviewed_at, reviewed_by, review_method, disposition_code, "
+            "conflict_ids, conflict_codes, created_node_id"
+        )
+        if status:
+            rows = self.conn.execute(
+                f"SELECT {fields} FROM capture_candidates WHERE status = ? "
+                "ORDER BY created_at DESC, id LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                f"SELECT {fields} FROM capture_candidates "
+                "ORDER BY created_at DESC, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._candidate_to_dict(row) for row in rows]
+
+    def get_capture_candidate(self, candidate_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM capture_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        return self._candidate_to_dict(row) if row is not None else None
+
+    @staticmethod
+    def _node_review_state(row: sqlite3.Row | dict) -> dict:
+        node = dict(row)
+        return {
+            key: node.get(key)
+            for key in (
+                "id",
+                "status",
+                "updated_at",
+                "verified_at",
+                "verified_by",
+                "prov_method",
+                "valid_at",
+                "invalid_at",
+            )
+        }
+
+    @staticmethod
+    def _rows_same_title(
+        conn: sqlite3.Connection,
+        title: str,
+    ) -> list[sqlite3.Row]:
+        target = title.casefold()
+        return [
+            row
+            for row in conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
+            if (row["title"] or "").casefold() == target
+        ]
+
+    @staticmethod
+    def _rows_matching_title(
+        conn: sqlite3.Connection,
+        title: str,
+    ) -> list[sqlite3.Row]:
+        """Resolve exact title or AKA matches deterministically without writes."""
+        lower = title.casefold()
+        matches: list[sqlite3.Row] = []
+        rows = conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
+        for row in rows:
+            if (row["title"] or "").casefold() == lower:
+                matches.append(row)
+                continue
+            try:
+                aliases = json.loads(row["aka"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                aliases = []
+            if any(isinstance(alias, str) and alias.casefold() == lower for alias in aliases):
+                matches.append(row)
+        return matches
+
+    def _candidate_review_token_locked(
+        self,
+        conn: sqlite3.Connection,
+        candidate_row: sqlite3.Row | dict,
+    ) -> str:
+        candidate = self._candidate_to_dict(candidate_row)
+        same_title = self._rows_same_title(conn, candidate.get("title") or "")
+        referenced: dict[str, sqlite3.Row] = {}
+        for proposal in candidate.get("connections") or []:
+            for key in ("from_title", "to_title"):
+                title = proposal.get(key)
+                if not title:
+                    continue
+                for row in self._rows_matching_title(conn, title):
+                    referenced[row["id"]] = row
+
+        relevant: dict[str, sqlite3.Row] = {row["id"]: row for row in same_title}
+        relevant.update(referenced)
+        relevant_ids = set(relevant)
+        contradiction_rows: dict[int, dict] = {}
+        for node_id in sorted(relevant_ids):
+            for edge in conn.execute(
+                """SELECT id, from_id, to_id, type, created_at, updated_at
+                     FROM edges WHERE type = 'contradicts' AND from_id = ?""",
+                (node_id,),
+            ).fetchall():
+                if edge["to_id"] in relevant_ids:
+                    contradiction_rows[edge["id"]] = dict(edge)
+
+        subject = {
+            "candidate": {
+                key: candidate.get(key)
+                for key in ("id", "payload_digest", "status", "updated_at", "expires_at")
+            },
+            "same_title_nodes": [
+                self._node_review_state(row)
+                for row in sorted(same_title, key=lambda item: item["id"])
+            ],
+            "referenced_nodes": [
+                self._node_review_state(referenced[node_id])
+                for node_id in sorted(referenced)
+            ],
+            "contradictions": [
+                contradiction_rows[edge_id] for edge_id in sorted(contradiction_rows)
+            ],
+        }
+        return hashlib.sha256(_canonical_dumps(subject).encode("utf-8")).hexdigest()
+
+    def candidate_review_token(self, candidate_id: str) -> str:
+        row = self.conn.execute(
+            "SELECT * FROM capture_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            raise CandidateNotFoundError(f"Candidate not found: {candidate_id}")
+        return self._candidate_review_token_locked(self.conn, row)
+
+    @staticmethod
+    def _resolve_candidate_endpoint(
+        conn: sqlite3.Connection,
+        title: str,
+        *,
+        candidate_title: str,
+        created_node_id: str,
+    ) -> str | None:
+        if title.casefold() == candidate_title.casefold():
+            return created_node_id
+        matches = Store._rows_matching_title(conn, title)
+        # An ambiguous title is not safely resolvable. Reviewers can
+        # disambiguate a future candidate instead of Kindex guessing.
+        return matches[0]["id"] if len(matches) == 1 else None
+
+    def accept_capture_candidate(
+        self,
+        candidate_id: str,
+        *,
+        review_token: str,
+        reviewed_by: str,
+        prov_method: str,
+        valid_at: str | None = None,
+        invalid_at: str | None = None,
+        now: str | None = None,
+    ) -> dict:
+        """Atomically promote one fresh, conflict-free candidate."""
+        from .trust import (
+            _base_trust_decision,
+            normalize_rfc3339,
+            parse_rfc3339,
+            validate_interval,
+        )
+
+        reviewer = _clean_audit_text(reviewed_by, field="reviewed_by")
+        method = _clean_audit_text(prov_method, field="prov_method")
+        reviewed = normalize_rfc3339(now or _utc_now(), field="now")
+        evaluation_time = parse_rfc3339(reviewed, field="now")
+        valid, invalid = validate_interval(valid_at, invalid_at)
+        if not isinstance(review_token, str) or not review_token.strip():
+            raise StaleReviewError("A current review token is required")
+
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT * FROM capture_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                raise CandidateNotFoundError(f"Candidate not found: {candidate_id}")
+            candidate = self._candidate_to_dict(row)
+            status = candidate.get("status")
+            if status not in _LIVE_CANDIDATE_STATUSES:
+                raise CandidateStateError(f"Candidate is already terminal: {status}")
+            if parse_rfc3339(candidate["expires_at"], field="expires_at") <= evaluation_time:
+                raise CandidateStateError("Candidate is expired")
+
+            current_token = self._candidate_review_token_locked(conn, row)
+            if not hmac.compare_digest(review_token.strip(), current_token):
+                raise StaleReviewError("Candidate or relevant graph state changed")
+
+            same_title = self._rows_same_title(conn, candidate["title"])
+            if same_title:
+                raise TitleCollisionError(
+                    "A durable node already uses this title; disambiguate the candidate title"
+                )
+
+            # Explicit contradiction proposals are blocked only by endpoints
+            # that independently pass status, verification, and valid time.
+            conflict_ids: set[str] = set()
+            for proposal in candidate.get("connections") or []:
+                if proposal.get("type") != "contradicts":
+                    continue
+                from_title = proposal.get("from_title", "")
+                to_title = proposal.get("to_title", "")
+                candidate_lower = candidate["title"].casefold()
+                if from_title.casefold() == candidate_lower:
+                    counterpart = to_title
+                elif to_title.casefold() == candidate_lower:
+                    counterpart = from_title
+                else:
+                    continue
+                for counterpart_row in self._rows_matching_title(conn, counterpart):
+                    counterpart_node = self._row_to_dict(counterpart_row)
+                    if _base_trust_decision(
+                        counterpart_node, at=evaluation_time
+                    ).eligible:
+                        conflict_ids.add(counterpart_node["id"])
+
+            if conflict_ids:
+                ids = sorted(conflict_ids)
+                codes = ["explicit_current_contradiction"]
+                changed = conn.execute(
+                    """UPDATE capture_candidates
+                          SET status = 'conflicted', updated_at = ?, reviewed_at = ?,
+                              reviewed_by = ?, review_method = ?,
+                              disposition_code = 'explicit_contradiction',
+                              conflict_ids = ?, conflict_codes = ?
+                        WHERE id = ? AND status IN ('pending', 'conflicted')
+                          AND expires_at = ?""",
+                    (
+                        reviewed,
+                        reviewed,
+                        reviewer,
+                        method,
+                        _canonical_dumps(ids),
+                        _canonical_dumps(codes),
+                        candidate_id,
+                        candidate["expires_at"],
+                    ),
+                )
+                if changed.rowcount != 1:
+                    raise CandidateStateError("Candidate changed during conflict review")
+                self._log_in_transaction(
+                    conn,
+                    "conflict_capture_candidate",
+                    candidate_id,
+                    "",
+                    reviewer,
+                    {"conflict_ids": ids, "conflict_codes": codes},
+                )
+                result_row = conn.execute(
+                    "SELECT * FROM capture_candidates WHERE id = ?", (candidate_id,)
+                ).fetchone()
+                conn.commit()
+                return self._candidate_to_dict(result_row)
+
+            node_id = _uuid()
+            conn.execute(
+                """INSERT INTO nodes
+                   (id, type, title, content, aka, intent,
+                    prov_who, prov_when, prov_activity, prov_why, prov_source,
+                    verified_at, verified_by, prov_method, valid_at, invalid_at,
+                    weight, domains, status, audience,
+                    created_at, updated_at, last_accessed, extra)
+                   VALUES (?, ?, ?, ?, '[]', '', ?, ?, 'capture-review', ?, ?,
+                           ?, ?, ?, ?, ?, 0.5, ?, 'active', 'private', ?, ?, ?, ?)""",
+                (
+                    node_id,
+                    candidate["node_type"],
+                    candidate["title"],
+                    candidate["content"],
+                    _canonical_dumps([reviewer]),
+                    candidate["created_at"],
+                    f"Accepted automatic capture candidate {candidate_id}",
+                    candidate["source_digest"],
+                    reviewed,
+                    reviewer,
+                    method,
+                    valid,
+                    invalid,
+                    _canonical_dumps(candidate.get("domains") or []),
+                    reviewed,
+                    reviewed,
+                    reviewed,
+                    _canonical_dumps(
+                        {
+                            "capture_candidate_id": candidate_id,
+                            "payload_digest": candidate["payload_digest"],
+                        }
+                    ),
+                ),
+            )
+
+            inserted_edges: list[tuple[str, str, str]] = []
+            for proposal in candidate.get("connections") or []:
+                from_id = self._resolve_candidate_endpoint(
+                    conn,
+                    proposal["from_title"],
+                    candidate_title=candidate["title"],
+                    created_node_id=node_id,
+                )
+                to_id = self._resolve_candidate_endpoint(
+                    conn,
+                    proposal["to_title"],
+                    candidate_title=candidate["title"],
+                    created_node_id=node_id,
+                )
+                if from_id is None or to_id is None:
+                    continue
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO edges
+                       (from_id, to_id, type, weight, provenance, updated_at)
+                       VALUES (?, ?, ?, 0.5, ?, ?)""",
+                    (
+                        from_id,
+                        to_id,
+                        proposal["type"],
+                        proposal.get("why", ""),
+                        reviewed,
+                    ),
+                )
+                if cursor.rowcount == 1:
+                    inserted_edges.append((from_id, to_id, proposal["type"]))
+
+            terminal = conn.execute(
+                """UPDATE capture_candidates
+                      SET title = NULL, content = NULL, node_type = NULL,
+                          domains = NULL, connections = NULL,
+                          status = 'accepted', updated_at = ?, reviewed_at = ?,
+                          reviewed_by = ?, review_method = ?,
+                          disposition_code = 'accepted', conflict_ids = '[]',
+                          conflict_codes = '[]', created_node_id = ?
+                    WHERE id = ? AND status IN ('pending', 'conflicted')
+                      AND expires_at = ?""",
+                (
+                    reviewed,
+                    reviewed,
+                    reviewer,
+                    method,
+                    node_id,
+                    candidate_id,
+                    candidate["expires_at"],
+                ),
+            )
+            if terminal.rowcount != 1:
+                raise CandidateStateError("Candidate changed before promotion committed")
+
+            self._log_in_transaction(
+                conn,
+                "add_node",
+                node_id,
+                candidate["title"],
+                reviewer,
+                {"type": candidate["node_type"], "activity": "capture-review"},
+            )
+            for from_id, to_id, edge_type in inserted_edges:
+                self._log_in_transaction(
+                    conn,
+                    "add_edge",
+                    f"{from_id}->{to_id}",
+                    "",
+                    reviewer,
+                    {"type": edge_type, "source_candidate_id": candidate_id},
+                )
+            self._log_in_transaction(
+                conn,
+                "accept_capture_candidate",
+                candidate_id,
+                "",
+                reviewer,
+                {
+                    "disposition_code": "accepted",
+                    "created_node_id": node_id,
+                    "payload_digest": candidate["payload_digest"],
+                },
+            )
+            result_row = conn.execute(
+                "SELECT * FROM capture_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+        try:
+            from .vectors import enqueue_embedding
+
+            enqueue_embedding(self, node_id)
+        except Exception:
+            pass
+        return self._candidate_to_dict(result_row)
+
+    def reject_capture_candidate(
+        self,
+        candidate_id: str,
+        *,
+        reviewed_by: str,
+        disposition_code: str,
+        now: str | None = None,
+    ) -> dict:
+        """Atomically reject and minimize a live candidate."""
+        from .trust import normalize_rfc3339, parse_rfc3339
+
+        reviewer = _clean_audit_text(reviewed_by, field="reviewed_by")
+        code = _clean_audit_text(disposition_code, field="disposition_code")
+        reviewed = normalize_rfc3339(now or _utc_now(), field="now")
+        evaluation_time = parse_rfc3339(reviewed, field="now")
+
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT status, expires_at FROM capture_candidates WHERE id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise CandidateNotFoundError(f"Candidate not found: {candidate_id}")
+            if row["status"] not in _LIVE_CANDIDATE_STATUSES:
+                raise CandidateStateError(
+                    f"Candidate is already terminal: {row['status']}"
+                )
+            if parse_rfc3339(row["expires_at"], field="expires_at") <= evaluation_time:
+                raise CandidateStateError("Candidate is expired")
+            changed = conn.execute(
+                """UPDATE capture_candidates
+                      SET title = NULL, content = NULL, node_type = NULL,
+                          domains = NULL, connections = NULL,
+                          status = 'rejected', updated_at = ?, reviewed_at = ?,
+                          reviewed_by = ?, review_method = NULL,
+                          disposition_code = ?, created_node_id = NULL
+                    WHERE id = ? AND status IN ('pending', 'conflicted')
+                      AND expires_at = ?""",
+                (reviewed, reviewed, reviewer, code, candidate_id, row["expires_at"]),
+            )
+            if changed.rowcount != 1:
+                raise CandidateStateError("Candidate changed before rejection committed")
+            self._log_in_transaction(
+                conn,
+                "reject_capture_candidate",
+                candidate_id,
+                "",
+                reviewer,
+                {"disposition_code": code},
+            )
+            result_row = conn.execute(
+                "SELECT * FROM capture_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return self._candidate_to_dict(result_row)
+
+    def prune_capture_candidates(self, *, now: str | None = None) -> int:
+        """Expire all live candidates whose exclusive expiry has been reached."""
+        from .trust import normalize_rfc3339, parse_rfc3339
+
+        pruned_at = normalize_rfc3339(now or _utc_now(), field="now")
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            evaluation_time = parse_rfc3339(pruned_at, field="now")
+            rows = conn.execute(
+                """SELECT id, expires_at FROM capture_candidates
+                    WHERE status IN ('pending', 'conflicted')
+                    ORDER BY id"""
+            ).fetchall()
+            due = [
+                row for row in rows
+                if parse_rfc3339(row["expires_at"], field="expires_at")
+                <= evaluation_time
+            ]
+            for row in due:
+                changed = conn.execute(
+                    """UPDATE capture_candidates
+                          SET title = NULL, content = NULL, node_type = NULL,
+                              domains = NULL, connections = NULL,
+                              status = 'expired', updated_at = ?, reviewed_at = ?,
+                              disposition_code = 'expired', created_node_id = NULL
+                        WHERE id = ? AND status IN ('pending', 'conflicted')
+                          AND expires_at = ?""",
+                    (pruned_at, pruned_at, row["id"], row["expires_at"]),
+                )
+                if changed.rowcount != 1:
+                    raise CandidateStateError("Candidate set changed during prune")
+                self._log_in_transaction(
+                    conn,
+                    "expire_capture_candidate",
+                    row["id"],
+                    "",
+                    "",
+                    {"disposition_code": "expired"},
+                )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return len(due)
+
+    def erase_capture_candidate(self, candidate_id: str) -> bool:
+        """Delete a candidate or minimized receipt by exact ID."""
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT status FROM capture_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            conn.execute("DELETE FROM capture_candidates WHERE id = ?", (candidate_id,))
+            self._log_in_transaction(
+                conn,
+                "erase_capture_candidate",
+                candidate_id,
+                "",
+                "",
+                {"status": row["status"]},
+            )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        return True
+
     # ── Edge operations ────────────────────────────────────────────────
 
     def add_edge(self, from_id: str, to_id: str, edge_type: str = "relates_to",
                  weight: float = 0.5, provenance: str = "",
                  bidirectional: bool = True) -> None:
         """Add an edge. Bidirectional by default (enforces graph invariant)."""
+        now = _utc_now()
         self.conn.execute(
-            """INSERT OR REPLACE INTO edges (from_id, to_id, type, weight, provenance)
-               VALUES (?, ?, ?, ?, ?)""",
-            (from_id, to_id, edge_type, weight, provenance),
+            """INSERT OR REPLACE INTO edges
+               (from_id, to_id, type, weight, provenance, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (from_id, to_id, edge_type, weight, provenance, now),
         )
         if bidirectional:
             self.conn.execute(
-                """INSERT OR IGNORE INTO edges (from_id, to_id, type, weight, provenance)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (to_id, from_id, edge_type, weight * 0.8, provenance),
+                """INSERT OR IGNORE INTO edges
+                   (from_id, to_id, type, weight, provenance, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (to_id, from_id, edge_type, weight * 0.8, provenance, now),
             )
         self.conn.commit()
         self._log("add_edge", f"{from_id}->{to_id}", "",

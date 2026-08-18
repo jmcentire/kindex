@@ -189,6 +189,14 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
         results.setdefault("conversations_expired", 0)
         results.setdefault("claims_released", 0)
 
+    # 9c. Quarantined capture retention — expiry only, never promotion.
+    try:
+        if verbose:
+            print("Pruning expired capture candidates...")
+        results["capture_candidates_pruned"] = store.prune_capture_candidates()
+    except Exception:
+        results["capture_candidates_pruned"] = 0
+
     # 10. Re-check reminders — anything that came due while maintenance ran.
     late_reminders = _check_reminders(config, store, verbose=verbose)
     results["reminders_fired"] += late_reminders.get("fired", 0)
