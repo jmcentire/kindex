@@ -739,16 +739,22 @@ def candidate_accept(
 def candidate_reject(
     candidate_id: str,
     reviewed_by: str,
-    code: str,
+    disposition_code: str,
 ) -> Any:
-    """Reject and minimize a live capture candidate."""
+    """Reject and minimize a live capture candidate.
+
+    Args:
+        candidate_id: Exact capture-candidate ID.
+        reviewed_by: Asserted reviewer identifier.
+        disposition_code: Bounded machine disposition code.
+    """
     store, _ = _get_store()
     operation_instant = operation_now()
     try:
         return store.reject_capture_candidate(
             candidate_id,
             reviewed_by=reviewed_by,
-            disposition_code=code,
+            disposition_code=disposition_code,
             now=operation_instant,
         )
     except ValueError as exc:
@@ -806,8 +812,20 @@ def verify(
 
 
 @_tool()
-def invalidate(node_id: str, invalidated_by: str, code: str, at: str = "") -> Any:
-    """Set a node's exclusive valid-time end without deleting it."""
+def invalidate(
+    node_id: str,
+    invalidated_by: str,
+    disposition_code: str,
+    at: str = "",
+) -> Any:
+    """Set a node's exclusive valid-time end without deleting it.
+
+    Args:
+        node_id: Durable node ID or exact title.
+        invalidated_by: Asserted invalidating actor.
+        disposition_code: Bounded machine invalidation reason.
+        at: Optional timezone-aware RFC 3339 exclusive end time.
+    """
     store, _ = _get_store()
     operation_instant = operation_now()
     node = store.get_node(node_id) or store.get_node_by_title(node_id)
@@ -817,7 +835,7 @@ def invalidate(node_id: str, invalidated_by: str, code: str, at: str = "") -> An
         return store.invalidate_node(
             node["id"],
             invalidated_by=invalidated_by,
-            disposition_code=code,
+            disposition_code=disposition_code,
             invalid_at=at or operation_instant,
         )
     except ValueError as exc:

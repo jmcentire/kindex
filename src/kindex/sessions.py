@@ -436,7 +436,12 @@ def format_resume_context(
     omission_counts: dict[str, int] = {}
     if trusted_only:
         from .store import node_expired
-        from .trust import filter_trusted_nodes, normalize_rfc3339, parse_rfc3339
+        from .trust import (
+            TRUST_REASONS,
+            filter_trusted_nodes,
+            normalize_rfc3339,
+            parse_rfc3339,
+        )
 
         evaluation = normalize_rfc3339(
             evaluation_time or datetime.datetime.now(datetime.timezone.utc),
@@ -459,16 +464,10 @@ def format_resume_context(
             omission_counts.get("invalidated", 0) + expired_count
         )
 
-        labels = (
-            ("legacy/unverified", "unverified"),
-            ("not-yet-valid", "not_yet_valid"),
-            ("invalidated/expired", "invalidated"),
-            ("mutual contradiction", "mutual_contradiction"),
-            ("inactive", "inactive"),
-        )
         disclosure = [
-            f"{label}={omission_counts.get(reason, 0)}"
-            for label, reason in labels
+            f"{reason}={omission_counts.get(reason, 0)}"
+            for reason in TRUST_REASONS
+            if reason != "trusted"
             if omission_counts.get(reason, 0)
         ]
         if disclosure:
