@@ -816,7 +816,7 @@ def invalidate(
     node_id: str,
     invalidated_by: str,
     disposition_code: str,
-    at: str = "",
+    invalid_at: str = "",
 ) -> Any:
     """Set a node's exclusive valid-time end without deleting it.
 
@@ -824,7 +824,7 @@ def invalidate(
         node_id: Durable node ID or exact title.
         invalidated_by: Asserted invalidating actor.
         disposition_code: Bounded machine invalidation reason.
-        at: Optional timezone-aware RFC 3339 exclusive end time.
+        invalid_at: Optional timezone-aware RFC 3339 exclusive end time.
     """
     store, _ = _get_store()
     operation_instant = operation_now()
@@ -836,7 +836,7 @@ def invalidate(
             node["id"],
             invalidated_by=invalidated_by,
             disposition_code=disposition_code,
-            invalid_at=at or operation_instant,
+            invalid_at=invalid_at or operation_instant,
         )
     except ValueError as exc:
         return _state_error(exc)

@@ -471,8 +471,12 @@ def format_resume_context(
             if omission_counts.get(reason, 0)
         ]
         if disclosure:
-            disclosed = add_labeled(
-                "### Trusted omissions\n- ", "; ".join(disclosure)
+            # Reason identifiers are fixed internal machine codes, not
+            # untrusted values. Keep their bytes verbatim (especially `_`)
+            # and admit the complete disclosure atomically so no code/count
+            # can be escaped or partially truncated.
+            disclosed = add_complete(
+                "### Trusted omissions\n- " + "; ".join(disclosure)
             )
             if not disclosed:
                 # Denial information outranks the trusted items it describes.
