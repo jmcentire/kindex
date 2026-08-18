@@ -43,3 +43,16 @@ kin remind create "Continue OpenCode build" --at "in 10 minutes" \
 ```
 
 Boundary: `remind_create` records a reminder. Due reminders fire only when `kin remind check`, `kin remind exec`, `kin cron`, or an installed `kin setup-cron` schedule runs. Codex/OpenCode wakeups start headless turns from that checker context; Kindex does not interrupt an idle interactive TUI by itself.
+
+Reviewed memory:
+
+```bash
+kin candidate list --status pending
+kin candidate show <candidate-id>
+kin candidate accept <candidate-id> --review-token <token> --by reviewer --method source-check
+kin verify <node-id> --by reviewer --method source-check
+kin search "release state" --trusted-only
+kin context --topic release --trusted-only
+```
+
+Automatic hook extraction creates quarantined candidates, never durable graph nodes or edges. Promotion is an explicit, freshness-checked review action. Trusted-only retrieval and session resume admit active, explicitly verified state; invalidated, expired, superseded, archived, and unverified material stays outside that projection.

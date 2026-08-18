@@ -265,10 +265,10 @@
       </div>
     </div>
     <div class="badges">
-      <span class="badge green">v0.27.1</span>
+      <span class="badge green">v0.32.0</span>
       <span class="badge orange">MCP Plugin</span>
-      <span class="badge blue">52 MCP Tools</span>
-      <span class="badge purple">80 CLI Commands</span>
+      <span class="badge blue">60 MCP Tools</span>
+      <span class="badge purple">70+ CLI Commands</span>
       <span class="badge">MIT License</span>
       <span class="badge">Free</span>
     </div>
@@ -291,6 +291,10 @@
       <div class="card">
         <h3>Knowledge Graph, Not Log File</h3>
         <p>Nodes have types, weights, domains, and audiences. Edges carry provenance and decay over time. The graph understands what matters &mdash; not just what was said.</p>
+      </div>
+      <div class="card">
+        <h3>Reviewed Memory, Not Transcript Replay</h3>
+        <p>Automatic capture is quarantined until an explicit, freshness-checked review promotes it. Verification, valid-time, invalidation, trusted-only retrieval, and bounded trusted resume keep stale or unverified state out of the agent's working context.</p>
       </div>
       <div class="card">
         <h3>Operational Guardrails</h3>
@@ -697,8 +701,8 @@ work_policy:
     <div class="cmd-group">
       <h3>Core</h3>
       <table>
-        <tr><td><code>kin search &lt;query&gt;</code></td><td>Hybrid FTS5 + graph search with RRF merging</td></tr>
-        <tr><td><code>kin context</code></td><td>Formatted context block for AI injection (--level, --tokens)</td></tr>
+        <tr><td><code>kin search &lt;query&gt;</code></td><td>Hybrid FTS5 + graph search with RRF merging (<code>--trusted-only</code>)</td></tr>
+        <tr><td><code>kin context</code></td><td>Formatted context block for AI injection (<code>--level</code>, <code>--tokens</code>, <code>--trusted-only</code>)</td></tr>
         <tr><td><code>kin add &lt;text&gt;</code></td><td>Quick capture with auto-extraction and linking</td></tr>
         <tr><td><code>kin show &lt;id&gt;</code></td><td>Full node details with edges, provenance, and state</td></tr>
         <tr><td><code>kin list</code></td><td>List nodes (--type, --status, --mine, --limit)</td></tr>
@@ -720,6 +724,9 @@ work_policy:
         <tr><td><code>kin decay</code></td><td>Apply weight decay to stale nodes/edges</td></tr>
         <tr><td><code>kin recent</code></td><td>Recently active nodes</td></tr>
         <tr><td><code>kin tag [action]</code></td><td>Session tags: start, update, segment, pause, end, resume, list, show</td></tr>
+        <tr><td><code>kin candidate [action]</code></td><td>Quarantined capture review: list, show, accept, reject, prune, erase</td></tr>
+        <tr><td><code>kin verify &lt;node&gt;</code></td><td>Assert verification provenance and optional valid-time interval</td></tr>
+        <tr><td><code>kin invalidate &lt;node&gt;</code></td><td>Record asserted invalidation actor, code, and exclusive end time</td></tr>
         <tr><td><code>kin remind [action]</code></td><td>Reminders: create, list, show, snooze, done, cancel, check, exec, and <code>--wake codex|opencode</code></td></tr>
       </table>
     </div>
@@ -816,7 +823,7 @@ work_policy:
       MIT License &middot;
       Free
     </p>
-    <p style="margin-top: 8px;">v0.27.1 &middot; MCP Plugin &middot; 52 MCP Tools &middot; 80 CLI Commands &middot; 1559 Tests</p>
+    <p style="margin-top: 8px;">v0.32.0 &middot; MCP Plugin &middot; 60 MCP Tools &middot; 70+ CLI Commands &middot; 1797 Tests</p>
     <p style="margin-top: 8px;">Made by <a href="https://github.com/jmcentire">Jeremy McEntire</a></p>
     <p style="margin-top: 8px;">
       <a href="https://exemplar.tools">exemplar.tools</a> &middot;

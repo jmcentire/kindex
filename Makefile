@@ -1,7 +1,11 @@
 .PHONY: install dev test test-verbose test-coverage lint check clean docs help all build-dist verify-dist-install validate-mcp-registry distribute
 
 PYTHON ?= python3
-VERSION := $(shell $(PYTHON) -c "from kindex import __version__; print(__version__)")
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+ORIGINAL_PYTHONPATH := $(PYTHONPATH)
+LOCAL_PYTHONPATH := $(PROJECT_ROOT)/src$(if $(ORIGINAL_PYTHONPATH),:$(ORIGINAL_PYTHONPATH))
+export PYTHONPATH := $(LOCAL_PYTHONPATH)
+VERSION := $(shell PYTHONPATH="$(LOCAL_PYTHONPATH)" $(PYTHON) -c "from kindex import __version__; print(__version__)")
 DIST_WHEEL := dist/kindex-$(VERSION)-py3-none-any.whl
 
 help: ## Show this help

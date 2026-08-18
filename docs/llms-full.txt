@@ -49,6 +49,30 @@ tracks `.kin/`, agents should treat `.kin/config`, `.kin/index.json`, and
 `.kin/code-map.json` as shipped project state and regenerate generated JSON
 instead of hand-editing it.
 
+## Reviewed Memory and Trusted State
+
+Automatic lifecycle capture is untrusted input. `compact-hook` stages bounded
+candidate records and creates no durable nodes or edges. Inspect the exact
+payload and freshness token, then explicitly accept, reject, prune, or erase it:
+
+```bash
+kin candidate list --status pending
+kin candidate show <candidate-id>
+kin candidate accept <candidate-id> --review-token <token> \
+  --by reviewer --method source-check
+kin candidate reject <candidate-id> --by reviewer --code not_relevant
+kin candidate prune
+kin candidate erase <candidate-id>
+```
+
+Verification is typed provenance, not a title convention. Use `kin verify` to
+assert an actor, method, and optional RFC 3339 valid interval; use
+`kin invalidate` to record an exclusive end time and reason. `--trusted-only`
+search and context admit only active, explicitly verified state. Session resume
+uses that trusted admission by default and is bounded by deterministic
+character accounting, with an optional tokenizer callback for provider-token
+guarantees.
+
 ## Client Setup
 
 ```bash
@@ -110,8 +134,12 @@ Important boundary:
 
 ## Core Tool Families
 
-- Search and context: `search`, `context`, `ask`, `show`, `list_nodes`.
+- Search and context: `search`, `context`, `ask`, `show`, `list_nodes`, with
+  trusted-only projections on search and context.
 - Knowledge capture: `add`, `edit`, `supersede`, `learn`, `link`.
+- Capture review and trust: `candidate_list`, `candidate_show`,
+  `candidate_accept`, `candidate_reject`, `candidate_prune`, `candidate_erase`,
+  `verify`, `invalidate`.
 - Session state: `tag_start`, `tag_update`, `tag_resume`.
 - Durable work: `task_add`, `task_list`, `task_done`, `task_claim`,
   `task_release`.

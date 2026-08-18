@@ -2,6 +2,23 @@
 
 All notable changes to Kindex are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.32.0] - 2026-08-18
+
+### Added
+- Automatic hook capture now enters a quarantined candidate queue instead of writing directly to durable memory. Candidates expose exact review payloads and freshness tokens, require explicit accept or reject decisions, expire on a configurable TTL, and can be erased completely.
+- Nodes can carry typed verification provenance, asserted valid-time intervals, and explicit invalidation records. Search and context expose opt-in trusted-only projections, while session resume admits trusted state by default and stays inside deterministic character and token budgets.
+- CLI and MCP surfaces now expose candidate review, verification, invalidation, and trusted retrieval operations with one captured operation clock per time-dependent request.
+
+### Changed
+- The SQLite schema advances from v7 to v8 through an atomic, rollback-safe migration that preserves existing graphs while introducing trust and candidate state.
+- PreCompact extraction stages untrusted proposals for review and never promotes automatic model output directly into graph nodes or edges.
+
+### Fixed
+- Release and test targets now pin imports to this checkout's absolute `src` directory, so a stale editable-install `.pth` cannot make subprocess tests execute an older Kindex or make distribution verification look for the previous version's wheel.
+
+### Documentation
+- README, human guide, LLM guides, MCP server card, and public site material now document the reviewed-memory boundary and bounded trusted resume behavior.
+
 ## [0.30.1] - 2026-08-11
 
 ### Fixed
