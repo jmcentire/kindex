@@ -625,8 +625,9 @@ def test_p3_8_terminal_races_have_at_most_one_winner_and_no_lock_leak(tmp_path):
     """P3.8: two independent Store connections race accept/reject,
     accept/prune, and accept/accept through a barrier; two terminal winners,
     two nodes, or raw sqlite lock leakage are forbidden, while one terminal
-    receipt and at most one node are demanded. Removing the conditional terminal
-    predicate is the smallest mutation that turns red.
+    receipt and at most one node are demanded. Removing both the in-transaction
+    live-state precheck and conditional terminal predicate is the smallest
+    behavioral mutation that turns red.
     """
     def setup(store, *, ttl_days=7):
         candidate_id = _add_candidate(

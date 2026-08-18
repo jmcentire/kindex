@@ -352,8 +352,9 @@ def test_r1_8_resume_identifies_context_as_data_not_authority(store):
 def test_r1_1_supplied_deterministic_counters_enforce_absolute_budget(store, counter):
     """R1.1/R1.2: a Unicode-heavy session reaches byte/codepoint/word counters
     at eight small budgets; any count above budget or nonempty nonpositive result
-    is forbidden, while exact selected-unit bounds are demanded. Removing the
-    final whole-output check is the smallest mutation that turns red.
+    is forbidden, while exact selected-unit bounds are demanded. Bypassing
+    incremental fit admission is the smallest behavioral mutation that turns
+    red.
     """
     from kindex.sessions import format_resume_context, start_tag
 
