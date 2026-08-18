@@ -348,12 +348,14 @@ def test_p6_1_p6_4_real_v7_fixture_upgrades_and_preserves_legacy_rows(tmp_path):
             "SELECT content, verified_at, verified_by, prov_method, valid_at, "
             "invalid_at FROM nodes WHERE id='legacy-node'"
         ).fetchone()
-        assert node == ("preserve me", None, None, None, None, None)
+        assert node is not None
+        assert tuple(node) == ("preserve me", None, None, None, None, None)
         edge = store.conn.execute(
             "SELECT provenance, created_at, updated_at FROM edges "
             "WHERE id='legacy-edge'"
         ).fetchone()
-        assert edge == (
+        assert edge is not None
+        assert tuple(edge) == (
             "legacy fixture", "2025-02-01T00:00:00Z",
             "2025-02-01T00:00:00Z",
         )
@@ -361,7 +363,8 @@ def test_p6_1_p6_4_real_v7_fixture_upgrades_and_preserves_legacy_rows(tmp_path):
             "SELECT reason, kind FROM suggestions "
             "WHERE id='legacy-suggestion'"
         ).fetchone()
-        assert suggestion == ("bridge them", "bridge")
+        assert suggestion is not None
+        assert tuple(suggestion) == ("bridge them", "bridge")
         assert store.conn.execute(
             "SELECT title FROM reminders WHERE id='legacy-reminder'"
         ).fetchone()[0] == "Remember legacy"
@@ -387,6 +390,7 @@ def test_p6_3_reopen_performs_no_migration_write(tmp_path):
     root = tmp_path / "reopen"
     db = _create_v7_fixture(root)
     first = Store(Config(data_dir=str(root)))
+    _ = first.conn
     first.close()
     before = hashlib.sha256(db.read_bytes()).hexdigest()
     calls: list[tuple[int, str]] = []
@@ -394,6 +398,7 @@ def test_p6_3_reopen_performs_no_migration_write(tmp_path):
         Config(data_dir=str(root)),
         migration_step_hook=lambda index, label: calls.append((index, label)),
     )
+    _ = second.conn
     second.close()
     after = hashlib.sha256(db.read_bytes()).hexdigest()
     assert calls == []
@@ -421,6 +426,7 @@ def test_p6_2_failure_at_every_reported_migration_statement_is_atomic(tmp_path):
         Config(data_dir=str(probe_root)),
         migration_step_hook=lambda index, label: steps.append((index, label)),
     )
+    _ = probe.conn
     probe.close()
     assert steps
     assert [index for index, _ in steps] == list(range(len(steps)))
@@ -440,10 +446,12 @@ def test_p6_2_failure_at_every_reported_migration_statement_is_atomic(tmp_path):
                 assert label == expected_label
                 raise InjectedMigrationFailure(label)
 
+        failing = Store(
+            Config(data_dir=str(root)), migration_step_hook=fail_at
+        )
         with pytest.raises(InjectedMigrationFailure):
-            Store(
-                Config(data_dir=str(root)), migration_step_hook=fail_at
-            )
+            _ = failing.conn
+        del failing
         gc.collect()
         assert (target, expected_label) in reached
         _assert_v7_rollback(db)
@@ -461,8 +469,11 @@ def test_p6_2_migration_lock_error_is_visible_and_cannot_stamp_v8(tmp_path):
     lock = sqlite3.connect(db)
     lock.execute("BEGIN EXCLUSIVE")
     try:
+        contender = Store(Config(data_dir=str(root)))
         with pytest.raises(sqlite3.OperationalError):
-            Store(Config(data_dir=str(root)))
+            _ = contender.conn
+        del contender
+        gc.collect()
     finally:
         lock.rollback()
         lock.close()

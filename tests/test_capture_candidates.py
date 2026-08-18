@@ -98,11 +98,11 @@ def test_p2_1_p2_2_add_is_canonical_complete_and_reviewable(store):
 
 
 @pytest.mark.red_now
-def test_p2_2_list_redacts_payload_while_show_returns_exact_subject(store):
-    """P2.2/T4.4: add then list/show reaches both review projections; title,
-    content, type, domains, and connections in list are forbidden, while show
-    returning them plus review_token is demanded. Returning the full row from
-    list is the smallest mutation that turns red.
+def test_p2_2_list_redacts_payload_while_get_returns_exact_subject(store):
+    """P2.2/T4.4/A5: add then list/get reaches both Store projections; title,
+    content, type, domains, and connections in list are forbidden, while get
+    returning the exact payload and the separate token method remaining usable
+    are demanded. Returning the full row from list is the smallest mutation red.
     """
     candidate_id = _add_candidate(store)
     listed = store.list_capture_candidates(limit=20)
@@ -112,7 +112,8 @@ def test_p2_2_list_redacts_payload_while_show_returns_exact_subject(store):
     assert shown is not None
     for field in RAW_FIELDS:
         assert field in shown
-    assert shown["review_token"] == store.candidate_review_token(candidate_id)
+    token = store.candidate_review_token(candidate_id)
+    assert re.fullmatch(r"[0-9a-f]{64}", token)
 
 
 @pytest.mark.red_now

@@ -415,16 +415,16 @@ def test_r1_3_r1_4_projection_is_deterministic_structural_and_priority_packed(st
 
     start_tag(
         store, "priority-pack",
-        description="DESCRIPTION_OLD " * 80,
-        focus="OLD_FOCUS " * 80,
-        remaining=["REMAINING_CANARY", "remain two"],
+        description="DESCRIPTION OLD " * 80,
+        focus="OLD FOCUS " * 80,
+        remaining=["REMAINING CANARY", "remain two"],
     )
     add_segment(
-        store, "priority-pack", new_focus="FOCUS_CANARY 漢🙂\x1b[31m",
-        summary="HISTORY_CANARY " * 120,
+        store, "priority-pack", new_focus="FOCUS CANARY 漢🙂\x1b[31m",
+        summary="HISTORY CANARY " * 120,
     )
     related = _verified(
-        store, "KNOWLEDGE_CANARY " * 50, node_id="priority-knowledge"
+        store, "KNOWLEDGE CANARY " * 50, node_id="priority-knowledge"
     )
     link_node_to_tag(store, "priority-pack", related)
     full = format_resume_context(
@@ -433,10 +433,10 @@ def test_r1_3_r1_4_projection_is_deterministic_structural_and_priority_packed(st
     first_budget = next(
         budget
         for budget in range(1, len(full.encode("utf-8")) + 1)
-        if "FOCUS_CANARY" in format_resume_context(
+        if "FOCUS CANARY" in format_resume_context(
             store, "priority-pack", max_tokens=budget, evaluation_time=AT
         )
-        and "REMAINING_CANARY" in format_resume_context(
+        and "REMAINING CANARY" in format_resume_context(
             store, "priority-pack", max_tokens=budget, evaluation_time=AT
         )
     )
@@ -447,9 +447,9 @@ def test_r1_3_r1_4_projection_is_deterministic_structural_and_priority_packed(st
         store, "priority-pack", max_tokens=first_budget, evaluation_time=AT
     )
     assert output == repeat
-    assert "FOCUS_CANARY" in output and "REMAINING_CANARY" in output
-    assert "HISTORY_CANARY" not in output
-    assert "KNOWLEDGE_CANARY" not in output
+    assert "FOCUS CANARY" in output and "REMAINING CANARY" in output
+    assert "HISTORY CANARY" not in output
+    assert "KNOWLEDGE CANARY" not in output
     assert "\ufffd" not in output
     output.encode("utf-8", errors="strict")
     assert all(
@@ -473,10 +473,10 @@ def test_r1_3_evaluation_time_changes_only_time_eligible_knowledge(store):
     from kindex.sessions import format_resume_context, link_node_to_tag, start_tag
 
     future = _verified(
-        store, "Time-gated knowledge", node_id="time-gated",
+        store, "Time gated knowledge", node_id="time-gated",
         valid_at="2026-08-18T12:00:01Z",
     )
-    start_tag(store, "time-projection", focus="STATIC_FOCUS")
+    start_tag(store, "time-projection", focus="STATIC FOCUS")
     link_node_to_tag(store, "time-projection", future)
     before = format_resume_context(
         store, "time-projection", max_tokens=4096,
@@ -491,6 +491,6 @@ def test_r1_3_evaluation_time_changes_only_time_eligible_knowledge(store):
         evaluation_time="2026-08-18T12:00:01Z",
     )
     assert before == before_again
-    assert "STATIC_FOCUS" in before and "STATIC_FOCUS" in at_boundary
-    assert "Time-gated knowledge" not in before
-    assert "Time-gated knowledge" in at_boundary
+    assert "STATIC FOCUS" in before and "STATIC FOCUS" in at_boundary
+    assert "Time gated knowledge" not in before
+    assert "Time gated knowledge" in at_boundary
