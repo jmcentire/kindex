@@ -315,6 +315,12 @@ class TestResumeContext:
         start_tag(store, "linked-resume", focus="Exploring")
         nid = store.add_node("Important Concept", node_type="concept",
                              content="A key concept")
+        store.verify_node(
+            nid,
+            verified_by="test reviewer",
+            prov_method="fixture inspection",
+            verified_at="2025-01-01T00:00:00Z",
+        )
         link_node_to_tag(store, "linked-resume", nid)
         ctx = format_resume_context(store, "linked-resume")
         assert "Important Concept" in ctx
