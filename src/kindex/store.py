@@ -1932,7 +1932,7 @@ class Store:
                               disposition_code = 'explicit_contradiction',
                               conflict_ids = ?, conflict_codes = ?
                         WHERE id = ? AND status IN ('pending', 'conflicted')
-                          AND expires_at = ?""",
+                          AND expires_at > ?""",
                     (
                         reviewed,
                         reviewed,
@@ -1941,7 +1941,7 @@ class Store:
                         _canonical_dumps(ids),
                         _canonical_dumps(codes),
                         candidate_id,
-                        candidate["expires_at"],
+                        reviewed,
                     ),
                 )
                 if changed.rowcount != 1:
@@ -2037,7 +2037,7 @@ class Store:
                           disposition_code = 'accepted', conflict_ids = '[]',
                           conflict_codes = '[]', created_node_id = ?
                     WHERE id = ? AND status IN ('pending', 'conflicted')
-                      AND expires_at = ?""",
+                      AND expires_at > ?""",
                 (
                     reviewed,
                     reviewed,
@@ -2045,7 +2045,7 @@ class Store:
                     method,
                     node_id,
                     candidate_id,
-                    candidate["expires_at"],
+                    reviewed,
                 ),
             )
             if terminal.rowcount != 1:
@@ -2135,8 +2135,8 @@ class Store:
                           reviewed_by = ?, review_method = NULL,
                           disposition_code = ?, created_node_id = NULL
                     WHERE id = ? AND status IN ('pending', 'conflicted')
-                      AND expires_at = ?""",
-                (reviewed, reviewed, reviewer, code, candidate_id, row["expires_at"]),
+                      AND expires_at > ?""",
+                (reviewed, reviewed, reviewer, code, candidate_id, reviewed),
             )
             if changed.rowcount != 1:
                 raise CandidateStateError("Candidate changed before rejection committed")
