@@ -10,6 +10,11 @@ Base revision: `666e20864fdcd3a21d5683f2c23085cf32d23257`.
 Amendment 1 (Tester-raised specification defect): bind time-dependent CLI/MCP
 tests to the Architecture A9 `operation_now` seams rather than ambient time.
 
+Amendment 3 (Validator-raised specification defect): authorize the one inherited
+session-resume assertion that required an unverified linked node to appear by
+default. Its original linked-node purpose remains, but its fixture must now meet
+the Product P1 trust-admission precondition.
+
 ## T0 — Lane and oracle rules
 
 - **T0.1 Isolation.** The Tester receives only the three frozen artifacts, their
@@ -65,6 +70,11 @@ expectation:
   no schema mutation relative to the current declared version-8 inventory.
 - `tests/test_batch0_decay.py`: same disposition for its exact version/inventory
   guard; decay behavior remains unchanged and all other assertions are read-only.
+- `tests/test_sessions.py`: revise only
+  `TestResumeContext.test_resume_includes_linked_nodes` so its linked concept is
+  explicitly verified before asserting default resume inclusion. Preserve the
+  test's session/link reachability and title-in-output purpose; do not introduce
+  an unsafe fallback for unverified nodes.
 
 No other existing test may be edited without a Validator-issued specification
 amendment. The old assertions are not being weakened to fit code; the new user-
