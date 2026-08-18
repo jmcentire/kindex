@@ -1,0 +1,48 @@
+{
+  "schema": "kindex-local-factory-freeze/1",
+  "run": "state-resilience",
+  "base_revision": "666e20864fdcd3a21d5683f2c23085cf32d23257",
+  "authority": {
+    "kind": "local-ai-ratified",
+    "human_signature": null,
+    "limitation": "No human signature was supplied; this freeze is not human approval or release authority."
+  },
+  "providers": {
+    "build": "codex",
+    "bounded_review": "ollama",
+    "simulacrum_exception": "anthropic",
+    "antigravity_receipt": "rejected-noncontained"
+  },
+  "artifacts": {
+    "task": {
+      "path": "TASK.md",
+      "sha256": "3cd662352122f48db4902fae1e4028afe56c8e97286f9c09cb3feda98c38b8bf"
+    },
+    "product": {
+      "path": "artifacts/product-specification.md",
+      "sha256": "ece927181a13c89d8fdfeb927656e8e65157367bac333051b76578d237a93ca9"
+    },
+    "architecture": {
+      "path": "artifacts/architecture.md",
+      "sha256": "974d03e3dd3417499863f5f95a6243f1713ed6bbed062291e7bd0818ca7f70e4"
+    },
+    "testing": {
+      "path": "artifacts/testing-strategy.md",
+      "sha256": "d6346d66ab36f47d4043562199b1c8ea4d0870ea249a5145aa390acc567dc13e"
+    },
+    "tool_policy": {
+      "path": "artifacts/tool-policy.md",
+      "sha256": "b9776a7e7d5c58fd63337d557096b16bac49d6dd4b39802757774f14bbec5f96"
+    }
+  },
+  "reviews": {
+    "constrain": "advisory-complete-with-bounded-dispositions",
+    "simulacrum": "advisory-complete-with-bounded-dispositions",
+    "advocate": {
+      "status": "advisory-complete-with-bounded-dispositions",
+      "path": "advocate-strategy.json",
+      "sha256": "8512420bd802a421209d8e34f26a521ed8fa5dafa91b55eb18516fedace5f57a"
+    },
+    "antigravity": "rejected-noncontained"
+  }
+}

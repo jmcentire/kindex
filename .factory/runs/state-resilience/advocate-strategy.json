@@ -1,0 +1,174 @@
+{
+  "review_id": "20260818T174110-c0978077",
+  "target": "/Users/jmcentire/Code/kindex-state-resilience/.factory/runs/state-resilience/strategy-draft.md",
+  "target_type": "file",
+  "started_at": "2026-08-18T17:41:10.832012+00:00",
+  "completed_at": "2026-08-18T17:42:05.579024+00:00",
+  "persona_reports": [
+    {
+      "persona": "red_team",
+      "findings": [
+        {
+          "persona": "red_team",
+          "severity": "high",
+          "dimension": "security",
+          "title": "Review Token is Not an Authorization Mechanism",
+          "detail": "The 'review token' described in D5 is explicitly defined as a digest for optimistic concurrency (freshness), not for identity or authorization. The document states: 'The token proves snapshot freshness, not caller identity or authorization.' This means any process with CLI/MCP access can call `accept` on any candidate if they can guess or observe the ID, bypassing the intended 'reviewer' gate. There is no check against the `reviewed_by` field matching the actual caller's identity.",
+          "evidence": "Section D5: 'The token proves snapshot freshness, not caller identity or authorization.' and 'Accept requires non-empty reviewed_by... Independently of token validation...' implies the system trusts the input string for `reviewed_by` without verifying the caller actually holds that identity.",
+          "recommendation": "Implement a proper authentication layer for CLI/MCP callers. The `accept` operation must verify that the authenticated user matches the `reviewed_by` field provided in the request, rather than accepting arbitrary text strings for reviewer identity."
+        },
+        {
+          "persona": "red_team",
+          "severity": "medium",
+          "dimension": "data_corruption",
+          "title": "Truncation Algorithm Ambiguity Risks Structural Integrity",
+          "detail": "D4 specifies that fields may be truncated to fit a token budget but explicitly delegates the algorithm to 'implementation guidance, not an observable requirement.' Truncating structured data (like JSON, code, or delimited lists) without a strict, verified boundary strategy risks emitting malformed syntax into the context window. This could cause downstream parsers or LLMs to hallucinate completions or fail catastrophically, corrupting the semantic meaning of the resume.",
+          "evidence": "Section D4: 'The exact truncation algorithm is implementation guidance, not an observable requirement.' and 'Items that do not fit are omitted; the final included field may be truncated.'",
+          "recommendation": "Define and enforce a strict truncation policy that operates on structural boundaries (e.g., complete JSON objects, full lines, or specific delimiters) rather than arbitrary byte/character counts. Add tests to verify that truncated output remains syntactically valid for its expected format."
+        },
+        {
+          "persona": "red_team",
+          "severity": "medium",
+          "dimension": "race_conditions",
+          "title": "TOCTOU in Contradiction Resolution During Accept",
+          "detail": "While D5 mentions atomic transactions for the final state transition, the logic for detecting contradictions ('blocks unresolved explicit contradictions') relies on the state observed at the start of the transaction. If an attacker (or concurrent process) inserts a new `contradicts` edge or a conflicting node *after* the review token is generated but *before* the `BEGIN IMMEDIATE` transaction commits, the system might accept a node that is now logically inconsistent. The document claims 'namespace integrity does not depend on the review token,' but it doesn't fully guarantee logical consistency against rapid concurrent contradiction injection.",
+          "evidence": "Section D5: 'accept... blocks unresolved explicit contradictions... inside the transaction'. However, if the contradiction check queries the graph state before locking the specific rows involved in the contradiction, a race exists where a new contradiction edge is added between the check and the commit.",
+          "recommendation": "Ensure the contradiction check uses explicit row-level locking (e.g., `SELECT ... FOR UPDATE`) on the target node and any potential contradicting nodes *before* performing the logic check, ensuring no new edges can be inserted until the transaction resolves."
+        },
+        {
+          "persona": "red_team",
+          "severity": "low",
+          "dimension": "injection",
+          "title": "Plaintext Storage of Untrusted Candidate Payloads",
+          "detail": "D2 states pending payloads are stored as 'plaintext within the existing local SQLite trust boundary.' If the 'compact-hook' ingestion source is compromised or feeds malicious SQL-like strings or control characters into the content fields, and these are later reflected into CLI output or MCP responses without sanitization, it could lead to stored XSS (if viewed in a web-based MCP client) or log injection. While SQLite handles SQL injection via parameterization, the reflection of this data is not detailed.",
+          "evidence": "Section D2: 'Pending payloads are plaintext within the existing local SQLite trust boundary.' No mention of output encoding or sanitization when these payloads are displayed via `show` or exported.",
+          "recommendation": "Treat all candidate payload content as untrusted. Ensure strict output encoding (HTML/JSON escaping) when rendering these fields in any interface, and validate input character sets upon ingestion to prevent control character injection."
+        }
+      ],
+      "summary": "**Summary**\nThe design successfully isolates high-risk automatic promotion but fails to implement actual access control, relying on a \"review token\" that explicitly lacks authorization capabilities. This creates a significant gap where any local actor can force-accept quarantined data by simply supplying a reviewer name string. Additionally, the lack of a deterministic truncation standard introduces a risk of data corruption in the resume context, potentially breaking downstream consumption.",
+      "ok": true,
+      "error": null,
+      "duration_ms": 16527.60066697374,
+      "input_tokens": 2676,
+      "output_tokens": 1099,
+      "estimated_cost_usd": 0.024513
+    },
+    {
+      "persona": "adversarial",
+      "findings": [
+        {
+          "persona": "adversarial",
+          "severity": "critical",
+          "dimension": "failure_modes",
+          "title": "Race condition in 'Prune racing with accept' logic",
+          "detail": "The document claims pruning and accepting are deterministic because 'the transaction that commits first wins.' However, if a candidate expires exactly while an 'accept' transaction is holding the lock (between BEGIN IMMEDIATE and COMMIT), the accept logic must explicitly re-check the `expiry` timestamp before creating the node. The text states 'accept... validates interval ordering' but does not explicitly include checking against the candidate's own `expiry` field inside the critical section. If this check is missing, an expired candidate could be promoted to a durable node.",
+          "evidence": "'Prune racing with accept is deterministic: the transaction that commits first wins; the second observes terminal/expired state and fails or skips.' vs 'Accept requires... validates interval ordering' (does not explicitly mention re-validating candidate expiry inside the transaction).",
+          "recommendation": ""
+        },
+        {
+          "persona": "adversarial",
+          "severity": "high",
+          "dimension": "edge_cases",
+          "title": "UTF-8 byte length is not a safe proxy for token limits",
+          "detail": "D4 asserts that UTF-8 byte length is 'conservative and provider-neutral.' This is factually incorrect for many modern tokenizers (e.g., cl100k_base used by GPT-4) where certain Unicode sequences, emojis, or specific language scripts can result in *more* tokens per byte than standard ASCII, or where the ratio varies wildly. A string fitting the byte budget could exceed the model's actual token limit, causing runtime failures in downstream agents relying on this guarantee.",
+          "evidence": "'Its default counter is UTF-8 byte length: conservative and provider-neutral, deliberately smaller than a model-specific token budget.'",
+          "recommendation": ""
+        },
+        {
+          "persona": "adversarial",
+          "severity": "high",
+          "dimension": "wrong_assumptions",
+          "title": "Assumption that 'same-title collision' prevents semantic duplication",
+          "detail": "D5 relies on 'same-title collision check' to ensure namespace integrity. This assumes titles are unique identifiers for concepts. In a knowledge graph, distinct nodes often share titles (e.g., 'Apple' the fruit vs. 'Apple' the company, or 'Home' in different contexts). Blocking acceptance based solely on title existence will prevent valid knowledge ingestion or require brittle disambiguation logic not described in the schema.",
+          "evidence": "'A review model may recommend an action but no automatic path may call accept... independently of token validation, accept performs a same-title collision check inside the transaction'",
+          "recommendation": ""
+        },
+        {
+          "persona": "adversarial",
+          "severity": "medium",
+          "dimension": "backward_compatibility",
+          "title": "Legacy NULL values break strict trust predicates",
+          "detail": "D1 states legacy rows remain NULL/unverified. D3 defines the trust predicate requiring `verified_at`, `verified_by`, and `prov_method` to be non-empty. While this correctly excludes legacy data from *trusted* resumes, the system assumes consumers handle the sudden disappearance of previously available context. If existing workflows implicitly relied on unverified nodes being present in general context windows, this change silently breaks those workflows without a migration path for 'grandfathering' trusted status.",
+          "evidence": "'Legacy rows remain NULL/unverified.' ... 'A linked node is eligible for trusted resume only when... verified_at, verified_by, and prov_method are non-empty'",
+          "recommendation": ""
+        },
+        {
+          "persona": "adversarial",
+          "severity": "medium",
+          "dimension": "edge_cases",
+          "title": "Timezone and Leap Second ambiguity in 'valid_at' boundaries",
+          "detail": "D3 specifies `valid_at` is absent or not later than evaluation time. It does not define the timezone context (UTC vs Local) or how leap seconds are handled. If `evaluation_time` and `valid_at` are generated by different systems (CLI vs Server vs Hook) with slight clock skew or different time interpretations, a node valid for 'now' might be rejected due to microsecond-level discrepancies or timezone offsets, leading to flaky verification states.",
+          "evidence": "'valid_at is absent or not later than evaluation time'",
+          "recommendation": ""
+        },
+        {
+          "persona": "adversarial",
+          "severity": "low",
+          "dimension": "failure_modes",
+          "title": "Disk full scenario during atomic migration",
+          "detail": "D1 claims migration is 'one fail-loud SQLite transaction.' If the disk fills up exactly during the schema alteration (which may require rewriting the entire table file depending on SQLite version and fragmentation), the transaction will rollback. However, the error handling must ensure the `schema_version` is not incremented if the DDL fails partially. The text says 'version advances only inside the successful transaction,' which is correct in theory, but SQLite DDL behavior on full-disk edge cases can sometimes leave database locks or corrupted journal files that prevent the 'fail-loud' cleanup from completing cleanly.",
+          "evidence": "'Migration is additive, idempotent, and one fail-loud SQLite transaction; the schema version advances only inside the successful transaction.'",
+          "recommendation": ""
+        }
+      ],
+      "summary": "The strategy contains significant logical gaps regarding concurrency control and resource estimation. Specifically, the reliance on UTF-8 bytes as a \"conservative\" token bound is technically flawed for modern models, and the race condition between expiration and acceptance lacks explicit re-validation logic within the critical section. Furthermore, using title collisions as a primary integrity constraint ignores common semantic ambiguities, risking false negatives in knowledge ingestion.",
+      "ok": true,
+      "error": null,
+      "duration_ms": 17371.051999973133,
+      "input_tokens": 2670,
+      "output_tokens": 1175,
+      "estimated_cost_usd": 0.025635
+    },
+    {
+      "persona": "sme",
+      "findings": [
+        {
+          "persona": "sme",
+          "severity": "high",
+          "dimension": "design",
+          "title": "SQLite Concurrency Model Mismatch for 'Prune Racing'",
+          "detail": "The document specifies `BEGIN IMMEDIATE` for accept/reject/prune operations and claims that 'prune racing with accept is deterministic: the transaction that commits first wins.' While `BEGIN IMMEDIATE` prevents write-write conflicts by acquiring a reserved lock early, it does not inherently serialize logic based on 'first commit wins' if the application logic relies on reading state *before* the lock is fully effective or if the race condition involves a read-modify-write sequence that isn't strictly guarded by a unique constraint or a specific `WHERE` clause checking the current status. In SQLite, if two transactions start simultaneously, one will fail immediately upon trying to acquire the reserved lock if the other holds it, but the error handling strategy ('fails or skips') must be explicit. Relying on 'deterministic' racing without defining the specific SQL `UPDATE ... WHERE status = 'pending'` pattern risks silent failures or deadlocks under high contention.",
+          "evidence": "Section D2: 'Accept/reject/prune use BEGIN IMMEDIATE... Prune racing with accept is deterministic: the transaction that commits first wins; the second observes terminal/expired state and fails or skips.'",
+          "recommendation": "Explicitly mandate that state transitions use conditional updates (e.g., `UPDATE candidates SET status = 'accepted' WHERE id = ? AND status = 'pending'`) and verify the row count to determine success/failure. Clarify that `BEGIN IMMEDIATE` is used to prevent deadlock, but the 'win/loss' logic depends on the atomicity of the conditional update, not just the transaction start."
+        },
+        {
+          "persona": "sme",
+          "severity": "medium",
+          "dimension": "wrong_assumptions",
+          "title": "UTF-8 Byte Length as a Proxy for Token Budgets",
+          "detail": "The strategy adopts UTF-8 byte length as a 'conservative' proxy for token counts to ensure provider neutrality. However, this assumption breaks down for non-Latin scripts (e.g., CJK, Arabic) where the byte-to-token ratio varies significantly compared to English. For some models, 1 character ≈ 1 token, while for others, 1 token can be multiple bytes or vice versa. A 'conservative' byte limit might be too restrictive for English (wasting context window) or dangerously insufficient for dense scripts (causing truncation mid-character or exceeding the actual token limit). The claim that it is 'deliberately smaller' is risky without a defined safety margin factor that accounts for the worst-case encoding efficiency of the target models.",
+          "evidence": "Section D4: 'Its default counter is UTF-8 byte length: conservative and provider-neutral... The complete emitted string... must satisfy counter(output) <= max_tokens'.",
+          "recommendation": "Define a configurable safety margin (e.g., assume 1 token = 4 bytes for safety, or use a lightweight heuristic based on script detection) rather than a raw 1:1 byte comparison. Acknowledge that true token counting requires model-specific tokenizers, and if 'provider-neutral' is a hard constraint, the budget should be set to the lowest common denominator (e.g., assume 1 char = 2 tokens for safety)."
+        },
+        {
+          "persona": "sme",
+          "severity": "medium",
+          "dimension": "backward_compatibility",
+          "title": "Legacy Node Visibility in Ordinary Search",
+          "detail": "The document states that 'Ordinary search behavior does not change' and unverified nodes remain visible in search, while only 'trusted resume projections' filter them out. This creates a split-brain data view where the same underlying graph yields different 'truths' depending on the access path (Search vs. Resume). This violates the principle of least astonishment for users and downstream tools expecting the 'durable, auditable memory layer' to have consistent integrity semantics. If Kindex is the 'source of truth,' having search return unverified/stale data while resume ignores it introduces subtle bugs where agents might act on unverified data found via search.",
+          "evidence": "Section D3: 'Ordinary search behavior does not change.' Section Residual risks: 'Ordinary search can still return unverified nodes; changing global retrieval is a separate compatibility decision.'",
+          "recommendation": "Either extend the verification predicate to ordinary search (opt-in via flag for backward compatibility) or clearly document this duality as a temporary technical debt. Long-term, a unified data access layer that enforces integrity policies at the query level (rather than per-surface) is preferred to prevent accidental consumption of unverified data."
+        },
+        {
+          "persona": "sme",
+          "severity": "low",
+          "dimension": "concept",
+          "title": "Ambiguity in 'Same-Title' Collision Logic",
+          "detail": "The strategy uses 'same-title collisions' as a gate for acceptance and contradiction detection. However, 'title' is often a weak unique identifier in knowledge graphs (e.g., multiple meetings named 'Sync', multiple people named 'John'). Relying on title equality for namespace integrity or contradiction blocking may result in false positives (blocking valid distinct entities) or false negatives (missing contradictions between 'Project Alpha' and 'Alpha Project').",
+          "evidence": "Section D3: 'Kindex checks only explicit edges and same-title collisions...' Section D5: 'accept performs a same-title collision check inside the transaction'.",
+          "recommendation": "Clarify if 'title' implies a normalized slug or a composite key (e.g., title + type + domain). If titles are free-form text, consider adding a warning rather than a hard block for collisions, or require explicit disambiguation during the review process."
+        }
+      ],
+      "summary": "### Overall Assessment\nThe strategy draft demonstrates a strong grasp of data integrity patterns, particularly in isolating quarantine logic and enforcing explicit trust predicates. However, the reliance on UTF-8 byte counts for token budgeting is a fragile assumption that could lead to runtime truncation errors across diverse languages, and the concurrency model description lacks the specific SQL mechanics required to guarantee the claimed \"deterministic\" race resolution. Additionally, maintaining divergent visibility rules for \"search\" versus \"resume\" surfaces introduces a conceptual split in the system's truth model that warrants careful mitigation. With these refinements, the design would be robust enough for implementation.",
+      "ok": true,
+      "error": null,
+      "duration_ms": 20809.616749873385,
+      "input_tokens": 2678,
+      "output_tokens": 1375,
+      "estimated_cost_usd": 0.028659
+    }
+  ],
+  "disagreements": [],
+  "total_findings": 14,
+  "total_cost_usd": 0.078807
+}
