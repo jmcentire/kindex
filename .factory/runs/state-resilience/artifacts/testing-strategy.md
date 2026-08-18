@@ -15,6 +15,13 @@ session-resume assertion that required an unverified linked node to appear by
 default. Its original linked-node purpose remains, but its fixture must now meet
 the Product P1 trust-admission precondition.
 
+Amendment 4 (Validator mutation finding): distinguish primary behavioral
+controls from redundant defense-in-depth checks. The race and counter tests must
+name mutations that can change observable behavior; exact removal of the
+conditional SQL predicate or final budget recheck is killed by Validator-owned
+static mutation checks because the in-transaction precheck and incremental pack
+checks respectively mask those deletions at runtime.
+
 ## T0 — Lane and oracle rules
 
 - **T0.1 Isolation.** The Tester receives only the three frozen artifacts, their
@@ -152,9 +159,12 @@ swallow one injected DDL exception; rollback test must turn red.
     structurally encoded/neutralized while ordinary newlines in content survive
     structured JSON.
 
-Falsifiability mutations: bypass review-token comparison; remove the
-`status IN (...)` predicate; or stop clearing `content`. Each named test must
-turn red under its corresponding mutation.
+Falsifiability mutations: bypass review-token comparison; remove both the
+in-transaction live-state precheck and its conditional terminal predicate; or
+stop clearing `content`. Each behavioral test must turn red under its
+corresponding mutation. The exact predicate-only deletion is covered by the
+Validator static mutation check in T10 because `BEGIN IMMEDIATE` plus the
+precheck otherwise makes that defense-in-depth clause behaviorally redundant.
 
 ## T5 — Automatic compact-hook suite
 
@@ -223,6 +233,11 @@ first passing verification/current checks; poison-denial test turns red.
 6. The default counter assertion is byte-budget behavior only. No test labels it
    as a universal provider-token measurement.
 
+Runtime counter tests mutate incremental fit admission, which is the primary
+observable hard-bound control. The exact final defensive recheck is covered by
+the Validator static mutation check in T10 because every incremental state is
+already measured before admission.
+
 Base-red attribution: construct an oversized tag and call the existing function
 with a small injected/default budget; base ignores the argument and exceeds it.
 
@@ -273,10 +288,14 @@ The Validator, not the Tester, performs:
    from unrelated collection errors.
 4. Head run of focused suites, then `pytest tests/ -v` with zero automatic
    retry.
-5. At least these temporary mutations, one at a time, never committed:
-   remove compact quarantine; bypass review token; remove conditional terminal
-   predicate; admit unverified contradiction endpoint; and disable final budget
-   check. Each associated test must turn red. Restore and rerun focused tests.
+5. At least these temporary behavioral mutations, one at a time, never
+   committed: remove compact quarantine; bypass review token; remove both the
+   live-state precheck and conditional terminal predicate; admit an unverified
+   contradiction endpoint; and disable incremental budget admission. Each
+   associated behavioral test must turn red. Separately delete only the
+   conditional terminal predicate and only the final defensive budget recheck;
+   exact Validator-owned source checks must turn red for those two redundant
+   guards. Restore after every mutation and rerun focused tests.
 6. Static scans for new LLM calls, direct automatic `add_node`/`add_edge`/
    accept reachability, TODO/stub placeholders, unsafe SQL interpolation, and
    changed existing tests outside T1.

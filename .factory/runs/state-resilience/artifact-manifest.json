@@ -38,6 +38,14 @@
       "supersedes": {
         "testing_sha256": "d41c761e2c15a0571778f01fbe947bbe3f10da7fc03e4a192227863eba9f3ea6"
       }
+    },
+    {
+      "id": "amendment-4-redundant-guard-mutation-truth",
+      "raised_by": "validator",
+      "reason": "Predicate-only and final-recheck-only mutations were behaviorally masked by primary controls, so false behavioral falsifiability claims were replaced with exact static mutation checks.",
+      "supersedes": {
+        "testing_sha256": "908473395719f344a773364336b32827240c871e01c1d7796a7b6a20099f1b33"
+      }
     }
   ],
   "artifacts": {
@@ -55,7 +63,7 @@
     },
     "testing": {
       "path": "artifacts/testing-strategy.md",
-      "sha256": "908473395719f344a773364336b32827240c871e01c1d7796a7b6a20099f1b33"
+      "sha256": "9541808a24e3068352efb3cb137d6317a2028c2223894039b1d86180b8d7e589"
     },
     "tool_policy": {
       "path": "artifacts/tool-policy.md",
