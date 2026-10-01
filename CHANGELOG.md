@@ -9,6 +9,13 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   graph and configured user graph, with explicit per-call `auto`, `project`, and
   `global` scopes on retrieval, listings, and diagnostics. Session-qualified
   references keep results usable for follow-up node, task, and watch operations.
+- Scheduler logs (`cron.log`, `cron-error.log`, `reminders.log`,
+  `reminders-error.log`, `dream.log`) now stamp every line with the local
+  time it was written, e.g. `2026-09-29T14:36:02-07:00 Checked [hoo3]: 0
+  fired`. The launchd plists, crontab lines and detached dream runs set
+  `KIN_LOG_TIMESTAMPS=1`, and `kin` prefixes its stdout/stderr lines when
+  that variable is set. Interactive and piped output is unchanged. Re-run
+  `kin setup-cron` to pick it up on an existing install.
 
 ### Fixed
 - Derived MCP writes route qualified global evidence to the user graph and
