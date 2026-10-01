@@ -537,6 +537,27 @@ class TestTagCLI:
         r = run("tag", "start", data_dir=d)
         assert "Usage" in r.stderr or r.returncode != 0
 
+    @pytest.mark.parametrize("action", ["update", "segment", "pause", "end"])
+    @pytest.mark.parametrize("name_args", [(), ("",), ("   ",)])
+    def test_tag_mutation_without_name_preserves_concurrent_tags(
+        self, tmp_path, action, name_args
+    ):
+        d = str(tmp_path)
+        run("tag", "start", "mine", data_dir=d)
+        run("tag", "start", "theirs", data_dir=d)
+        run("tag", "update", "theirs", "--focus", "recent", data_dir=d)
+
+        before = {name: run("tag", "show", name, data_dir=d).stdout
+                  for name in ("mine", "theirs")}
+        result = run("tag", action, *name_args, data_dir=d)
+
+        assert result.returncode == 2
+        assert "requires an explicit tag name" in result.stderr
+        for name in ("mine", "theirs"):
+            shown = run("tag", "show", name, data_dir=d)
+            assert "Status: active" in shown.stdout
+            assert shown.stdout == before[name]
+
 
 class TestStoreSessionMethods:
     def test_get_session_tags(self, store):
