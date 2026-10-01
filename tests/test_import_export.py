@@ -85,6 +85,76 @@ class TestExportJSON:
 
 
 class TestExportJSONL:
+    @pytest.mark.parametrize("audience", ["private", "team", "org", "public"])
+    def test_schema_is_stable_for_each_audience(self, tmp_path, audience):
+        d = str(tmp_path)
+        s = Store(Config(data_dir=d))
+        s.add_node("Minimal", node_id="minimal", audience="public")
+        s.add_node("Detailed", node_id="detailed", audience="public",
+                   content="Public evidence", intent="Internal intent")
+        s.close()
+        result = run("export", "--audience", audience, "--format", "jsonl", data_dir=d)
+        assert result.returncode == 0, result.stderr
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        expected = (
+            "id", "type", "title", "content", "intent", "status", "audience",
+            "prov_when", "prov_activity", "prov_why", "prov_source", "created_at",
+            "updated_at", "standing", "aka", "domains", "prov_who", "valid_at",
+            "invalid_at", "asserted_at", "true_of", "verified_at", "verified_by",
+            "prov_method", "weight", "referent", "extra", "edges",
+        )
+        if audience in ("org", "public"):
+            expected = tuple(key for key in expected
+                             if key not in ("intent", "prov_activity", "prov_why", "prov_method"))
+            assert "Internal intent" not in result.stdout
+        assert len(rows) == 2
+        assert all(tuple(row) == expected for row in rows)
+
+    @pytest.mark.parametrize("export_format", ["json", "jsonl"])
+    def test_export_edge_order_survives_storage_reordering(self, tmp_path, export_format):
+        d = str(tmp_path)
+        s = Store(Config(data_dir=d))
+        for node_id in ("hub", "a", "b", "c"):
+            s.add_node(node_id, node_id=node_id)
+        arcs = [("b", "relates_to"), ("a", "relates_to"), ("a", "implements")]
+        for target, edge_type in arcs:
+            s.add_edge("hub", target, edge_type=edge_type, weight=0.5, bidirectional=False)
+        s.add_edge("hub", "c", weight=0.75, bidirectional=False)
+        before = run("export", "--audience", "private", "--format", export_format, data_dir=d)
+        assert before.returncode == 0, before.stderr
+        s.conn.execute("DELETE FROM edges WHERE from_id = 'hub' AND weight = 0.5")
+        for target, edge_type in reversed(arcs):
+            s.add_edge("hub", target, edge_type=edge_type, weight=0.5, bidirectional=False)
+        s.close()
+        after = run("export", "--audience", "private", "--format", export_format, data_dir=d)
+        assert after.returncode == 0, after.stderr
+        assert after.stdout == before.stdout
+        rows = json.loads(after.stdout) if export_format == "json" else [
+            json.loads(line) for line in after.stdout.splitlines()]
+        hub = next(row for row in rows if row["id"] == "hub")
+        assert [(edge["to"], edge["type"]) for edge in hub["edges"]] == [
+            ("c", "relates_to"), ("a", "implements"), ("a", "relates_to"), ("b", "relates_to")]
+
+    @pytest.mark.parametrize("audience", ["team", "org", "public"])
+    def test_active_only_honors_hidden_successor_without_exposing_it(self, tmp_path, audience):
+        d = str(tmp_path)
+        s = Store(Config(data_dir=d))
+        s.add_node("Visible predecessor", node_id="prior", audience="public")
+        s.add_node("Visible active", node_id="active", audience="public")
+        s.add_node("Hidden successor", node_id="secret-successor", audience="private")
+        s.add_edge("secret-successor", "prior", edge_type="supersedes", bidirectional=False)
+        s.add_edge("active", "secret-successor", bidirectional=False)
+        s.close()
+        result = run("export", "--audience", audience, "--active-only", data_dir=d)
+        assert result.returncode == 0, result.stderr
+        rows = json.loads(result.stdout)
+        assert [row["id"] for row in rows] == ["active"]
+        assert rows[0]["edges"] == []
+        assert "secret-successor" not in result.stdout
+        full = run("export", "--audience", audience, data_dir=d)
+        assert full.returncode == 0, full.stderr
+        assert [row["id"] for row in json.loads(full.stdout)] == ["active", "prior"]
+
     def test_export_jsonl(self, tmp_path):
         """Export JSONL format."""
         d = str(tmp_path)
