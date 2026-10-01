@@ -3753,6 +3753,21 @@ def cmd_ask(args):
     """
     store = _store(args)
     question = " ".join(args.question)
+
+    # The answer pipeline (answer.py): planned searches, dated evidence in a
+    # token budget, today's date, and answering rules. None without an LLM.
+    from .answer import answer_question
+    ledger, cfg = _ledger(args)
+    try:
+        result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None))
+    except Exception as exc:
+        print(f"Answer failed ({safe_error(exc)}); showing search results.", file=sys.stderr)
+        result = None
+    if result is not None:
+        print(result.answer)
+        store.close()
+        return
+
     qtype = _classify_question(question)
 
     from .retrieve import format_context_block, hybrid_search
@@ -7599,6 +7614,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ask
     s = sub.add_parser("ask", help="Query the knowledge graph")
     s.add_argument("question", nargs="+")
+    s.add_argument("--as-of", dest="as_of", default=None,
+                   help="Today's date for the answer (resolves 'now', 'ago'); defaults to the current date")
     _common(s)
     s.set_defaults(func=cmd_ask)
 

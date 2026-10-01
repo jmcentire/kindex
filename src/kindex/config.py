@@ -317,6 +317,19 @@ class LLMConfig(BaseModel):
     tier2_max_tokens: int = 4000
 
 
+class AskConfig(BaseModel):
+    """`kin ask`: how a question is searched for and answered (see answer.py)."""
+    plan: bool = True                # an LLM planner writes the searches and classifies the question
+    top_k: int = 60                  # nodes retrieved per search
+    context_tokens: int = 24000      # budget for retrieved text shown to the answer model
+    samples: int = 1                 # independent answers; with more than one, an adjudication pass picks
+    readings: bool = False           # answer each plausible reading when the answer depends on it
+    effort: str = "high"             # reasoning effort, for providers that take one
+    plan_effort: str = "low"
+    max_output_tokens: int = 16000   # includes a reasoning model's reasoning
+    timeout_seconds: float = 600.0
+
+
 class BudgetConfig(BaseModel):
     daily: float = 0.50
     weekly: float = 2.00
@@ -704,6 +717,7 @@ class Config(BaseModel):
     cursor_dir: str = "~/.cursor"
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    ask: AskConfig = Field(default_factory=AskConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)

@@ -9,6 +9,7 @@ import json
 import copy
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -125,7 +126,23 @@ class _OpenAIResponsesMessages:
         self.api_key = api_key
         self.timeout = timeout
 
-    def create(self, *, model: str, max_tokens: int, messages: list[dict]) -> SimpleNamespace:
+    def create(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None = None,
+        reasoning_effort: str | None = None,
+        json_schema: dict | None = None,
+        sample: int = 0,
+    ) -> SimpleNamespace:
+        """``system`` becomes the request's instructions; ``reasoning_effort``
+        sets a reasoning model's effort; ``json_schema`` asks for structured
+        output ({"name": ..., "schema": ...}). ``sample`` numbers independent
+        samples of the same request: the provider samples each call
+        independently, so it is not sent, but callers that cache responses
+        key on it."""
         messages = redact(messages)
         payload = {
             "model": model,
@@ -138,6 +155,13 @@ class _OpenAIResponsesMessages:
             ],
             "max_output_tokens": max_tokens,
         }
+        if system:
+            payload["instructions"] = redact_text(system)
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if json_schema:
+            payload["text"] = {"format": {"type": "json_schema", "name": json_schema["name"],
+                                          "schema": json_schema["schema"], "strict": True}}
         request = urllib.request.Request(
             "https://api.openai.com/v1/responses",
             data=json.dumps(payload).encode("utf-8"),
@@ -147,13 +171,19 @@ class _OpenAIResponsesMessages:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            # Provider response bodies can echo prompts or authorization data.
-            # Status is sufficient for this adapter's fallback behavior.
-            raise RuntimeError(f"OpenAI API error {exc.code}") from None
+        # Rate limits and server errors are transient: retry them with backoff.
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                if (exc.code == 429 or exc.code >= 500) and attempt < 3:
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                # Provider response bodies can echo prompts or authorization data.
+                # Status is sufficient for this adapter's fallback behavior.
+                raise RuntimeError(f"OpenAI API error {exc.code}") from None
 
         usage = data.get("usage") or {}
         cached = _nested_usage_value(
