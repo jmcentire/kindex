@@ -4,6 +4,35 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+- Scheduler logs (`cron.log`, `cron-error.log`, `reminders.log`,
+  `reminders-error.log`, `dream.log`) now stamp every line with the local
+  time it was written, e.g. `2026-09-29T14:36:02-07:00 Checked [hoo3]: 0
+  fired`. The launchd plists, crontab lines and detached dream runs set
+  `KIN_LOG_TIMESTAMPS=1`, and `kin` prefixes its stdout/stderr lines when
+  that variable is set. Interactive and piped output is unchanged. Re-run
+  `kin setup-cron` to pick it up on an existing install.
+
+## [0.45.0] - 2026-09-28
+
+### Added
+- Two Kinbase query tools sit beside `kinbase_sync`: `kinbase_status` reports a
+  repository's certification, trusted fact count and open Unknowns, and
+  `kinbase_explain` answers one exact logical key with the reducer steps and the
+  evidence that would change it. A withheld Company snapshot degrades a
+  projection to repository evidence without failing, so a repository that lost
+  Company and one that never had direction read alike until `kinbase_status` is
+  asked. Neither records the asking; `kinbase_status` does run Kinbase's own
+  due-maintenance sweep, which closes apologies already past their deadline and
+  is bounded by what is overdue rather than by how often it is called.
+  Generating a whole task brief stays `kinbase project`, outside the tool
+  surface: it records the query and may open an Unknown, which an agent calling
+  it in a loop would turn into noise in the queue people read.
+
+### Fixed
+- Desktop health alerts identify the agent session they came from, so an alert
+  names which session is unhealthy rather than leaving it to be guessed (#66).
+
 ## [0.44.1] - 2026-09-23
 
 ### Fixed
