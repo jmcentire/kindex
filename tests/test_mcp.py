@@ -590,8 +590,9 @@ class TestMCPToolRegistry:
 
     @pytest.mark.parametrize("action", ["update", "segment", "pause", "end"])
     @pytest.mark.parametrize("other_active", [False, True])
+    @pytest.mark.parametrize("name", ["", "   "])
     def test_tag_update_without_name_never_mutates_an_active_tag(
-        self, patch_store, monkeypatch, tmp_path, action, other_active
+        self, patch_store, monkeypatch, tmp_path, action, other_active, name
     ):
         from kindex import mcp_server, sessions
 
@@ -608,7 +609,7 @@ class TestMCPToolRegistry:
 
         before = {node_id: store.get_node(node_id)["extra"]
                   for node_id in (mine_id, their_id) if node_id}
-        result = mcp_server.tag_update(action=action, focus="wrong focus",
+        result = mcp_server.tag_update(name=name, action=action, focus="wrong focus",
                                        summary="wrong summary")
 
         assert result.startswith("Error: tag_update requires a tag name")

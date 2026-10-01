@@ -6020,10 +6020,10 @@ def cmd_tag(args):
     action = getattr(args, "tag_action", None)
     tag_name = getattr(args, "tag_name", None)
 
-    if action in {"update", "segment", "pause", "end"} and not tag_name:
+    if action in {"update", "segment", "pause", "end"} and not (tag_name or "").strip():
         print(f"Error: kin tag {action} requires an explicit tag name.", file=sys.stderr)
         store.close()
-        return
+        raise SystemExit(2)
 
     if action == "start":
         from .sessions import start_tag

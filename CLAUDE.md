@@ -78,7 +78,7 @@ When working in this codebase, follow these practices:
 - **Profiles**: When `profiles:` are configured in `~/.config/kindex/kin.yaml`, the active graph resolves by `--profile` flag > `KIN_PROFILE` env > `.kin` chain `profile:` key > cwd roots match > `default_profile`. `kin profile which` shows the resolution; `kin whoami` shows the agent identity used for locks/claims/collabs.
 - **Filter by tags**: Use `kin list --tags <tag1>,<tag2>` to find nodes by tag (AND logic). Tags supplement auto-categorization.
 - **Check status**: Use `kin status` to see graph health and active operational nodes.
-- **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update --focus "..."` or `kin tag segment --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end --summary "..."`. See `kin tag list` for all tags.
+- **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update <name> --focus "..."` or `kin tag segment <name> --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end <name> --summary "..."`. See `kin tag list` for all tags.
 - **Project policy**: `.kin/config` ships with the repo. Run `kin policy check --event agent-start` before meaningful code work when shell access is available. Linear is opt-in only; enforce it only when `work_policy.linear.enabled` is true in the project config.
 
 ## Auto-Context Loading
