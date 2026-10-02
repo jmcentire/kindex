@@ -4181,6 +4181,24 @@ def cmd_cron(args):
 
 # ── dream ─────────────────────────────────────────────────────────────
 
+def cmd_digest(args):
+    """Digest ingested conversations: standing directives and long-conversation summaries."""
+    from .conversations import backfill_digests
+    from .vectors import drain_embedding_queue
+
+    store = _store(args)
+    ledger, cfg = _ledger(args)
+    try:
+        if not cfg.llm.enabled:
+            print("No LLM configured; nothing to digest.", file=sys.stderr)
+            return
+        n = backfill_digests(store, cfg, ledger)
+        drain_embedding_queue(store, cfg, max_jobs=10**9, time_budget=10**9, report_coverage=False)
+        print(f"Digested {n} conversation(s).")
+    finally:
+        store.close()
+
+
 def cmd_dream(args):
     """Run knowledge consolidation (dream cycle)."""
     store = _store(args)
@@ -7905,6 +7923,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_cron)
 
     # dream
+    s = sub.add_parser("digest", help="Digest ingested conversations (directives, summaries)")
+    _common(s)
+    s.set_defaults(func=cmd_digest)
+
     s = sub.add_parser("dream", help="Knowledge consolidation (dream cycle)")
     s.add_argument("--verbose", "-v", action="store_true", help="Detailed logging")
     s.add_argument("--dry-run", action="store_true", help="Report without making changes")
