@@ -453,3 +453,49 @@ searches or session scope validation. Older nodes with only a textual
 discovery or explicit locator rebinding is future work. A copied database retains
 its UUID, so resolution verifies identity at the saved locator rather than
 asserting that the locator is the only copy of that graph.
+
+#### Git worktrees and deletion
+
+Each implicitly selected worktree owns a separate ignored
+`.kin/local/kindex/kindex.db` (or the legacy local layout), with its own graph
+UUID. The UUID identifies the database, not the Git repository, branch, or
+commit. Two worktrees of the same repository must not be treated as the same
+source graph, even when their node IDs coincide.
+
+A Git merge merges tracked files; it does not transfer this ignored database
+to the main worktree or the global graph. If a global capture references a
+feature worktree and that worktree is removed, the capture and its source
+metadata survive globally, but the removed local source resolves as
+`database_missing`. This does not automatically mark the capture stale or
+archive it: source availability and the truth of the derived claim are separate
+questions. Recreating the branch restores tracked code, not the deleted
+database. A newly initialized database at the same path has a different UUID
+and resolves as `graph_identity_mismatch`.
+
+The machine's project-graph registry stores root-to-directory mappings for
+maintenance; it is neither an archive nor a UUID discovery/rebinding service.
+The tracked `.kin/index.json` contains selected node summaries, not complete
+source content, graph UUIDs, or a restorable database. Neither Git merge nor
+these discovery artifacts provide provenance recovery. A SQLite backup made
+before deletion can retain the original graph, but this version has no locator
+rebinding interface; a deleted database without a retained copy cannot be
+recovered from its UUID or Git branch alone.
+
+Worktree-independent recovery remains an open design requirement. A strategy
+should preserve referenced evidence outside disposable checkouts before they
+are removed, rather than require keeping or recreating every worktree:
+
+- Retain versioned evidence snapshots in a durable store when creating the
+  derived capture, or archive the source graph before worktree teardown.
+- Keep original graph/node identities and distinguish historical evidence from
+  a live source. A content digest or revision is needed to distinguish the
+  evidence used at capture time from later source edits.
+- Discover or explicitly rebind retained copies by graph identity, verify the
+  binding, and keep resolution read-only. A repository URL, branch, commit, or
+  matching node ID alone must not authorize substitution or mutation.
+- Define retention and garbage collection for unreferenced evidence, plus
+  explicit unavailable results after intentional expiry. Retaining referenced
+  evidence consumes storage, but must not require retaining the worktree.
+
+This change provides durable identity and explicit availability results; it
+does not yet implement evidence retention, archival discovery, or rebinding.

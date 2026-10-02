@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 
 import pytest
 
@@ -11,6 +12,91 @@ pytest.importorskip("mcp")
 from kindex.config import Config
 from kindex.store import Store
 from test_mcp_cross_graph import graphs  # noqa: F401 -- shared public-tool fixture
+
+
+def test_merged_deleted_and_recreated_worktree_does_not_recover_local_evidence(
+        tmp_path, monkeypatch):
+    import kindex.mcp_server as server
+
+    main = tmp_path / "main"
+    feature = tmp_path / "feature"
+    main.mkdir()
+
+    def git(root, *args):
+        return subprocess.run([
+            "git", "-c", "user.name=Kindex Test", "-c", "user.email=test@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+            "-C", str(root), *args,
+        ], check=True, capture_output=True, text=True)
+
+    git(main, "init", "-b", "main")
+    (main / ".kin").mkdir()
+    (main / ".kin" / "config").write_text("name: worktree-lifecycle\n")
+    git(main, "add", ".kin/config")
+    git(main, "commit", "-m", "Initialize repository")
+    git(main, "worktree", "add", "-b", "feature", str(feature))
+
+    home_dir = tmp_path / "global"
+
+    def config(root):
+        cfg = Config(data_dir=str(root / ".kin" / "local" / "kindex"))
+        cfg._project_path = root
+        cfg._global_data_dir = str(home_dir)
+        return cfg
+
+    local = Store(config(feature))
+    primary = Store(config(main))
+    home = Store(Config(data_dir=str(home_dir)))
+    monkeypatch.setattr(server, "_store", local)
+    monkeypatch.setattr(server, "_config", local.config)
+    try:
+        local_id, _, refs = _refs(server, local, home)
+        source_graph_id = local.graph_id
+        primary.add_node("Sibling worktree impostor", node_id=local_id)
+        assert primary.graph_id != source_graph_id
+        server.add("Capture from temporary worktree", source_refs=refs)
+        capture = home.get_node_by_title("Capture from temporary worktree")
+        records = _records(capture)
+        assert any(record["graph_id"] == source_graph_id for record in records)
+
+        (feature / "merged.txt").write_text("Merged code survives deletion.\n")
+        git(feature, "add", "merged.txt")
+        git(feature, "commit", "-m", "Feature change")
+        git(main, "merge", "--ff-only", "feature")
+        assert (main / "merged.txt").is_file()
+        # Neither the Git merge nor its sibling graph absorbed local evidence.
+        assert primary.peek_node(local_id)["title"] == "Sibling worktree impostor"
+        local.close()
+        monkeypatch.setattr(server, "_store", primary)
+        monkeypatch.setattr(server, "_config", primary.config)
+        git(main, "worktree", "remove", "--force", str(feature))
+        assert not feature.exists()
+        handle = server._graph_ref("global", capture["id"])
+        entries = _entries(server.show(handle, resolve_sources=True))
+        missing = [entry for entry in entries if entry["status"] == "unresolved"]
+        assert len(missing) == 1 and missing[0]["reason"] == "database_missing"
+        assert home.peek_node(capture["id"])["extra"]["source_refs"] == records
+        assert "Sibling worktree impostor" not in json.dumps(entries)
+        assert not feature.exists()  # Resolution did not recreate it.
+
+        # Recreating the branch restores tracked files, not its ignored database.
+        git(main, "worktree", "add", str(feature), "feature")
+        assert not local.db_path.exists()
+        replacement = Store(config(feature))
+        try:
+            replacement.add_node("Recreated worktree impostor", node_id=local_id)
+            assert replacement.graph_id != source_graph_id
+            entries = _entries(server.show(handle, resolve_sources=True))
+            missing = [entry for entry in entries if entry["status"] == "unresolved"]
+            assert len(missing) == 1
+            assert missing[0]["reason"] == "graph_identity_mismatch"
+            assert "Recreated worktree impostor" not in json.dumps(entries)
+        finally:
+            replacement.close()
+    finally:
+        local.close()
+        primary.close()
+        home.close()
 
 
 def _refs(server, local, home):
