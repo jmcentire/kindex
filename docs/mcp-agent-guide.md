@@ -425,3 +425,31 @@ before `kin config set` or `kin agent-config set` runs.
 
 For a human-facing walkthrough with reminders, docs site URLs, and release
 metadata checks, see [human-guide.md](human-guide.md).
+
+### Durable source evidence
+
+In graph-aware MCP sessions, pass freshly searched qualified IDs in
+`source_refs` when calling `add`, `learn`, `task_add`, or `watch_add`.
+Each capture stores versioned records in `extra.source_refs`, containing the
+source node ID, persistent graph UUID, absolute SQLite database locator, and
+available project/profile hints. `learn` puts these records on both new
+concepts and its learned-text source document. Graph UUIDs are stamped on
+writable database opens; ordinary secondary reads never stamp them.
+
+`show(node_id)` displays `prov_why` and the stored source records without opening
+their databases. `show(node_id, resolve_sources=True)` also returns a JSON source
+resolution list. Each item is `resolved` with the source node's ID, title,
+content, and status, or `unresolved` with a reason such as `database_missing`,
+`graph_identity_missing`, `graph_identity_mismatch`, `node_missing`,
+`database_unavailable`, or `invalid_source_ref`. Resolution opens only the saved
+locator with SQLite `mode=ro`; it never creates, migrates, stamps, or updates a
+source graph. At most 200 records are resolved per call.
+
+Session result IDs remain temporary authorization handles. Durable records are
+inspection evidence and cannot be supplied to mutation tools to bypass fresh
+searches or session scope validation. Older nodes with only a textual
+`prov_why` cannot reconstruct source identity and report
+`no_durable_source_refs`. A moved database reports `database_missing`; automatic
+discovery or explicit locator rebinding is future work. A copied database retains
+its UUID, so resolution verifies identity at the saved locator rather than
+asserting that the locator is the only copy of that graph.

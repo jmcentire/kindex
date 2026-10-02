@@ -414,12 +414,25 @@ class Store:
             try:
                 self._init_schema()
                 self._check_profile_stamp()
+                self._ensure_graph_identity()
             except BaseException:
                 conn, self._conn = self._conn, None
                 if conn is not None:
                     conn.close()
                 raise
         return self._conn
+
+    def _ensure_graph_identity(self) -> None:
+        """Stamp a stable UUID on writable open; concurrent first opens agree."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('graph_id', ?)",
+            (str(uuid.uuid4()),))
+        self._conn.commit()
+
+    @property
+    def graph_id(self) -> str | None:
+        """Return persisted identity; reading never stamps a read-only graph."""
+        return self.get_meta("graph_id")
 
     def _check_profile_stamp(self) -> None:
         """Enforce the per-database profile stamp (meta key 'kin_profile').
