@@ -849,9 +849,9 @@ PROJECT_KNOWLEDGE_DIRECTIVES = (
     "- You, the agent, must keep all durable knowledge from `kindex.db` losslessly represented in JSONLs after captures, edits, and links.",
     "- Migrate existing knowledge losslessly; list intentional migration omissions and reasons in release notes. Never excuse accidental ongoing loss.",
     "- `git add` and commit canonical sources with code; summaries/selected exports do not prove coverage. Honor audience and secret boundaries.",
-    "- After clone/checkout/merge, verify source/reference consistency; preserve independent changes and explicitly resolve identity/edit conflicts.",
-    "- Worktrees can disappear at any time. Knowledge guarantees must not depend on SQLite preservation, archival, merging, or a teardown step.",
-    "- Optional database merging is an optimization. Report serialization/rebuild gaps explicitly; this guidance adds no automatic runtime enforcement.",
+    "- After clone/checkout/merge, reconcile canonical JSONL sources/references before snapshot regeneration; an id-keyed merge is not lossless.",
+    "- Encourage best-effort cleanup; correctness/recovery cannot depend on it. Reconstruct disposable state from surviving canonical knowledge.",
+    "- Disclose unrecoverable never-persisted knowledge. Optional database merging is an optimization; prompts alone are not runtime recovery guarantees.",
 )
 
 

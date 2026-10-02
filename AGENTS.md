@@ -99,13 +99,18 @@ JSONLs throughout its work, not only when a workspace is being removed.
   canonical sources, not publication into a public repository or omission.
 - `index.json` is a summary, and selected evidence exports can omit data;
   neither alone proves lossless representation of the database's knowledge.
-- After clone, checkout, or merge, verify canonical source/reference consistency.
-  Preserve independent changes and explicitly resolve identity/edit conflicts.
-- Worktrees may be deleted at any time outside our control. No requirement to
-  preserve, archive, merge, or rescue SQLite, or to run a teardown step, may
-  underpin knowledge guarantees. Optional database merging is an optimization.
-- If tooling cannot serialize or reconstruct complete knowledge, report the
-  exact gap. Do not claim migration complete or automatic runtime enforcement.
+- After clone, checkout, or merge, reconcile canonical JSONL records and source
+  references explicitly before regenerating snapshots. Preserve independent
+  changes and resolve identity/edit conflicts at the canonical-source level.
+- Worktrees may be deleted outside our control. Encourage best-effort cleanup
+  and persisting pending knowledge when possible; correctness/recovery must not
+  depend on cleanup, SQLite rescue, merging, or archival. Optional database
+  merging is an optimization.
+- The system must recover disposable state from surviving canonical knowledge.
+  Agent prompting reduces loss but is not a runtime recovery guarantee. Report
+  serializer/rebuilder/reference-resolution gaps and unrecoverable knowledge
+  that was never persisted. Expected data loss is not a desired outcome or
+  blanket acceptance of ongoing unrecoverability.
 
 For an existing installation, use the user-to-agent migration prompt and
 coverage checklist in [canonical-knowledge-migration.md](docs/canonical-knowledge-migration.md).
@@ -161,4 +166,4 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
 | managed | task, session, coordination | Refused — use `kin task` / `kin tag` / `kin coord` |
 - Audience: private / team / public scoping with export boundary enforcement
 - Weight decay: Nodes and edges naturally fade unless accessed, keeping the graph fresh
-- Generated `.kin` artifacts (`.kin/index.json`, `.kin/code-map.json`): never hand-resolve a git conflict in them. `kin index` auto-registers the `kin merge-kin` structured union merge driver (via `.gitattributes` + local `.git/config`); `kin setup-merge` (re)installs it per clone. Regenerate with `kin index` / `kin export code-map` rather than hand-editing the JSON.
+- Generated `.kin` snapshots are not complete canonical knowledge or lossless conflict archives. `kin merge-kin` selects same-ID index conflicts by timestamp (ties keep ours); code-map collisions can keep ours. Reconcile canonical JSONL records and source references explicitly before regenerating with `kin index` / `kin export code-map` from reconciled knowledge and code, never from an incomplete cache. Do not hand-edit generated snapshots. `kin index` auto-registers the driver; `kin setup-merge` (re)installs it per clone.

@@ -8,8 +8,13 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 - Agent guidance makes JSONLs the canonical bearer of project knowledge and
   SQLite databases disposable caches. The agent is responsible for maintaining
   complete, lossless JSONL knowledge after captures, edits, and links. Worktree
-  deletion requires no database preservation, archival, merge, or rescue;
-  optional database merging is an optimization only.
+  deletion can bypass cleanup. Best-effort cleanup is encouraged, but correctness
+  and recovery never depend on database preservation, archival, merge, or rescue;
+  optional database merging is an optimization only. Prompting reduces loss but
+  does not implement a runtime recovery guarantee.
+- Generated agent prompts qualify snapshot merging: same-ID conflicts can select
+  one side, so successful merges do not prove canonical source coverage. Agents
+  reconcile canonical JSONL records/references before regenerating snapshots.
 
 ### Migration guidance for existing users
 
@@ -27,7 +32,9 @@ prompt your agent:
 > list intentional migration exclusions with their reasons and consequences in
 > release notes, and report accidental or unexplained omissions separately. Do
 > not describe excluded knowledge as losslessly migrated. SQLite is a
-> disposable cache and worktrees may disappear without a teardown step.
+> disposable cache. Encourage best-effort cleanup, but recover from surviving
+> canonical knowledge without relying on it. Disclose never-persisted knowledge
+> that cannot be recovered.
 
 ### Intentional migration tradeoffs
 
@@ -48,6 +55,17 @@ prompt your agent:
 - Relationship-only `learn` can still create links without retaining supplied
   `source_refs`. This is an unintended ongoing writer-coverage gap, not an
   accepted migration loss; its runtime repair is outside this prompt/docs change.
+
+### Recovery limits
+
+The system must rebuild disposable state from surviving canonical knowledge when
+cleanup did not happen. This prompt/docs change does not implement complete
+canonical serialization, graph reconstruction, or canonical source-reference
+resolution. `index.json` is incomplete, `repo-memory` is a selected quarantined
+transport, and #71's saved cache locators/UUIDs are not automatically rebound to
+canonical evidence or rebuilt caches. Never-persisted knowledge may be
+unrecoverable and must be reported explicitly. Expected data loss is not desired
+or blanket permission for ongoing loss; accepted migration exclusions stay scoped.
 
 See the [migration guide](docs/canonical-knowledge-migration.md) for the full
 checklist and current limits. `kin index` and selected `repo-memory` exports

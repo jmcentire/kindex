@@ -6655,10 +6655,13 @@ summarizing what was done
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not \
 private cache.
-- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: \
-never hand-resolve git conflicts in them. `kin index` auto-registers a structured \
-merge driver (`kin merge-kin`) on first run that unions them losslessly; run \
-`kin setup-merge` to (re)install it in a fresh clone.
+- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots, \
+not complete canonical knowledge. `kin merge-kin` is not a lossless conflict \
+archive: same-ID index conflicts select by timestamp (ties keep ours), while \
+code-map collisions can keep ours. Reconcile canonical JSONL records and source \
+references explicitly before regenerating snapshots from reconciled knowledge \
+and code; never hand-edit generated snapshots or regenerate from an incomplete \
+cache. `kin index` auto-registers the driver; run `kin setup-merge` in a fresh clone.
 - Personal knowledge belongs in its explicitly selected personal graph. Ignored \
 project directories are for disposable caches, not the only copy of project knowledge.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` \
@@ -6730,7 +6733,8 @@ a concise summary.
 
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not private cache.
-- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: never hand-resolve git conflicts in them. `kin index` auto-registers a structured merge driver (`kin merge-kin`) that unions them losslessly; run `kin setup-merge` to (re)install it in a fresh clone.
+- `.kin/index.json` and `.kin/code-map.json` are generated snapshots, not complete canonical knowledge. `kin merge-kin` is not a lossless conflict archive: same-ID index conflicts select by timestamp (ties keep ours), while code-map collisions can keep ours.
+- Reconcile canonical JSONL records and source references explicitly before regenerating snapshots from reconciled knowledge and code; never hand-edit generated snapshots or regenerate from an incomplete cache. `kin index` auto-registers the driver; run `kin setup-merge` in a fresh clone.
 - Personal knowledge belongs in its explicitly selected personal graph. Ignored project directories are for disposable caches, not the only copy of project knowledge.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` sets `work_policy.linear.enabled: true`.
 - If no work policy is present, continue normally and still use kindex for search/capture.

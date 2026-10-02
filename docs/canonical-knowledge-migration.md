@@ -6,11 +6,20 @@ ensuring that all durable knowledge it reads or writes in the database is
 maintained losslessly in canonical JSONLs. For Git-backed project graphs, commit
 those sources with the related code so collaborators receive the same knowledge.
 
-Worktrees are ephemeral and deletion is outside our control. Knowledge guarantees
-must hold without preserving, archiving, merging, or rescuing a SQLite database,
-and without any teardown hook or pre-deletion action. Maintain the canonical
-sources continuously. Optional database merging may improve efficiency; it is
-never a correctness prerequisite.
+Worktrees are ephemeral and deletion is outside our control. Best-effort cleanup
+is encouraged: when a managed teardown is available, check source coverage and
+persist pending knowledge when possible. Users and Git/GitHub tools can bypass
+that step, so correctness and recovery must not depend on cleanup, database
+preservation, archival, merging, or rescue. Optional database merging may improve
+efficiency; it is never a correctness prerequisite.
+
+Data loss is an expected failure mode, not a desired outcome. Agents maintaining
+canonical sources reduce it, but prompts alone cannot guarantee persistence or
+recovery. The system must reconstruct disposable state from surviving canonical
+knowledge when cleanup did not happen. Knowledge that was never persisted to a
+surviving source cannot be recovered by inventing evidence; disclose precisely
+what is unavailable. Accepted release-documented migration exclusions do not
+permit arbitrary ongoing unrecoverability.
 
 ## Prompt your agent on an existing installation
 
@@ -29,8 +38,9 @@ Then give your agent this migration request:
 > conflicts, or reader limitations. List intentional migration exclusions with
 > their scope, reasons, and consequences in release notes. Report unexplained
 > omissions separately; do not claim excluded knowledge was losslessly migrated.
-> Treat SQLite as disposable. Do not depend on preserving or rescuing databases
-> when worktrees disappear.
+> Treat SQLite as disposable. Encourage best-effort cleanup, but recover from
+> surviving canonical knowledge without depending on teardown. Report knowledge
+> that was never persisted and cannot be recovered.
 
 A version upgrade alone does not perform this migration. This change provides
 agent instructions and release-note guidance, not a new canonical serializer,
@@ -74,7 +84,11 @@ The current accepted limits are precise:
 3. Compare database knowledge with source records field by field. Preserve
    database-only knowledge in canonical JSONLs. Preserve independent source
    knowledge too: an incomplete local cache must not overwrite it. Do not resolve
-   conflicting identities or edits solely by newest timestamp.
+   conflicting identities or edits solely by newest timestamp. Reconcile
+   canonical JSONL records and source references explicitly before regenerating
+   snapshots from the reconciled knowledge and code. The snapshot merge driver
+   selects same-ID index conflicts by timestamp (ties keep ours) and can select
+   one side of code-map collisions; it is not a lossless conflict archive.
 4. Reconcile legacy JSON explicitly. Existing `knowledge.json` remains the
    selected runtime artifact where present; new `repo-memory` publications in
    #69 use `knowledge.jsonl`. If both contain records, the current importer
@@ -97,6 +111,27 @@ The current accepted limits are precise:
    changes that create no new nodes. Completion requires a coverage report for
    retained knowledge, an explicit list of release-documented intentional
    exclusions, and an account of any remaining reader limitations.
+
+## Recovery target and current runtime gaps
+
+This PR does not implement the full recovery target. Existing tools can recover
+some represented content, but the following source and consumer gaps remain:
+
+- `index.json` cannot reconstruct complete node content or provenance because it
+  stores summaries. `repo-memory` handles selected shareable evidence and creates
+  quarantined candidates; it is not a full graph reconstruction path.
+- Graph-transfer JSON/JSONL import can rebuild represented node/edge data, but
+  filters `extra` to lifecycle fields on both export and import, omitting
+  `extra.source_refs`. It does not establish complete canonical coverage or
+  repair saved source bindings. Unsupported or omitted knowledge remains unavailable.
+- #71 resolves saved SQLite paths and verifies cache UUIDs. It has no canonical
+  JSONL source discovery/rebinding path; a rebuilt cache gets a new UUID and does
+  not automatically restore traversal of historical bindings. Complete surviving
+  sources therefore do not yet establish end-to-end source-reference recovery.
+
+These are concrete runtime recovery gaps, independently of whether cleanup was
+attempted. They require separately scoped source/rebuild/reference work; do not
+claim that an agent prompt or best-effort cleanup implements that guarantee.
 
 ## Current tooling limits and ongoing defects
 

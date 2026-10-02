@@ -82,7 +82,9 @@ the tag with a summary.
 Ask your agent to ensure that **all existing knowledge in `kindex.db` is
 represented losslessly in canonical JSONLs**, including relationships,
 metadata, and provenance. SQLite is a disposable cache; the agent maintains
-canonical sources continuously, without depending on workspace teardown.
+canonical sources continuously. Best-effort cleanup is encouraged, but recovery
+cannot depend on workspace teardown. Prompting alone does not guarantee recovery;
+report missing canonical knowledge and runtime reconstruction limits.
 Use the [migration prompt and coverage checklist](canonical-knowledge-migration.md).
 Re-run the instruction-file setup for your client to install the updated guidance.
 Intentional migration omissions are acceptable when explicitly described in
