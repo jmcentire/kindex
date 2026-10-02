@@ -4,6 +4,8 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-01
+
 ### Added
 - MCP reads in a repository-local session can consult both the selected project
   graph and configured user graph, with explicit per-call `auto`, `project`, and
@@ -20,11 +22,12 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   predecessors replaced by a successor outside the selected audience.
 
 ### Fixed
+- Session-tag `update`, `segment`, `pause`, and `end` require an explicit tag
+  name in the CLI and MCP tool. Missing or blank CLI names now exit with status
+  2 instead of silently selecting another active session.
 - Graph exports use a stable schema per audience and deterministic node/edge
   ordering. Directed relationships retain their stored direction on import;
   public/org exports preserve existing privacy omissions.
-
-### Fixed
 - Derived MCP writes route qualified global evidence to the user graph and
   refuse ambiguous or cross-store links before creating nodes. Contextual
   tasks routed outward retain the selected project association for `task_list`.
