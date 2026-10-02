@@ -19,6 +19,12 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   conversations of 6,000 tokens or more; short conversations are read from the
   user's side only, and task setups ("respond only with OK until ...") are not
   directives.
+- `conversations.facts: true` makes the digest pass also write down each
+  conversation's facts as dated nodes: self-contained statements with names,
+  numbers and the date they happened (relative dates resolved against the
+  conversation date), including what the assistant recommended. `kin ask` lists
+  retrieved facts by date above the conversation excerpts. Off by default: it
+  reads every conversation in full once.
 
 ### Changed
 - `kin ask` answers from planned searches over dated evidence

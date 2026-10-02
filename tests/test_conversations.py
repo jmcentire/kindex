@@ -106,3 +106,31 @@ def test_user_messages_keeps_only_the_users_side():
     text = "user: line one\ncontinues here\nassistant: a long reply\nuser: second"
     assert conv.user_messages(text) == "user: line one\ncontinues here\nuser: second"
     assert conv.user_messages("Caroline: hi\nMelanie: hello") == ""
+
+
+def test_facts_become_dated_nodes_when_enabled(store, tmp_path, monkeypatch):
+    from kindex import llm
+    from kindex.config import ConversationsConfig
+
+    client, calls = _fake_client({"directives": [], "facts": [
+        {"date": "2024-03-09", "subject": "user", "text": "The user bought a red kayak for $450 on the Saturday before 2024-03-10."}]})
+    monkeypatch.setattr(llm, "get_client", lambda config, timeout=None: client)
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"),
+                 conversations=ConversationsConfig(facts=True))
+    conv.ingest_conversation(store, "c1", MESSAGES[:2], "2024-03-10")
+    conv.backfill_digests(store, cfg)
+    prompt = calls[0]["messages"][0]["content"]
+    assert "- facts:" in prompt and "assistant: Nice!" in prompt  # full text, not the user's side only
+    facts = [n for n in store.all_nodes(node_type="document") if n["id"].startswith("convfact-")]
+    assert len(facts) == 1 and facts[0]["extra"]["fact_date"] == "2024-03-09"
+
+
+def test_facts_are_off_by_default(store, tmp_path, monkeypatch):
+    from kindex import llm
+
+    client, calls = _fake_client({"directives": []})
+    monkeypatch.setattr(llm, "get_client", lambda config, timeout=None: client)
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
+    conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10")
+    conv.backfill_digests(store, cfg)
+    assert "- facts:" not in calls[0]["messages"][0]["content"]

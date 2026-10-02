@@ -330,6 +330,11 @@ class AskConfig(BaseModel):
     timeout_seconds: float = 600.0
 
 
+class ConversationsConfig(BaseModel):
+    """Conversation digests (conversations.py)."""
+    facts: bool = False              # also record each conversation's facts as dated nodes
+
+
 class BudgetConfig(BaseModel):
     daily: float = 0.50
     weekly: float = 2.00
@@ -718,6 +723,7 @@ class Config(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     ask: AskConfig = Field(default_factory=AskConfig)
+    conversations: ConversationsConfig = Field(default_factory=ConversationsConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)

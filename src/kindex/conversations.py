@@ -9,7 +9,8 @@ ingest uses), each node carries the conversation's date as `prov_when`, and the
 nodes of one conversation are linked in order so graph expansion can reach a
 node's neighbours.
 
-With an LLM configured, `digest_conversation` also reads each conversation once:
+With an LLM configured, `digest_conversation` also reads each conversation once
+(and, with `conversations.facts`, writes down its dated facts as nodes):
 the user's standing instructions (how the assistant should respond from now on)
 become `directive` nodes, which `kin ask` shows with every answer, and a dated
 summary becomes a node linked to the conversation, for questions that span many
@@ -140,6 +141,30 @@ DIGEST_PROMPT = """Below is {what}{date}. Return:
 Conversation:
 {text}"""
 
+# Facts written down once, when the conversation is read: dated, self-contained
+# statements a later question can be answered from without re-deriving
+# "last Saturday" or a count from raw text at answer time.
+FACTS_FIELD = """- facts: everything in the conversation worth remembering about the user and their world, so a question months later can be answered without the original text. One fact per item, each self-contained: name the people, places, items and titles instead of using pronouns, and keep numbers, amounts, counts and units. For each fact give: date, when it happened or was true, as YYYY-MM-DD or a period (2023-05, "the week before 2023-06-12"), resolving relative dates ("last Saturday", "two weeks ago", "tomorrow") against the conversation date, or empty if undated; subject, who it is about ("user", "assistant", or a person's name); text, the fact in one sentence, keeping the original relative phrase when one was used ("the user bought a red kayak for $450 on the Saturday before 2023-05-20"). Include events and activities, purchases, plans with dates, possessions and counts, preferences and opinions, relationships, health, work and places, changes ("the user now walks 10,000 steps a day; earlier it was 5,000"), and the specific recommendations, lists and answers the assistant gave. Leave out small talk and generic advice.
+"""
+
+FACT_ITEM = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["date", "subject", "text"],
+    "properties": {"date": {"type": "string"}, "subject": {"type": "string"}, "text": {"type": "string"}},
+}
+
+
+def _digest_schema(summary: bool, facts: bool) -> dict:
+    props = {"directives": {"type": "array", "items": {"type": "string"}}}
+    if summary:
+        props["summary"] = {"type": "string"}
+    if facts:
+        props["facts"] = {"type": "array", "items": FACT_ITEM}
+    return {"name": "conversation_digest",
+            "schema": {"type": "object", "additionalProperties": False, "required": list(props), "properties": props}}
+
+
 SUMMARY_FIELD = """- summary: 4 to 8 sentences on what the conversation covered: the user's situation, the facts, figures, decisions and plans they gave, and what the assistant advised, with dates (resolve "last week" or "tomorrow" against the conversation date).
 """
 
@@ -177,16 +202,19 @@ def digest_conversation(store: Store, conversation_id: str, text: str, when: str
         return out
     threshold = SUMMARY_MIN_TOKENS if summary_min_tokens is None else summary_min_tokens
     summarize = len(text) // 4 >= threshold
+    facts = bool(getattr(getattr(config, "conversations", None), "facts", False))
     what = "a conversation between a user and an assistant"
-    if not summarize:
+    if not summarize and not facts:
         # Directives are the user's: a short conversation is read from the user's side only.
         mine = user_messages(text)
         if mine:
             text, what = mine, "what a user wrote in a conversation with an assistant"
+    fields = (SUMMARY_FIELD if summarize else "") + (FACTS_FIELD if facts else "")
+    schema = _digest_schema(summarize, True) if facts else (DIGEST_SCHEMA if summarize else DIRECTIVES_ONLY_SCHEMA)
     raw = _call(client, config, system=None, ledger=ledger, purpose="conversation-digest",
                 user=DIGEST_PROMPT.format(what=what, date=f" on {when}" if when else "", text=text,
-                                          summary=SUMMARY_FIELD if summarize else ""),
-                effort=effort, max_tokens=8000, json_schema=DIGEST_SCHEMA if summarize else DIRECTIVES_ONLY_SCHEMA)
+                                          summary=fields),
+                effort=effort, max_tokens=24000 if facts else 8000, json_schema=schema)
     try:
         digest = json.loads(raw)
     except json.JSONDecodeError:
@@ -211,6 +239,23 @@ def digest_conversation(store: Store, conversation_id: str, text: str, when: str
             for target in link_to or []:
                 store.add_edge(nid, target, edge_type="relates_to", provenance="summary of conversation")
         out["summary"] = nid
+    out["facts"] = []
+    for i, fact in enumerate((digest.get("facts") or []) if facts else []):
+        text_ = str((fact or {}).get("text") or "").strip()
+        if not text_:
+            continue
+        nid = "convfact-" + hashlib.sha256(f"{conversation_id}|{i}".encode()).hexdigest()[:16]
+        if store.get_node(nid):
+            continue
+        store.add_node(node_id=nid, title=text_[:60].strip() + ("..." if len(text_) > 60 else ""),
+                       content=text_, node_type="document", prov_source=conversation_id,
+                       prov_activity="conversation-digest", prov_when=when,
+                       extra={"conversation_id": conversation_id, "kind": "conversation-fact",
+                              "fact_date": str(fact.get("date") or "").strip(),
+                              "subject": str(fact.get("subject") or "").strip()})
+        for target in link_to or []:
+            store.add_edge(nid, target, edge_type="relates_to", provenance="fact from conversation")
+        out["facts"].append(nid)
     return out
 
 

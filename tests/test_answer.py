@@ -159,3 +159,17 @@ def test_without_team_knowledge_the_prompt_is_unchanged(store, tmp_path, monkeyp
     monkeypatch.setattr(answer_mod, "get_client", lambda config, timeout=None: SimpleNamespace(messages=fake))
     answer_mod.answer_question(store, "kayak trips?", _config(tmp_path, plan=False))
     assert "Team knowledge" not in fake.calls[-1]["messages"][0]["content"]
+
+
+def test_facts_are_listed_by_their_own_date_before_the_excerpts():
+    nodes = [
+        {"id": "x", "content": "user: we went last Saturday", "prov_when": "2024-03-10"},
+        {"id": "f2", "content": "The user went kayaking on 2024-03-09.", "prov_when": "2024-03-10",
+         "extra": {"kind": "conversation-fact", "fact_date": "2024-03-09"}},
+        {"id": "f1", "content": "The user bought a kayak.", "prov_when": "2024-03-10",
+         "extra": {"kind": "conversation-fact", "fact_date": "2024-01-02"}},
+    ]
+    text, _, _ = answer_mod.assemble(nodes, [], 1000)
+    assert text.index("2024-01-02: The user bought a kayak.") < text.index("2024-03-09: The user went kayaking")
+    assert text.index("## Facts recorded") < text.index("## Evidence, oldest first")
+    assert "user: we went last Saturday" in text.split("## Evidence, oldest first")[1]

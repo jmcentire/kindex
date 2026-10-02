@@ -214,6 +214,20 @@ TEAM_HEADER = ("## Team knowledge\nCurrent shared knowledge about the user's wor
                "the code works), supplied by the system asking; use it for questions about that work.")
 
 
+FACTS_HEADER = ("## Facts recorded from the conversations, by date\nWritten down when each conversation was read, "
+                "with relative dates resolved; the excerpts below are the source text.")
+
+
+def _fact_sort_key(node: dict) -> str:
+    """A fact's own date when it gives one (ISO dates sort as text), else its conversation's."""
+    extra = node.get("extra") or {}
+    date_ = str(extra.get("fact_date") or "")
+    if date_[:4].isdigit():
+        return date_
+    when = node_date(node)
+    return when.date().isoformat() if when else "9999"
+
+
 def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
              team: list[str] | None = None) -> tuple[str, int, list[dict]]:
     """The context: nodes chosen in rank order within the budget, shown oldest first.
@@ -228,6 +242,8 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         used += cost
     order = {n["id"]: i for i, n in enumerate(chosen)}
     chosen.sort(key=lambda n: (node_date(n) or datetime.max, n.get("created_at") or "", order[n["id"]]))
+    facts = [n for n in chosen if (n.get("extra") or {}).get("kind") == "conversation-fact"]
+    excerpts = [n for n in chosen if (n.get("extra") or {}).get("kind") != "conversation-fact"]
     parts = []
     if directives:
         parts.append("## Standing directives")
@@ -237,8 +253,16 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         parts.append(TEAM_HEADER)
         parts.extend(f"- {t}" for t in team)
         parts.append("")
+    if facts:
+        facts.sort(key=lambda n: (_fact_sort_key(n), order[n["id"]]))
+        parts.append(FACTS_HEADER)
+        for node in facts:
+            extra = node.get("extra") or {}
+            when = extra.get("fact_date") or "undated"
+            parts.append(f"- {when}: {node_text(node)} (conversation of {node.get('prov_when') or 'unknown date'})")
+        parts.append("")
     parts.append("## Evidence, oldest first")
-    for node in chosen:
+    for node in excerpts:
         when = node.get("prov_when") or (node_date(node).date().isoformat() if node_date(node) else "undated")
         parts.append(f"[{when}] {node_text(node)}")
     text = "\n\n".join(parts)
