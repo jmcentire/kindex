@@ -430,11 +430,16 @@ metadata checks, see [human-guide.md](human-guide.md).
 
 In graph-aware MCP sessions, pass freshly searched qualified IDs in
 `source_refs` when calling `add`, `learn`, `task_add`, or `watch_add`.
-Each capture stores versioned records in `extra.source_refs`, containing the
+Newly created captures store versioned records in `extra.source_refs`, containing the
 source node ID, persistent graph UUID, absolute SQLite database locator, and
 available project/profile hints. `learn` puts these records on both new
 concepts and its learned-text source document. Graph UUIDs are stamped on
 writable database opens; ordinary secondary reads never stamp them.
+
+Known coverage gap: when `learn` matches only existing concepts, it can create
+relationships without a learned-text document or saved `source_refs`. That is a
+source-reference consistency issue, separate from disposable database lifetime;
+it remains unresolved by this change.
 
 `show(node_id)` displays `prov_why` and the stored source records without opening
 their databases. `show(node_id, resolve_sources=True)` also returns a JSON source
@@ -454,48 +459,42 @@ discovery or explicit locator rebinding is future work. A copied database retain
 its UUID, so resolution verifies identity at the saved locator rather than
 asserting that the locator is the only copy of that graph.
 
-#### Git worktrees and deletion
+#### Git worktrees and disposable caches
 
-Each implicitly selected worktree owns a separate ignored
-`.kin/local/kindex/kindex.db` (or the legacy local layout), with its own graph
-UUID. The UUID identifies the database, not the Git repository, branch, or
-commit. Two worktrees of the same repository must not be treated as the same
-source graph, even when their node IDs coincide.
+SQLite databases are disposable caches. For project knowledge, JSONLs are the
+canonical bearer of knowledge, and the agent is responsible for maintaining
+complete knowledge from `kindex.db` in those sources as it works. Existing
+JSON artifacts need explicit, lossless reconciliation when migrating to JSONL.
+This is the required workflow, not a claim of automatic runtime enforcement.
 
-A Git merge merges tracked files; it does not transfer this ignored database
-to the main worktree or the global graph. If a global capture references a
-feature worktree and that worktree is removed, the capture and its source
-metadata survive globally, but the removed local source resolves as
-`database_missing`. This does not automatically mark the capture stale or
-archive it: source availability and the truth of the derived claim are separate
-questions. Recreating the branch restores tracked code, not the deleted
-database. A newly initialized database at the same path has a different UUID
-and resolves as `graph_identity_mismatch`.
+Each implicitly selected worktree currently has a separate ignored
+`.kin/local/kindex/kindex.db` (or legacy local layout), with its own cache graph
+UUID. The UUID identifies that database, not the Git repository, branch, commit,
+or evidence revision. A sibling cache's matching node ID cannot establish source
+identity or authorize mutation.
 
-The machine's project-graph registry stores root-to-directory mappings for
-maintenance; it is neither an archive nor a UUID discovery/rebinding service.
-The tracked `.kin/index.json` contains selected node summaries, not complete
-source content, graph UUIDs, or a restorable database. Neither Git merge nor
-these discovery artifacts provide provenance recovery. A SQLite backup made
-before deletion can retain the original graph, but this version has no locator
-rebinding interface; a deleted database without a retained copy cannot be
-recovered from its UUID or Git branch alone.
+Worktrees are ephemeral and may be deleted outside our control. No knowledge
+guarantee may require preserving, archiving, merging, or rescuing their SQLite
+databases, or running a pre-deletion hook. Optional database merging is an
+optimization only. Agents must maintain canonical sources continuously and
+commit project JSONLs alongside the relevant code; deletion is not the point at
+which durable knowledge should first be serialized.
 
-Worktree-independent recovery remains an open design requirement. A strategy
-should preserve referenced evidence outside disposable checkouts before they
-are removed, rather than require keeping or recreating every worktree:
+The current locator-only resolver has a narrower observable contract. A Git
+merge transfers tracked files, not the ignored cache. After worktree removal,
+a saved database locator can return `database_missing`. A newly initialized
+cache at the same path has a new UUID and returns `graph_identity_mismatch`.
+These are expected cache availability results, not evidence that deletion itself
+is a Kindex defect or that an agent must recover the removed database. Missing
+cache availability also does not by itself establish that a derived claim is
+false or stale.
 
-- Retain versioned evidence snapshots in a durable store when creating the
-  derived capture, or archive the source graph before worktree teardown.
-- Keep original graph/node identities and distinguish historical evidence from
-  a live source. A content digest or revision is needed to distinguish the
-  evidence used at capture time from later source edits.
-- Discover or explicitly rebind retained copies by graph identity, verify the
-  binding, and keep resolution read-only. A repository URL, branch, commit, or
-  matching node ID alone must not authorize substitution or mutation.
-- Define retention and garbage collection for unreferenced evidence, plus
-  explicit unavailable results after intentional expiry. Retaining referenced
-  evidence consumes storage, but must not require retaining the worktree.
-
-This change provides durable identity and explicit availability results; it
-does not yet implement evidence retention, archival discovery, or rebinding.
+Evaluate canonical serialization and reference consistency separately: all
+knowledge, relationships, provenance, and evidence bindings must be represented
+losslessly in canonical sources, and references must identify the correct source
+and revision independently of cache paths. The current project registry stores
+paths, `.kin/index.json` stores selected summaries, and `repo-memory` publishes
+selected shareable evidence. None establishes complete coverage or independent
+source resolution. This PR adds graph-bound cache locators, not canonical JSONL
+serialization or a resolver for those canonical sources. Those implementation
+gaps remain real; database survival is not their remedy.
