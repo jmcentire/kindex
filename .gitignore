@@ -33,3 +33,7 @@ kin.yaml
 /kinbase-compatibility.md
 /docs/reviews/2026-09-12-supervisor-repair.md
 /docs/reviews/supervisor-acceptance/
+
+# Agents
+/.claude
+/.codex
