@@ -83,25 +83,30 @@ When working in this codebase, follow these practices:
 
 ## Canonical project knowledge
 
-For Git-backed project graphs, tracked `.kin/` JSON/JSONL knowledge files are
-the canonical source. SQLite must be rebuildable from them without additional
-durable knowledge, context, or provenance existing only in the database.
+JSONLs are the canonical bearer of project knowledge. SQLite databases,
+including `kindex.db`, are disposable caches. **The agent is responsible** for
+keeping all durable database knowledge represented losslessly in canonical
+JSONLs throughout its work, not only when a workspace is being removed.
 
-- Persist complete captured or changed records, relationships, and source
-  bindings in the canonical files and commit them alongside related code.
-- Preserve SQLite-only knowledge into canonical files during migration; never
-  reconcile by silently deleting, truncating, or overwriting it.
-- Verify complete source coverage. `index.json` is a summary, and selected
-  evidence exports can omit data; neither alone proves lossless persistence.
-- After clone, checkout, or merge, verify reconstruction from source. Preserve
-  independent changes and explicitly resolve identity/edit conflicts rather
-  than choosing whichever timestamp is newest.
-- Before removing a worktree, verify its durable knowledge is committed and
-  recoverable from surviving sources. A deleted database path or another
-  worktree's same-ID node does not establish recovery or provenance.
-- If current tooling cannot satisfy these requirements, report the gap and
-  preserve a recoverable copy before teardown. This workflow does not claim
-  automatic source persistence, cache reconstruction, or discovery support.
+- Persist complete captured or changed records, relationships, metadata,
+  provenance, and source bindings in canonical JSONLs and commit them with code.
+- Migrate all existing database-only knowledge into JSONLs without truncation or
+  omitted records. Reconcile legacy JSON explicitly and verify full coverage;
+  do not silently choose one format if both contain knowledge.
+- Preserve audience and secret boundaries. Private knowledge requires protected
+  canonical sources, not publication into a public repository or omission.
+- `index.json` is a summary, and selected evidence exports can omit data;
+  neither alone proves lossless representation of the database's knowledge.
+- After clone, checkout, or merge, verify canonical source/reference consistency.
+  Preserve independent changes and explicitly resolve identity/edit conflicts.
+- Worktrees may be deleted at any time outside our control. No requirement to
+  preserve, archive, merge, or rescue SQLite, or to run a teardown step, may
+  underpin knowledge guarantees. Optional database merging is an optimization.
+- If tooling cannot serialize or reconstruct complete knowledge, report the
+  exact gap. Do not claim migration complete or automatic runtime enforcement.
+
+For an existing installation, use the user-to-agent migration prompt and
+coverage checklist in [canonical-knowledge-migration.md](docs/canonical-knowledge-migration.md).
 
 ## Auto-Context Loading
 

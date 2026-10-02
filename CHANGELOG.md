@@ -4,6 +4,34 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+### Changed
+- Agent guidance makes JSONLs the canonical bearer of project knowledge and
+  SQLite databases disposable caches. The agent is responsible for maintaining
+  complete, lossless JSONL knowledge after captures, edits, and links. Worktree
+  deletion requires no database preservation, archival, merge, or rescue;
+  optional database merging is an optimization only.
+
+### Migration guidance for existing users
+
+Updating Kindex or its instruction files does not automatically migrate existing
+knowledge. Reinstall the agent instructions for your client, then explicitly
+prompt your agent:
+
+> Ensure all existing knowledge in my Kindex `kindex.db` is represented losslessly
+> in the canonical JSONLs. Inventory all durable records, relationships,
+> metadata, provenance, and source bindings; reconcile existing JSON and JSONL
+> sources without silently choosing one; verify exact source coverage and
+> reference consistency. Respect audience and secret boundaries. Commit the
+> project knowledge sources with the code and keep them current after future
+> writes. Report anything the current serializer or reader cannot preserve;
+> do not claim the migration complete with unresolved omissions. SQLite is a
+> disposable cache and worktrees may disappear without a teardown step.
+
+See the [migration guide](docs/canonical-knowledge-migration.md) for the full
+checklist and current limits. `kin index` and selected `repo-memory` exports
+alone are not complete knowledge migrations. No automatic storage rewrite or
+software release is included in this guidance.
+
 ## [0.46.0] - 2026-10-01
 
 ### Added

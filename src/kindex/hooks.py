@@ -845,13 +845,13 @@ def write_inbox_item(
 
 
 PROJECT_KNOWLEDGE_DIRECTIVES = (
-    "- Tracked `.kin/` JSON/JSONL is canonical for project knowledge; SQLite is rebuildable and must contain no additional durable context or provenance.",
-    "- After captures, edits, and links, persist complete records/relationships to canonical files; SQLite-only success is incomplete.",
-    "- Preserve SQLite-only knowledge during migration; never silently delete, truncate, or overwrite it.",
-    "- `git add` and commit canonical files with code. Summaries/filtered exports are not proof of complete content, metadata, or source bindings.",
-    "- After clone/checkout/merge, verify reconstruction from source; preserve independent changes and explicitly resolve conflicting identities/edits.",
-    "- Before worktree deletion, verify knowledge is committed/recoverable. Resolve by graph/node identity and source revision, never just path or matching ID.",
-    "- If tooling cannot persist/rebuild complete source, report the gap and keep a recoverable copy; do not claim automatic enforcement.",
+    "- Canonical project knowledge lives in tracked `.kin/` JSONLs (existing JSON is legacy); SQLite databases are disposable caches.",
+    "- You, the agent, must keep all durable knowledge from `kindex.db` losslessly represented in JSONLs after captures, edits, and links.",
+    "- Migrate existing database-only knowledge into JSONLs without dropped content, metadata, relationships, or source references; verify full coverage.",
+    "- `git add` and commit canonical sources with code; summaries/selected exports do not prove coverage. Honor audience and secret boundaries.",
+    "- After clone/checkout/merge, verify source/reference consistency; preserve independent changes and explicitly resolve identity/edit conflicts.",
+    "- Worktrees can disappear at any time. Knowledge guarantees must not depend on SQLite preservation, archival, merging, or a teardown step.",
+    "- Optional database merging is an optimization. Report serialization/rebuild gaps explicitly; this guidance adds no automatic runtime enforcement.",
 )
 
 

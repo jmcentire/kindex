@@ -77,6 +77,16 @@ visible. The instruction files are what make agents use Kindex proactively:
 start/resume a tag, search before adding, capture durable decisions, and end
 the tag with a summary.
 
+## Existing knowledge migration
+
+Ask your agent to ensure that **all existing knowledge in `kindex.db` is
+represented losslessly in canonical JSONLs**, including relationships,
+metadata, and provenance. SQLite is a disposable cache; the agent maintains
+canonical sources continuously, without depending on workspace teardown.
+Use the [migration prompt and coverage checklist](canonical-knowledge-migration.md).
+Re-run the instruction-file setup for your client to install the updated guidance.
+This is agent workflow guidance, not an automatic database migration.
+
 ## Review Automatic Capture Before Promotion
 
 Automatic pre-compact extraction is quarantined. A successful hook stages
