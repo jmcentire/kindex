@@ -398,6 +398,13 @@ kin import graph.jsonl --data-dir /path/to/isolated/graph --dry-run
 kin import graph.jsonl --data-dir /path/to/isolated/graph
 ```
 
+Add `--active-only` to export only canonically active nodes. Superseding edges
+are evaluated across the source graph even when the successor is outside the
+selected audience; out-of-scope node IDs remain omitted from the export.
+Records have a stable field order for each audience, and nodes and stored arcs
+have deterministic ordering. Public/org exports retain their privacy projection:
+they omit intent, activity, reasoning and verification-method prose.
+
 JSON arrays, single JSON records and JSONL remain supported. These are knowledge
 snapshots, **not full backups** of tasks, locks, reminders, policy or runtime state.
 Only lifecycle keys from `extra` travel: expiry, stale-referent and supersession

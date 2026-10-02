@@ -12,6 +12,13 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   `KIN_LOG_TIMESTAMPS=1`, and `kin` prefixes its stdout/stderr lines when
   that variable is set. Interactive and piped output is unchanged. Re-run
   `kin setup-cron` to pick it up on an existing install.
+- `kin export --active-only` excludes retired and superseded nodes, including
+  predecessors replaced by a successor outside the selected audience.
+
+### Fixed
+- Graph exports use a stable schema per audience and deterministic node/edge
+  ordering. Directed relationships retain their stored direction on import;
+  public/org exports preserve existing privacy omissions.
 
 ## [0.45.0] - 2026-09-28
 
