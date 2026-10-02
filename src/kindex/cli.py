@@ -7631,7 +7631,7 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument("--max-attempts", type=int, default=16, help="At most 1-16 deliveries within a 20 second budget")
     reconcile_parser.set_defaults(func=cmd_integration_reconcile)
 
-    s = sub.add_parser("repo-memory", help="Publish/import selected shareable evidence in .kin/knowledge.json")
+    s = sub.add_parser("repo-memory", help="Publish/import selected shareable evidence in .kin/knowledge.jsonl (or existing .json)")
     rs = s.add_subparsers(dest="repo_memory_action", required=True)
     for action in ("publish", "import"):
         repo_parser = rs.add_parser(action)
