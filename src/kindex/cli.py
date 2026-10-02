@@ -4065,7 +4065,7 @@ def cmd_import_graph(args):
         filepath = Path(args.filepath)
         text = filepath.read_text()
         if filepath.suffix == ".jsonl" or args.format == "jsonl":
-            items = [json.loads(line) for line in text.splitlines() if line.strip()]
+            items = [json.loads(line) for line in text.split("\n") if line.strip()]
         else:
             data = json.loads(text)
             items = data if isinstance(data, list) else [data]
