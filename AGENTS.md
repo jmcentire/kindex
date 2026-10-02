@@ -90,9 +90,11 @@ JSONLs throughout its work, not only when a workspace is being removed.
 
 - Persist complete captured or changed records, relationships, metadata,
   provenance, and source bindings in canonical JSONLs and commit them with code.
-- Migrate all existing database-only knowledge into JSONLs without truncation or
-  omitted records. Reconcile legacy JSON explicitly and verify full coverage;
-  do not silently choose one format if both contain knowledge.
+- Migrate existing database-only knowledge into JSONLs and verify coverage.
+  Intentional migration loss is acceptable when release notes explicitly name
+  the omitted knowledge, scope, reason, and consequences. Report those exclusions
+  separately; do not call an incomplete migration lossless or relabel accidental
+  ongoing loss as intentional. Reconcile legacy JSON explicitly.
 - Preserve audience and secret boundaries. Private knowledge requires protected
   canonical sources, not publication into a public repository or omission.
 - `index.json` is a summary, and selected evidence exports can omit data;

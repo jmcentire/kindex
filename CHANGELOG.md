@@ -24,8 +24,30 @@ prompt your agent:
 > reference consistency. Respect audience and secret boundaries. Commit the
 > project knowledge sources with the code and keep them current after future
 > writes. Report anything the current serializer or reader cannot preserve;
-> do not claim the migration complete with unresolved omissions. SQLite is a
+> list intentional migration exclusions with their reasons and consequences in
+> release notes, and report accidental or unexplained omissions separately. Do
+> not describe excluded knowledge as losslessly migrated. SQLite is a
 > disposable cache and worktrees may disappear without a teardown step.
+
+### Intentional migration tradeoffs
+
+- Legacy format precedence is deliberate: if both `knowledge.json` and
+  `knowledge.jsonl` exist, `repo-memory` reads JSON only. JSONL records are not
+  deleted, but are absent from that import until the agent explicitly reconciles
+  the files. There is no automatic union, dual-write, or old-client JSONL support.
+  This documented compatibility limitation is accepted, not a merge blocker.
+- Existing captures with only expired session handles are not automatically
+  backfilled with durable source bindings. Their historical sources can remain
+  unresolved; the agent may reconstruct them only from verifiable canonical
+  evidence, otherwise it must record the missing bindings. Node knowledge is not
+  automatically deleted by this migration.
+- Intentional migration exclusions are permitted when release notes identify
+  the omitted knowledge/bindings, scope, reasons, and consequences. Preserve the
+  remaining knowledge accurately and report those exclusions explicitly.
+  This does not excuse unexplained loss or dropped provenance on new writes.
+- Relationship-only `learn` can still create links without retaining supplied
+  `source_refs`. This is an unintended ongoing writer-coverage gap, not an
+  accepted migration loss; its runtime repair is outside this prompt/docs change.
 
 See the [migration guide](docs/canonical-knowledge-migration.md) for the full
 checklist and current limits. `kin index` and selected `repo-memory` exports

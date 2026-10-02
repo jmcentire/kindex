@@ -26,13 +26,39 @@ Then give your agent this migration request:
 > secret boundaries. Verify complete coverage and source/reference consistency,
 > commit the project sources with the code, and keep them current after every
 > capture, edit, and link. Report exact unsupported fields, record types,
-> conflicts, or reader limitations; do not claim a complete migration while
-> omissions remain. Treat SQLite as disposable. Do not depend on preserving or
-> rescuing databases when worktrees disappear.
+> conflicts, or reader limitations. List intentional migration exclusions with
+> their scope, reasons, and consequences in release notes. Report unexplained
+> omissions separately; do not claim excluded knowledge was losslessly migrated.
+> Treat SQLite as disposable. Do not depend on preserving or rescuing databases
+> when worktrees disappear.
 
 A version upgrade alone does not perform this migration. This change provides
 agent instructions and release-note guidance, not a new canonical serializer,
 automatic migration, or cache reconstruction implementation.
+
+## Accepted migration loss and compatibility limits
+
+Intentional knowledge loss is acceptable when it is part of the migration's
+stated behavior and release notes identify what is omitted, why, the affected
+population or record types, and the resulting limitations. Keep a coverage
+report for retained knowledge and a separate list of intentional exclusions.
+Do not claim excluded knowledge was preserved, or reinterpret an accidental
+ongoing writer failure as an intentional migration choice.
+
+The current accepted limits are precise:
+
+- #69 deliberately retains legacy `knowledge.json` precedence. When both formats
+  exist, the importer reads JSON only; JSONL-only records are absent from that
+  import, but the JSONL bytes are not deleted. There is no automatic union or
+  dual-write, and old clients do not gain JSONL support. Agents reconcile sources
+  explicitly when migrating. This compatibility choice is not a merge blocker.
+- #71 does not backfill captures whose only source bindings are expired session
+  handles. Historical provenance may remain unresolved. Reconstruct bindings
+  only when canonical evidence verifies the original source/revision; otherwise
+  document the missing binding. This does not automatically discard node content.
+- Dropping supplied source references while `learn` creates new relationships
+  between existing concepts is ongoing writer behavior, not a migration
+  exclusion. It remains an unintended gap with separately scoped runtime work.
 
 ## Agent coverage checklist
 
@@ -51,9 +77,10 @@ automatic migration, or cache reconstruction implementation.
    conflicting identities or edits solely by newest timestamp.
 4. Reconcile legacy JSON explicitly. Existing `knowledge.json` remains the
    selected runtime artifact where present; new `repo-memory` publications in
-   #69 use `knowledge.jsonl`. If both contain records, the current importer can
-   silently select only JSON. Compare and reconcile both losslessly rather than
-   treating either file as empty or dropping it. Verify complete coverage before
+   #69 use `knowledge.jsonl`. If both contain records, the current importer
+   intentionally selects JSON only. Compare and reconcile both for the intended
+   migration target; list any deliberate exclusions in release notes. Do not
+   treat the unselected file as empty. Verify retained-record coverage before
    retiring a superseded source artifact.
 5. Verify relationships and evidence references against canonical sources.
    Preserve source identity and the relevant evidence revision/digest; a cache
@@ -67,20 +94,23 @@ automatic migration, or cache reconstruction implementation.
    precise limit separately and do not claim end-to-end reconstruction passed.
 7. Commit the canonical project files with related code. Repeat the coverage and
    reference checks as captures, edits, and links occur, including relationship
-   changes that create no new nodes. Completion requires a lossless coverage
-   report and an explicit account of any remaining reader limitations.
+   changes that create no new nodes. Completion requires a coverage report for
+   retained knowledge, an explicit list of release-documented intentional
+   exclusions, and an account of any remaining reader limitations.
 
-## Current tooling limits and real defects
+## Current tooling limits and ongoing defects
 
 - `.kin/index.json` contains selected summaries, not complete knowledge.
 - `kin repo-memory publish` transports explicitly selected active shareable
   concepts, decisions, and questions and selected-peer relationships. It omits
   other types and metadata, including `extra.source_refs`; its quarantined import
   is not a complete database rebuild. Do not use it alone as proof of migration.
-- The mixed-format import issue in #69 can hide JSONL evidence when JSON also
-  exists. The relationship-only `learn` path in #71 can omit supplied durable
-  source references. Both are actual serialization/reference-coverage issues,
-  independent of whether a worktree or database survives. They remain open.
+- #69's deliberate JSON precedence is an accepted compatibility limit, with the
+  excluded-import population and reconciliation steps documented above. An
+  optional coexistence diagnostic is an enhancement, not a required repair.
+- The relationship-only `learn` path in #71 can omit supplied durable source
+  references on new links. That unintended ongoing gap remains open and is
+  independent of whether a worktree or database survives.
 - #71's resolver inspects saved SQLite locators read-only; it does not resolve
   canonical JSONL source bindings. `database_missing` after deletion is expected
   cache unavailability, not a requirement to rescue that cache or proof that the

@@ -85,7 +85,9 @@ metadata, and provenance. SQLite is a disposable cache; the agent maintains
 canonical sources continuously, without depending on workspace teardown.
 Use the [migration prompt and coverage checklist](canonical-knowledge-migration.md).
 Re-run the instruction-file setup for your client to install the updated guidance.
-This is agent workflow guidance, not an automatic database migration.
+Intentional migration omissions are acceptable when explicitly described in
+release notes; the agent must report them separately from accidental ongoing
+loss. This is agent workflow guidance, not an automatic database migration.
 
 ## Review Automatic Capture Before Promotion
 
