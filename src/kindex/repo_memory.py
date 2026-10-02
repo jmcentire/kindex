@@ -85,7 +85,9 @@ def _load(path):
         raise ValueError("Repo evidence exceeds 2 MiB")
     if path.suffix == ".jsonl":
         records = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
+        # JSONL records end at literal LF; Unicode line separators are valid
+        # characters inside JSON strings and must not split a record.
+        for line in path.read_text(encoding="utf-8").split("\n"):
             if not line.strip():
                 continue
             record = json.loads(line, object_pairs_hook=_unique_object)

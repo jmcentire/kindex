@@ -77,7 +77,8 @@ repositories remain distinct. Rejected, proposed, and superseded facts stay
 inspectable via `--include-archived`; validity windows fence ordinary retrieval.
 
 JSON/JSONL graph export and import preserve standing and the Kinbase metadata
-that explains it. The unsigned `.kin/knowledge.json` publication path refuses
+that explains it. The unsigned `.kin/knowledge.jsonl` publication path (or an
+existing `.kin/knowledge.json`) refuses
 Kinbase imports because that transport cannot preserve their signed-source
 semantics. Store credentials are redacted as usual: the verification receipt
 applies to the original external bytes, not to a possibly redacted cached copy.

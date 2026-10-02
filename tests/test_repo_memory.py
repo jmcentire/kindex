@@ -107,6 +107,20 @@ def test_new_transport_is_flat_jsonl_sorted_by_id_with_revisions(stores):
     assert import_candidates(clone, root)["new"] == 3
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_jsonl_unicode_separators_survive_publish_import_and_republish(stores, separator):
+    source, clone, root = stores
+    content = f"Before{separator}after"
+    node_id = _node(source, "Unicode evidence", node_id="unicode", content=content)
+
+    assert publish(source, root, [node_id])["added"] == 1
+    assert separator in _path(root).read_text(encoding="utf-8")
+    imported = import_candidates(clone, root)
+    assert imported["new"] == 1
+    assert clone.get_capture_candidate(imported["candidates"][0])["content"] == content
+    assert publish(source, root, [node_id])["added"] == 0
+
+
 def test_existing_knowledge_json_remains_selected(stores):
     source, clone, root = stores
     legacy = root / ".kin" / "knowledge.json"
