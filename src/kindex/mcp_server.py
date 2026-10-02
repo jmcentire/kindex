@@ -2089,26 +2089,6 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
 
     created = len(created_ids)
 
-    # Ground every concept to a source node so newly created concepts never
-    # orphan, even when no connections are extracted. This is the structural
-    # fix for the mcp-learn orphan bug: provenance lives in the graph, not just
-    # in prov_activity.
-    if created_ids:
-        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-        source_id = store.add_node(
-            title=f"Learned: {first_line[:72]}" if first_line else "Learned note",
-            content=text.strip()[:500],
-            node_type="document",
-            prov_activity="mcp-learn-source",
-            prov_why="source text passed to learn()",
-            extra={"source_refs": evidence_refs} if evidence_refs else {},
-        )
-        for cid in grounded_ids:
-            store.add_edge(source_id, cid,
-                           edge_type="context_of",
-                           weight=0.4,
-                           provenance="extracted via learn()")
-
     for conn in extraction.get("connections", []):
         a = store.get_node_by_title(conn.get("from_title", ""))
         b = store.get_node_by_title(conn.get("to_title", ""))
@@ -2118,6 +2098,27 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
                            weight=0.4,
                            provenance=conn.get("why", "extracted via MCP"))
             linked += 1
+            if evidence_refs:
+                grounded_ids.extend((a["id"], b["id"]))
+
+    # Keep each learning event's evidence on the existing source-document
+    # path, including relationship-only updates and replayed learning. Do not
+    # overwrite existing concepts' provenance or invent concepts for capture.
+    if created_ids or (evidence_refs and grounded_ids):
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        source_id = store.add_node(
+            title=f"Learned: {first_line[:72]}" if first_line else "Learned note",
+            content=text.strip()[:500],
+            node_type="document",
+            prov_activity="mcp-learn-source",
+            prov_why="source text passed to learn()",
+            extra={"source_refs": evidence_refs} if evidence_refs else {},
+        )
+        for cid in dict.fromkeys(grounded_ids):
+            store.add_edge(source_id, cid,
+                           edge_type="context_of",
+                           weight=0.4,
+                           provenance="extracted via learn()")
 
     decisions = extraction.get("decisions", [])
     questions = extraction.get("questions", [])

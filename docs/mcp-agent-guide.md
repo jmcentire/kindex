@@ -436,10 +436,13 @@ available project/profile hints. `learn` puts these records on both new
 concepts and its learned-text source document. Graph UUIDs are stamped on
 writable database opens; ordinary secondary reads never stamp them.
 
-Known coverage gap: when `learn` matches only existing concepts, it can create
-relationships without a learned-text document or saved `source_refs`. That is a
-source-reference consistency issue, separate from disposable database lifetime;
-it remains unresolved by this change.
+When supplied evidence grounds matched concepts or valid relationships, `learn`
+creates its learned-text evidence document even when no concept is new. It links
+that document to the matched concepts and relationship endpoints, retaining each
+call's source records on replay without overwriting existing concept provenance.
+Empty/invalid extraction does not create a document solely because refs were supplied.
+This closes incomplete coverage of the new durable-reference guarantee; base
+behavior did not previously persist structured relationship evidence.
 
 `show(node_id)` displays `prov_why` and the stored source records without opening
 their databases. `show(node_id, resolve_sources=True)` also returns a JSON source

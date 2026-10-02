@@ -302,3 +302,87 @@ def test_malformed_saved_source_is_reported_without_crashing(graphs, malformed):
     assert len(entries) == 1
     assert entries[0]["status"] == "unresolved"
     assert entries[0]["reason"] == "invalid_source_ref"
+
+@pytest.mark.parametrize('source_graph', ['project', 'global', 'mixed'])
+@pytest.mark.parametrize('extraction_mode', ['existing', 'mixed', 'connections_only'])
+def test_learn_preserves_relationship_evidence(graphs, monkeypatch, source_graph, extraction_mode):
+    server, local, home, _ = graphs
+    local_id, global_id, refs = _refs(server, local, home)
+    if source_graph != 'mixed':
+        refs = server._graph_ref(source_graph, local_id if source_graph == 'project' else global_id)
+    target = local if source_graph == 'project' else home
+    a = target.add_node('Established Alpha', content='Original Alpha content',
+                        extra={'source_refs': [{'prior': 'evidence'}]})
+    b = None if extraction_mode == 'mixed' else target.add_node('Established Beta')
+    concepts = [] if extraction_mode == 'connections_only' else [
+        {'title': title, 'content': 'Substantive extracted concept with supporting knowledge'}
+        for title in ['Established Alpha', 'Established Beta']]
+    monkeypatch.setattr('kindex.extract.extract', lambda *args: {
+        'concepts': concepts, 'connections': [{'from_title': 'Established Alpha',
+        'to_title': 'Established Beta', 'type': 'depends_on', 'why': 'Alpha requires Beta'}]})
+    result = server.learn('Evidence establishes that Alpha requires Beta.', source_refs=refs)
+    assert f"Extracted: {1 if b is None else 0} concept(s), 1 link(s)" in result
+    b = target.get_node_by_title('Established Beta')['id']
+    assert any(e['to_id'] == b and e['type'] == 'depends_on' for e in target.edges_from(a))
+    documents = [n for n in target.all_nodes() if n['prov_activity'] == 'mcp-learn-source']
+    assert len(documents) == 1, 'Relationship evidence must exist even without new concepts'
+    doc = documents[0]
+    records = _records(doc)
+    assert {r['node_id'] for r in records} == ({local_id, global_id} if source_graph == 'mixed'
+                                            else {local_id if source_graph == 'project' else global_id})
+    assert {a, b} <= {e['to_id'] for e in target.edges_from(doc['id']) if e['type'] == 'context_of'}
+    assert target.peek_node(a)['content'] == 'Original Alpha content'
+    assert target.peek_node(a)['extra']['source_refs'] == [{'prior': 'evidence'}]
+    reopened = Store(target.config)
+    try:
+        assert reopened.peek_node(doc['id'])['extra']['source_refs'] == records
+    finally:
+        reopened.close()
+    assert all(e['status'] == 'resolved' for e in _entries(server.show(
+        server._graph_ref('project' if target is local else 'global', doc['id']), resolve_sources=True)))
+
+
+def test_replayed_relationship_learning_retains_each_source(graphs, monkeypatch):
+    server, local, home, _ = graphs
+    local_id, global_id, refs = _refs(server, local, home)
+    a = home.add_node('Replay Alpha')
+    b = home.add_node('Replay Beta')
+    monkeypatch.setattr('kindex.extract.extract', lambda *args: {
+        'concepts': [], 'connections': [{'from_title': 'Replay Alpha',
+        'to_title': 'Replay Beta', 'type': 'depends_on'}]})
+    text = 'Repeated evidence establishes that Alpha depends on Beta.'
+    for sources in (refs, server._graph_ref('global', global_id)):
+        assert '0 concept(s), 1 link(s)' in server.learn(text, source_refs=sources)
+    docs = [n for n in home.all_nodes() if n['prov_activity'] == 'mcp-learn-source']
+    assert len(docs) == 2
+    assert {frozenset(r['node_id'] for r in _records(n)) for n in docs} == {
+        frozenset((local_id, global_id)), frozenset((global_id,))}
+    for doc in docs:
+        assert {a, b} <= {e['to_id'] for e in home.edges_from(doc['id'])}
+    assert len([e for e in home.edges_from(a) if e['to_id'] == b and e['type'] == 'depends_on']) == 1
+
+
+def test_learning_with_no_valid_output_does_not_create_evidence(graphs, monkeypatch):
+    server, local, home, _ = graphs
+    _, _, refs = _refs(server, local, home)
+    monkeypatch.setattr('kindex.extract.extract', lambda *args: {
+        'concepts': [], 'connections': [{'from_title': 'Missing', 'to_title': 'Also missing'}]})
+    assert '0 concept(s), 0 link(s)' in server.learn('Nothing establishes a valid relationship.', source_refs=refs)
+    assert not [n for n in home.all_nodes() if n['prov_activity'] == 'mcp-learn-source']
+
+
+def test_stamped_graph_reopen_reads_during_active_writer(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / 'cache'))
+    original = Store(cfg)
+    nid = original.add_node('Committed evidence')
+    graph_id = original.graph_id
+    original.conn.execute('BEGIN IMMEDIATE')
+    reader = Store(cfg)
+    reader._sqlite_timeout = 0.05
+    try:
+        assert reader.peek_node(nid)['title'] == 'Committed evidence'
+        assert reader.graph_id == graph_id
+    finally:
+        reader.close()
+        original.conn.rollback()
+        original.close()

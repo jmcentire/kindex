@@ -424,6 +424,8 @@ class Store:
 
     def _ensure_graph_identity(self) -> None:
         """Stamp a stable UUID on writable open; concurrent first opens agree."""
+        if self._conn.execute("SELECT value FROM meta WHERE key='graph_id'").fetchone():
+            return
         self._conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('graph_id', ?)",
             (str(uuid.uuid4()),))
