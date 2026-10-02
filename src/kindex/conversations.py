@@ -133,15 +133,27 @@ DIRECTIVES_ONLY_SCHEMA = {
 # A summary earns its place only when it compresses: a short conversation is its own summary.
 SUMMARY_MIN_TOKENS = 6000
 
-DIGEST_PROMPT = """Below is a conversation between a user and an assistant{date}. Return:
+DIGEST_PROMPT = """Below is {what}{date}. Return:
 
-- directives: the user's standing instructions, meaning durable requests about how the assistant should respond from now on (formats, things to always include or avoid, style, units, level of detail). Write each as one imperative sentence that keeps the user's specifics ("Always include type hints in Python examples"). Only instructions meant to apply beyond the current request: leave out one-off requests, questions, task setups and role-play setups ("reply only with OK"). Often there are none.
+- directives: the user's standing instructions: requests about how the assistant should respond to future requests, stated as such ("always ...", "from now on ...", "whenever I ask about ..."), covering formats, things to always include or avoid, style, units or level of detail. Write each as one imperative sentence that keeps the user's specifics ("Always include type hints in Python examples"). Instructions that configure the task at hand are not standing instructions: how to write this piece, which language or spelling to use for it, a role to play, a game, quiz, exercise or classification to run for the rest of the conversation ("for every sentence I give you, reply only with ...", "respond only with OK until I say done"). Often there are none.
 {summary}
 Conversation:
 {text}"""
 
 SUMMARY_FIELD = """- summary: 4 to 8 sentences on what the conversation covered: the user's situation, the facts, figures, decisions and plans they gave, and what the assistant advised, with dates (resolve "last week" or "tomorrow" against the conversation date).
 """
+
+
+_SPEAKER = re.compile(r"^(user|assistant|system): ", re.M)
+
+
+def user_messages(text: str) -> str:
+    """The user's messages from conversation text written as "role: message" lines
+    (the form ingest_conversation stores); empty when the text has no user role."""
+    parts = _SPEAKER.split(text)
+    # split() yields [before, role, body, role, body, ...]
+    return "\n".join(f"user: {body.strip()}" for role, body in zip(parts[1::2], parts[2::2])
+                     if role == "user" and body.strip())
 
 
 def _norm(text: str) -> str:
@@ -165,8 +177,14 @@ def digest_conversation(store: Store, conversation_id: str, text: str, when: str
         return out
     threshold = SUMMARY_MIN_TOKENS if summary_min_tokens is None else summary_min_tokens
     summarize = len(text) // 4 >= threshold
+    what = "a conversation between a user and an assistant"
+    if not summarize:
+        # Directives are the user's: a short conversation is read from the user's side only.
+        mine = user_messages(text)
+        if mine:
+            text, what = mine, "what a user wrote in a conversation with an assistant"
     raw = _call(client, config, system=None, ledger=ledger, purpose="conversation-digest",
-                user=DIGEST_PROMPT.format(date=f" on {when}" if when else "", text=text,
+                user=DIGEST_PROMPT.format(what=what, date=f" on {when}" if when else "", text=text,
                                           summary=SUMMARY_FIELD if summarize else ""),
                 effort=effort, max_tokens=8000, json_schema=DIGEST_SCHEMA if summarize else DIRECTIVES_ONLY_SCHEMA)
     try:

@@ -100,3 +100,9 @@ def test_short_conversations_get_directives_but_no_summary(store, tmp_path, monk
     assert conv.backfill_digests(store, cfg) == 1
     assert calls[0]["json_schema"]["schema"]["required"] == ["directives"]
     assert not [n for n in store.all_nodes(node_type="document") if n["id"].startswith("convsum-")]
+
+
+def test_user_messages_keeps_only_the_users_side():
+    text = "user: line one\ncontinues here\nassistant: a long reply\nuser: second"
+    assert conv.user_messages(text) == "user: line one\ncontinues here\nuser: second"
+    assert conv.user_messages("Caroline: hi\nMelanie: hello") == ""
