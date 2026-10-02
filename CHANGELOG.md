@@ -11,6 +11,28 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   graph and configured user graph, with explicit per-call `auto`, `project`, and
   `global` scopes on retrieval, listings, and diagnostics. Session-qualified
   references keep results usable for follow-up node, task, and watch operations.
+- `kin ingest conversations --directory DIR` stores chat transcripts (JSON or
+  JSONL: `{"id", "date", "messages": [{"role", "content", "name"}]}`) without
+  loss: whole messages packed into dated `document` nodes of at most 4,000
+  characters, linked in order. A digest pass (`kindex.conversations`) records
+  the user's standing instructions as `directive` nodes and summarizes
+  conversations of 6,000 tokens or more; short conversations are read from the
+  user's side only, and task setups ("respond only with OK until ...") are not
+  directives.
+
+### Changed
+- `kin ask` answers from planned searches over dated evidence
+  (`kindex.answer`). A planner call writes up to five searches; their rankings
+  are merged by reciprocal rank fusion; the model sees the matching nodes in
+  full, oldest first, within a 24k-token budget, with today's date (`--as-of`)
+  and the standing directives; the answer rules cover updated values, counts,
+  relative and absolute dates, comparisons, missing specifics and judgement
+  questions. Previously it saw five results truncated to 500 characters, with
+  no dates, and answered in at most 500 tokens. Settings live under `ask:`
+  (`plan`, `top_k`, `context_tokens`, `samples`, `effort`, `readings`).
+  Without an LLM it still prints search results.
+- The OpenAI provider passes system instructions, reasoning effort and JSON
+  schemas, and retries rate limits and server errors.
 - Scheduler logs (`cron.log`, `cron-error.log`, `reminders.log`,
   `reminders-error.log`, `dream.log`) now stamp every line with the local
   time it was written, e.g. `2026-09-29T14:36:02-07:00 Checked [hoo3]: 0
