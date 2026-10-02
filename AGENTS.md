@@ -81,6 +81,28 @@ When working in this codebase, follow these practices:
 - **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update <name> --focus "..."` or `kin tag segment <name> --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end <name> --summary "..."`. See `kin tag list` for all tags.
 - **Project policy**: `.kin/config` ships with the repo. Run `kin policy check --event agent-start` before meaningful code work when shell access is available. Linear is opt-in only; enforce it only when `work_policy.linear.enabled` is true in the project config.
 
+## Canonical project knowledge
+
+For Git-backed project graphs, tracked `.kin/` JSON/JSONL knowledge files are
+the canonical source. SQLite must be rebuildable from them without additional
+durable knowledge, context, or provenance existing only in the database.
+
+- Persist complete captured or changed records, relationships, and source
+  bindings in the canonical files and commit them alongside related code.
+- Preserve SQLite-only knowledge into canonical files during migration; never
+  reconcile by silently deleting, truncating, or overwriting it.
+- Verify complete source coverage. `index.json` is a summary, and selected
+  evidence exports can omit data; neither alone proves lossless persistence.
+- After clone, checkout, or merge, verify reconstruction from source. Preserve
+  independent changes and explicitly resolve identity/edit conflicts rather
+  than choosing whichever timestamp is newest.
+- Before removing a worktree, verify its durable knowledge is committed and
+  recoverable from surviving sources. A deleted database path or another
+  worktree's same-ID node does not establish recovery or provenance.
+- If current tooling cannot satisfy these requirements, report the gap and
+  preserve a recoverable copy before teardown. This workflow does not claim
+  automatic source persistence, cache reconstruction, or discovery support.
+
 ## Auto-Context Loading
 
 At the start of each session, load relevant context:

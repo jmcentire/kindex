@@ -6632,7 +6632,9 @@ def cmd_setup_merge(args):
 
 def _kindex_claude_md_block() -> str:
     """Generate the recommended CLAUDE.md block for kindex integration."""
-    return """\
+    from .hooks import PROJECT_KNOWLEDGE_DIRECTIVES
+
+    block = """\
 ## Kindex (REQUIRED -- follow these in every session)
 
 Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
@@ -6657,8 +6659,8 @@ private cache.
 never hand-resolve git conflicts in them. `kin index` auto-registers a structured \
 merge driver (`kin merge-kin`) on first run that unions them losslessly; run \
 `kin setup-merge` to (re)install it in a fresh clone.
-- Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, \
-`.kin/tmp`, `.kin/private`.
+- Personal knowledge belongs in its explicitly selected personal graph. Ignored \
+project directories are for disposable caches, not the only copy of project knowledge.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` \
 sets `work_policy.linear.enabled: true`.
 
@@ -6692,11 +6694,16 @@ multiple concepts at once
 - The daemon will execute shell commands or launch headless Claude/Codex/OpenCode
   when they come due
 """
+    return block.replace("### Project `.kin/` contract\n",
+                         "### Project `.kin/` contract\n" +
+                         "\n".join(PROJECT_KNOWLEDGE_DIRECTIVES) + "\n", 1)
 
 
 def _kindex_agents_md_block() -> str:
     """Generate the recommended AGENTS.md block for Codex/kindex integration."""
-    return """\
+    from .hooks import PROJECT_KNOWLEDGE_DIRECTIVES
+
+    block = """\
 ## Kindex (REQUIRED -- follow these in every session)
 
 Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
@@ -6724,7 +6731,7 @@ a concise summary.
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not private cache.
 - `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: never hand-resolve git conflicts in them. `kin index` auto-registers a structured merge driver (`kin merge-kin`) that unions them losslessly; run `kin setup-merge` to (re)install it in a fresh clone.
-- Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, `.kin/tmp`, `.kin/private`.
+- Personal knowledge belongs in its explicitly selected personal graph. Ignored project directories are for disposable caches, not the only copy of project knowledge.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` sets `work_policy.linear.enabled: true`.
 - If no work policy is present, continue normally and still use kindex for search/capture.
 
@@ -6748,6 +6755,9 @@ a concise summary.
 ### Working rule
 Do not wait for the user to mention kindex. Treat it as your durable memory layer.
 """
+    return block.replace("### Project `.kin/` contract\n",
+                         "### Project `.kin/` contract\n" +
+                         "\n".join(PROJECT_KNOWLEDGE_DIRECTIVES) + "\n", 1)
 
 
 def _kindex_cursor_rule_block() -> str:

@@ -490,7 +490,7 @@ def prime_context(
         lines.append("- `tag_start`/`tag_update` to track session focus and progress")
         lines.append("**Project graph (`.kin/`)** — keep it with the code:")
         lines.append("- Look for a `.kin/` directory in the tree of the files you touch — not just your cwd root — and honor its config/index.")
-        lines.append("- When you `git add`/commit, stage the matching `.kin/` changes (config, index.json) alongside the code so the graph travels with the work.")
+        lines.extend(PROJECT_KNOWLEDGE_DIRECTIVES)
         lines.append("")
 
     if search_failed and ops_failed:
@@ -844,6 +844,17 @@ def write_inbox_item(
     return target
 
 
+PROJECT_KNOWLEDGE_DIRECTIVES = (
+    "- Tracked `.kin/` JSON/JSONL is canonical for project knowledge; SQLite is rebuildable and must contain no additional durable context or provenance.",
+    "- After captures, edits, and links, persist complete records/relationships to canonical files; SQLite-only success is incomplete.",
+    "- Preserve SQLite-only knowledge during migration; never silently delete, truncate, or overwrite it.",
+    "- `git add` and commit canonical files with code. Summaries/filtered exports are not proof of complete content, metadata, or source bindings.",
+    "- After clone/checkout/merge, verify reconstruction from source; preserve independent changes and explicitly resolve conflicting identities/edits.",
+    "- Before worktree deletion, verify knowledge is committed/recoverable. Resolve by graph/node identity and source revision, never just path or matching ID.",
+    "- If tooling cannot persist/rebuild complete source, report the gap and keep a recoverable copy; do not claim automatic enforcement.",
+)
+
+
 def generate_session_directive(store: Store) -> str:
     """Generate CLAUDE.md text that instructs Claude Code to write back discoveries.
 
@@ -872,7 +883,7 @@ def generate_session_directive(store: Store) -> str:
         "",
         "### Project graph (`.kin/`)",
         "- Honor `.kin/` for the files you touch — look up the directory tree, not just the repo root.",
-        "- Stage and commit `.kin/` changes (config, index.json) together with the related code.",
+        *PROJECT_KNOWLEDGE_DIRECTIVES,
         "",
     ]
 
