@@ -66,9 +66,11 @@ The current accepted limits are precise:
   handles. Historical provenance may remain unresolved. Reconstruct bindings
   only when canonical evidence verifies the original source/revision; otherwise
   document the missing binding. This does not automatically discard node content.
-- Dropping supplied source references while `learn` creates new relationships
-  between existing concepts is ongoing writer behavior, not a migration
-  exclusion. It remains an unintended gap with separately scoped runtime work.
+- #71 now preserves supplied source references when `learn` grounds existing
+  concepts or creates valid relationships, through a linked learned-text evidence
+  document. Replay retains each call's evidence without overwriting prior concept
+  provenance. This fixes incomplete coverage of the new guarantee, not previously
+  working structured provenance or an accepted migration exclusion.
 
 ## Agent coverage checklist
 
@@ -143,9 +145,9 @@ claim that an agent prompt or best-effort cleanup implements that guarantee.
 - #69's deliberate JSON precedence is an accepted compatibility limit, with the
   excluded-import population and reconciliation steps documented above. An
   optional coexistence diagnostic is an enhancement, not a required repair.
-- The relationship-only `learn` path in #71 can omit supplied durable source
-  references on new links. That unintended ongoing gap remains open and is
-  independent of whether a worktree or database survives.
+- The relationship-only `learn` coverage gap is fixed in #71. Source records
+  live on learned-text evidence documents linked to relationship endpoints;
+  canonical serialization/recovery limitations remain independently of that fix.
 - #71's resolver inspects saved SQLite locators read-only; it does not resolve
   canonical JSONL source bindings. `database_missing` after deletion is expected
   cache unavailability, not a requirement to rescue that cache or proof that the

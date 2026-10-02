@@ -52,9 +52,10 @@ prompt your agent:
   the omitted knowledge/bindings, scope, reasons, and consequences. Preserve the
   remaining knowledge accurately and report those exclusions explicitly.
   This does not excuse unexplained loss or dropped provenance on new writes.
-- Relationship-only `learn` can still create links without retaining supplied
-  `source_refs`. This is an unintended ongoing writer-coverage gap, not an
-  accepted migration loss; its runtime repair is outside this prompt/docs change.
+- #71 now retains supplied `source_refs` for relationship-only `learn` through
+  linked learned-text evidence documents, including existing concepts and replay.
+  This closes incomplete coverage of its new guarantee; it is not an accepted
+  migration exclusion or a regression from previously working structured provenance.
 
 ### Recovery limits
 
