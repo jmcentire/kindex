@@ -8,12 +8,14 @@ Google Antigravity, OpenCode, Cursor, and other MCP clients)
 from __future__ import annotations
 
 import atexit
+from contextlib import contextmanager
 import functools
 import json
 import os
 import re
 import sqlite3
 import sys
+from pathlib import Path
 from typing import Any
 from .privacy import redact, redact_serialized, safe_error, redacting_print as print
 
@@ -69,6 +71,13 @@ mcp = FastMCP(
         "## When to use each tool\n"
         "- `search`: ALWAYS before adding — if a matching node already exists, "
         "prefer `edit`/`supersede` over `add` (edit, don't re-add)\n"
+        "- Retain either `project:<session>:<id>` or `global:<session>:<id>` "
+        "when returned; pass the full reference to follow-on reads and writes\n"
+        "- Source-free captures write to the selected store; `graph=\"auto\"` reads "
+        "include it and any allowed configured outer graph. Use `graph=\"project\"` "
+        "for reads contained to the selected store\n"
+        "- In graph-aware sessions, pass current qualified evidence references "
+        "in `source_refs` for derived captures; bare IDs are not valid `source_refs`\n"
         "- `add`: capture NEW discoveries as they happen — don't batch, don't wait\n"
         "- `edit`: correct or extend an EXISTING node instead of re-adding a near "
         "duplicate (additive types — decision/constraint/directive/checkpoint/watch — "
@@ -118,6 +127,7 @@ mcp = FastMCP(
 
 _store = None
 _config = None
+_global_write_stores = {}
 
 
 def _reset_singletons():
@@ -134,6 +144,9 @@ def _reset_singletons():
             pass
     _store = None
     _config = None
+    for secondary in _global_write_stores.values():
+        secondary.close()
+    _global_write_stores.clear()
 
 
 # Register the MCP singleton reset with config's cache-invalidation callback
@@ -151,8 +164,10 @@ class MemoryUnavailableError(RuntimeError):
         # A configuration refusal (an ambiguous scope, an unknown profile)
         # is something the caller can act on, so its remedy travels with the
         # error; a broken database says only its class.
+        guidance = getattr(cause, "remedy", "")
         self.remedy = (
-            safe_error(cause, limit=600) if isinstance(cause, ValueError) else ""
+            f"{safe_error(cause, limit=600)}; {guidance}" if guidance
+            else safe_error(cause, limit=600) if isinstance(cause, ValueError) else ""
         )
         super().__init__(f"memory unavailable ({self.error_class})")
 
@@ -278,6 +293,288 @@ def _get_store():
     return _store, _config
 
 
+def _global_store(store, config, *, write=False):
+    """Open the configured outer graph after implicit project selection.
+
+    Reads are SQLite read-only; writes require an explicit global target.
+    Explicit profile selection retains its single-graph boundary.
+    """
+    from .project_store import is_project_store
+    from .store import Store
+
+    project = str(config._project_path) if config._project_path else ""
+    home_dir = getattr(config, "_global_data_dir", None)
+    if not project or not home_dir or config.active_profile:
+        return None
+    from .config import Config, record_degraded
+
+    home = None
+    try:
+        if not is_project_store(store, project):
+            return None
+        home_config = Config(**config._global_config_data)
+        home_config.data_dir = home_dir
+        # Profiles are anchored to the user config, not the project config.
+        home_config.profiles = config.profiles
+        matching_profiles = [name for name, entry in config.profiles.items()
+                             if entry.data_dir and
+                             home_config.data_path.resolve() ==
+                             Path(entry.data_dir).expanduser().resolve()]
+        if len(matching_profiles) > 1:
+            raise ValueError("Configured global data directory matches multiple profiles")
+        home_config.active_profile = matching_profiles[0] if matching_profiles else None
+        # A secondary read must not claim, stamp, create, or migrate a user DB.
+        home_config._stamp_on_open = False
+        if home_config.data_path.resolve() == config.data_path.resolve():
+            return None
+        key = str(home_config.data_path.resolve())
+        if write and key in _global_write_stores:
+            return _global_write_stores[key]
+        home = Store(home_config, read_only=not write, manage_project_storage=False)
+        if not home.db_path.is_file():
+            home.close()
+            return None
+        # An existing but unreadable secondary must fail visibly.
+        home.conn
+        if not home_config.active_profile:
+            row = home.conn.execute(
+                "SELECT value FROM meta WHERE key='kin_profile'").fetchone()
+            if row is not None:
+                raise ValueError("Configured global graph is stamped for a different profile")
+    except Exception as error:
+        if home is not None:
+            try:
+                home.close()
+            except Exception:
+                pass
+        try:
+            record_degraded("mcp", error, config=config)
+        except Exception:
+            pass
+        raise MemoryUnavailableError(error) from error
+    if write:
+        _global_write_stores[key] = home
+        atexit.register(home.close)
+    return home
+
+
+def _global_read_store(store, config):
+    return _global_store(store, config)
+
+
+@contextmanager
+def _selected_read_stores(graph: str = "auto"):
+    """Yield selected and optional outer read stores without changing the singleton.
+
+    Explicit project reads never initialize the secondary. The caller owns
+    neither store; this context closes only the temporary outer read handle.
+    """
+    if graph not in ("auto", "project", "global"):
+        raise ValueError("graph must be 'auto', 'project', or 'global'")
+    selected, config = _get_store()
+    if graph == "project":
+        yield selected, None
+        return
+    if graph == "global" and config.active_profile:
+        raise ValueError("Global graph is unavailable with an explicit profile")
+    outer = _global_read_store(selected, config)
+    if graph == "global" and outer is None:
+        raise ValueError("Configured global graph is unavailable or missing")
+    try:
+        yield (selected if graph == "auto" else None), outer
+    finally:
+        if outer is not None:
+            active_error = sys.exc_info()[0]
+            try:
+                outer.close()
+            except Exception as close_error:
+                if active_error is None:
+                    raise MemoryUnavailableError(close_error) from close_error
+
+
+def _graph_ref(graph: str, node_id: str) -> str:
+    """Bind a displayed node ID to this MCP store selection's lifetime."""
+    import secrets
+
+    store, _ = _get_store()
+    if not hasattr(store, "_mcp_graph_scope"):
+        store._mcp_graph_scope = secrets.token_hex(12)
+    return f"{graph}:{store._mcp_graph_scope}:{node_id}"
+
+
+def _graph_aware_session() -> bool:
+    """Whether the selected project can address a configured outer graph.
+
+    Formatting must not open the secondary database just to choose an ID.
+    """
+    from .project_store import is_project_store
+
+    store, config = _get_store()
+    project = str(config._project_path) if config._project_path else ""
+    return (bool(project and getattr(config, "_global_data_dir", None))
+            and not config.active_profile and is_project_store(store, project)
+            and config.data_path.resolve() !=
+            Path(config._global_data_dir).expanduser().resolve())
+
+
+def _display_ref(graph: str, node_id: str, *, incoming_ref: str = "") -> str:
+    """Preserve graph identity for a routed ref or a dual-graph session."""
+    if (graph == "global" or incoming_ref.startswith(("project:", "global:"))
+            or _graph_aware_session()):
+        return _graph_ref(graph, node_id)
+    return node_id
+
+
+def _display_task_record(record: dict | None, graph: str,
+                         *, incoming_ref: str = "") -> dict | None:
+    if record is not None:
+        record["id"] = _display_ref(graph, record["id"], incoming_ref=incoming_ref)
+        record["dependencies"] = [
+            _display_ref(graph, dependency, incoming_ref=incoming_ref)
+            for dependency in record["dependencies"]]
+    return record
+
+
+def _task_with_graph_ref(task: dict, graph: str) -> dict:
+    ref = _display_ref(graph, task["id"])
+    return ({**task, "_graph_source": graph, "_graph_ref": ref}
+            if ref != task["id"] else task)
+
+
+def _split_graph_ref(ref: str) -> tuple[str, str] | None:
+    """Reject references issued by a different MCP store selection."""
+    if not ref.startswith(("project:", "global:")):
+        return None
+    graph, sep, rest = ref.partition(":")
+    scope, sep, node_id = rest.partition(":")
+    store, _ = _get_store()
+    if not sep or not node_id or scope != getattr(store, "_mcp_graph_scope", None):
+        raise ValueError("Stale graph reference; search again in this MCP session")
+    return graph, node_id
+
+
+def _routed_ref(ref: str, *, write: bool = False):
+    """Resolve an MCP graph-qualified ID; caller closes read-only global Stores.
+
+    Bare IDs and titles retain the selected graph. A global-qualified result
+    always resolves in global, even when the same ID exists locally.
+    """
+    store, config = _get_store()
+    qualified = _split_graph_ref(ref)
+    if qualified and qualified[0] == "global":
+        home = _global_store(store, config, write=write)
+        if home is None:
+            raise ValueError("Global graph is unavailable for this MCP session")
+        return home, home.config, qualified[1], "global"
+    if qualified:
+        return store, config, qualified[1], "project"
+    from .store import AmbiguousTitleError
+
+    try:
+        primary_match = store.resolve_node_for_write(ref)
+    except AmbiguousTitleError as error:
+        raise ValueError(f"title_collision: {error}") from error
+    if primary_match:
+        home = _global_read_store(store, config)
+        if home is not None:
+            try:
+                try:
+                    home_match = home.resolve_node_for_write(ref)
+                except AmbiguousTitleError as error:
+                    raise ValueError(f"title_collision: {error}") from error
+                if home_match:
+                    raise ValueError(
+                        f"Node {ref} exists in both graphs; use a qualified search result ID")
+            finally:
+                home.close()
+    return store, config, ref, "project"
+
+
+def _write_store_for_graph(graph: str):
+    store, config = _get_store()
+    if graph in ("", "project"):
+        return store, config
+    if graph == "global":
+        global_store = _global_store(store, config, write=True)
+        if global_store is None:
+            raise ValueError("Global graph is unavailable for this MCP session")
+        return global_store, global_store.config
+    raise ValueError("graph must be 'project' or 'global'")
+
+
+def _derived_write_store(graph: str, source_refs: str, link_refs: str = ""):
+    refs = [item.strip() for item in source_refs.split(",")] if source_refs else []
+    if any(not ref for ref in refs):
+        raise ValueError("Source references must be graph-qualified result IDs")
+    sources = [_split_graph_ref(item) for item in refs]
+    for ref, source in zip(refs, sources):
+        if source is None:
+            raise ValueError(f"Source reference {ref} must be a graph-qualified result ID")
+    links = [item.strip() for item in link_refs.split(",") if item.strip()]
+    link_sources = [_split_graph_ref(item) for item in links]
+    primary, config = _get_store()
+    for ref, source in zip(refs, sources):
+        role, node_id = source
+        evidence = primary if role == "project" else _global_read_store(primary, config)
+        if evidence is None:
+            raise ValueError(f"{role} graph is unavailable for this MCP session")
+        try:
+            if evidence.peek_node(node_id) is None:
+                raise ValueError(f"Source node {ref} is unavailable")
+        finally:
+            if evidence is not primary:
+                evidence.close()
+    if any(source and source[0] == "global" for source in (*sources, *link_sources)):
+        if graph == "project":
+            raise ValueError("Global source requires graph='global' or automatic routing")
+        graph = "global"
+    graph = graph or "project"
+    store, config = _write_store_for_graph(graph)
+    return store, config, graph
+
+
+def _validated_link_targets(store, graph: str, refs: list[str]) -> list[str]:
+    """Resolve all requested links before writing; bare refs must be unambiguous."""
+    from .store import AmbiguousTitleError
+
+    primary, primary_config = _get_store()
+    other = None
+    checked_other = False
+    targets = []
+    try:
+        for ref in refs:
+            if not isinstance(ref, str) or not ref.strip():
+                raise ValueError("Link target must be a non-empty node ID or title")
+            qualified = _split_graph_ref(ref)
+            if qualified and qualified[0] != graph:
+                raise ValueError("cross-graph links are not supported")
+            raw_ref = qualified[1] if qualified else ref
+            try:
+                target = store.resolve_node_for_write(raw_ref)
+            except AmbiguousTitleError as exc:
+                raise ValueError(f"title_collision: {exc}") from exc
+            if target is None:
+                raise ValueError(f"Link target {ref} is unavailable")
+            if not qualified:
+                if not checked_other:
+                    other = (primary if graph == "global" else
+                             _global_read_store(primary, primary_config))
+                    checked_other = True
+                if other is not None:
+                    try:
+                        other_match = other.resolve_node_for_write(ref)
+                    except AmbiguousTitleError:
+                        other_match = True
+                    if other_match:
+                        raise ValueError(
+                            f"Node {ref} exists in both graphs; use a qualified search result ID")
+            targets.append(target["id"])
+    finally:
+        if other is not None and other is not primary:
+            other.close()
+    return targets
+
+
 def _get_config():
     """Config from the lazy singleton (shares _get_store init)."""
     _, config = _get_store()
@@ -401,21 +698,39 @@ def _state_error(exc: ValueError) -> str:
     return f"Error: {code}: {exc}"
 
 
-def _node_summary(node: dict) -> str:
+def _read_sources(selected, outer):
+    """Name stores yielded by _selected_read_stores in stable display order."""
+    return {name: source for name, source in
+            (("project", selected), ("global", outer)) if source is not None}
+
+
+def _read_rows(sources, fetch, limit: int) -> list[dict]:
+    """Fairly bound graph-local ordered lists without deduplicating raw IDs."""
+    from .retrieve import federate_graph_results
+
+    rows = {name: fetch(name, store, limit) for name, store in sources.items()}
+    return federate_graph_results(rows.get("project", []), rows.get("global", []),
+                                  top_k=limit)
+
+
+def _node_summary(node: dict, *, graph: str = "project") -> str:
     """One-line summary of a node."""
     ntype = node.get("type", "concept")
     title = node.get("title", node.get("id", "?"))
     weight = node.get("weight", 0)
-    return f"[{ntype}] {title} (w={weight:.2f}, id={node['id']})"
+    display_id = _display_ref(graph, node["id"])
+    return f"[{ntype}] {title} (w={weight:.2f}, id={display_id})"
 
 
-def _node_detail(store, node: dict) -> str:
+def _node_detail(store, node: dict, *, graph: str = "project",
+                 incoming_ref: str = "") -> str:
     """Multi-line detail view of a node with edges."""
+    display_id = _display_ref(graph, node["id"], incoming_ref=incoming_ref)
     lines = [
         f"# {node.get('title', node['id'])}",
         f"Type: {node.get('type', 'concept')}  |  Weight: {node.get('weight', 0):.2f}  |  "
         f"Audience: {node.get('audience', 'private')}",
-        f"ID: {node['id']}",
+        f"ID: {display_id}",
     ]
     if node.get("domains"):
         lines.append(f"Tags: {', '.join(node.get('tags') or node.get('domains') or [])}")
@@ -428,7 +743,9 @@ def _node_detail(store, node: dict) -> str:
     if edges:
         lines.append(f"\n## Connections ({len(edges)})")
         for e in edges[:20]:
-            lines.append(f"  -> {e.get('to_title', e['to_id'])} ({e['type']}, w={e['weight']:.2f})")
+            target_id = _display_ref(graph, e["to_id"], incoming_ref=incoming_ref)
+            lines.append(f"  -> {e.get('to_title', e['to_id'])} "
+                         f"(id={target_id}, {e['type']}, w={e['weight']:.2f})")
 
     prov_parts = []
     if node.get("prov_who"):
@@ -542,14 +859,17 @@ def kinbase_explain(repo: str, logical_key: str, decision: str) -> str:
 @_tool()
 def search(query: str, top_k: int = 10, tags: str = "",
            include_archived: bool = False,
-           trusted_only: bool = False) -> str:
+           trusted_only: bool = False, graph: str = "auto") -> str:
     """Search the knowledge graph with hybrid FTS5 + graph traversal.
 
     USE THIS: before starting work on a topic, before adding nodes (to avoid
     duplicates), and whenever you need context about a concept.
 
-    Uses Reciprocal Rank Fusion to merge full-text and graph results.
-    Returns ranked nodes with scores.
+    Each graph supplies its native hybrid ranking. When both project and
+    configured global graphs contribute, equal-weight RRF interleaves those
+    lists by rank, without comparing their locally normalized scores. The
+    merged rank score is not calibrated cross-graph relevance. Results carry
+    qualified graph IDs for safe follow-on writes.
 
     Args:
         query: Search query text.
@@ -558,21 +878,44 @@ def search(query: str, top_k: int = 10, tags: str = "",
         include_archived: Include archived nodes (fenced from default search).
         trusted_only: Admit only current, explicitly verified, non-contradicted
             knowledge. False preserves ordinary legacy-compatible recall.
+        graph: auto (selected project plus configured outer), project (selected
+            store only), or global (configured outer store only).
     """
-    store, _ = _get_store()
-    from .retrieve import hybrid_search
+    from .retrieve import federate_graph_results, hybrid_search
 
     fence_stats: dict = {}
     grounding: dict = {}
     top_k = _bounded(top_k)
     fetch_k = top_k * 3 if tags else top_k
     evaluation_time = operation_now() if trusted_only else None
-    results = hybrid_search(store, query, top_k=fetch_k,
-                            include_archived=include_archived,
-                            fence_stats=fence_stats,
-                            trusted_only=trusted_only,
-                            evaluation_time=evaluation_time,
-                            grounding=grounding)
+    results = []
+    home_results = []
+    home_grounding: dict = {}
+    try:
+        with _selected_read_stores(graph) as (selected, home):
+            if selected is not None:
+                results = hybrid_search(
+                    selected, query, top_k=fetch_k,
+                    include_archived=include_archived, fence_stats=fence_stats,
+                    trusted_only=trusted_only, evaluation_time=evaluation_time,
+                    grounding=grounding)
+            if home is not None:
+                home_fence: dict = {}
+                home_results = hybrid_search(
+                    home, query, top_k=fetch_k,
+                    include_archived=include_archived, fence_stats=home_fence,
+                    trusted_only=trusted_only, evaluation_time=evaluation_time,
+                    grounding=home_grounding)
+                fence_stats["fenced_nodes"] = (fence_stats.get("fenced_nodes", [])
+                                                 + home_fence.get("fenced_nodes", []))
+                fence_stats["candidate_count"] = (fence_stats.get("candidate_count", 0)
+                                                   + home_fence.get("candidate_count", 0))
+                if trusted_only:
+                    omissions = fence_stats.setdefault("trusted_omissions", {})
+                    for reason, count in home_fence.get("trusted_omissions", {}).items():
+                        omissions[reason] = omissions.get(reason, 0) + count
+    except ValueError as exc:
+        return f"Error: {exc}"
 
     # The tag filter applies identically to results and fenced candidates
     # so the fence note reflects the same filter set the results use.
@@ -585,11 +928,13 @@ def search(query: str, top_k: int = 10, tags: str = "",
                         & {d.lower() for d in (r.get("domains") or r.get("tags") or [])})
 
         results = [r for r in results if _tag_match(r)]
-        results = results[:top_k]
+        home_results = [r for r in home_results if _tag_match(r)]
         fenced_nodes = [r for r in fenced_nodes if _tag_match(r)]
     # Scoped like context, ask and prime: a node scoped to another client is
     # not this client's hit.
     results = _scope_results(results, _mcp_client())
+    home_results = _scope_results(home_results, _mcp_client())
+    results = federate_graph_results(results, home_results, top_k=top_k)
 
     # The fence note is derived in a single place both surfaces call (R3.1).
     from .retrieve import build_fence_note
@@ -601,31 +946,41 @@ def search(query: str, top_k: int = 10, tags: str = "",
         from .retrieve import build_trust_note
         trust_note = build_trust_note(fence_stats.get("trusted_omissions"))
 
-    ground_note = ""
-    verdict = grounding.get("verdict")
-    if verdict is not None:
-        try:
-            ground_note = verdict.note()
-        except Exception:
-            ground_note = ""
+    ground_notes = []
+    for graph, evidence in (("project", grounding), ("global", home_grounding)):
+        if results and not any(result["_graph_source"] == graph for result in results):
+            continue
+        verdict = evidence.get("verdict")
+        if verdict is not None:
+            try:
+                note = verdict.note()
+            except Exception:
+                note = ""
+            if note:
+                ground_notes.append(f"{graph}: {note}" if home is not None else note)
 
     if not results:
-        notes = [note for note in (fence_note, trust_note, ground_note) if note]
+        notes = [note for note in (fence_note, trust_note, *ground_notes) if note]
         return "No results found." + (f"\n{' '.join(notes)}" if notes else "")
 
     from .retrieve import _node_age_str, _staleness_caveat
 
     lines = []
-    if ground_note:
-        lines.append(ground_note)
+    lines.extend(ground_notes)
     lines.append(f"Found {len(results)} results for '{query}':\n")
     for i, r in enumerate(results, 1):
-        score = r.get("rrf_score", 0) or r.get("confidence", 0)
+        merged = "_merge_rank_score" in r
+        score = (r["_merge_rank_score"] if merged else
+                 r.get("rrf_score", 0) or r.get("confidence", 0))
+        score_label = "rank_score" if merged else "score"
+        score_text = f"{score:.6f}" if merged else f"{score:.3f}"
         age = _node_age_str(r)
         caveat = _staleness_caveat(r)
         age_tag = f", {age}" if age else ""
+        display_id = _display_ref(r["_graph_source"], r["id"])
+        source = f", graph={r['_graph_source']}" if display_id != r["id"] else ""
         lines.append(f"{i}. [{r.get('type', 'concept')}] {r.get('title', r['id'])} "
-                      f"(score={score:.3f}, id={r['id']}{age_tag}){caveat}")
+                      f"({score_label}={score_text}, id={display_id}{age_tag}{source}){caveat}")
         content = (r.get("content") or "")[:150]
         if content:
             lines.append(f"   {content}")
@@ -636,6 +991,8 @@ def search(query: str, top_k: int = 10, tags: str = "",
         lines.append(fence_note)
     if trust_note:
         lines.append(trust_note)
+    if home is not None and home_results:
+        lines.append("Use global-qualified IDs or graph='global' for writes derived from global results.")
     return "\n".join(lines)
 
 
@@ -651,6 +1008,8 @@ def add(
     referent_scope: str = "",
     asserted_at: str = "",
     true_of: str = "",
+    graph: str = "",
+    source_refs: str = "",
 ) -> str:
     """Add a knowledge node to the graph. ALWAYS `search` first to avoid duplicates.
 
@@ -682,8 +1041,14 @@ def add(
         asserted_at: RFC3339 claim time (default: now when binding).
         true_of: RFC3339 instant the referent was observed in the digested
             state (default: asserted_at).
+        graph: project (selected graph) or global (configured outer graph).
+        source_refs: Comma-separated graph-qualified result IDs used as evidence.
+            A global source routes this new node to the global graph.
     """
-    store, config = _get_store()
+    try:
+        store, config, graph = _derived_write_store(graph, source_refs)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .extract import keyword_extract
     from .schema import ADDABLE_NODE_TYPES
 
@@ -733,6 +1098,7 @@ def add(
             tags=tag_list,
             audience=audience,
             prov_activity="mcp-add",
+            prov_why=f"Derived from {source_refs}" if source_refs else "",
             **binding,
         )
     except ValueError as e:
@@ -749,7 +1115,8 @@ def add(
                            provenance="auto-linked via MCP")
             link_count += 1
 
-    return f"Created node: {nid} ({node_type})" + (
+    display_id = _display_ref(graph, nid)
+    return f"Created node: {display_id} ({node_type})" + (
         f" with {link_count} auto-link(s)" if link_count else ""
     )
 
@@ -780,10 +1147,13 @@ def edit(node_id: str, title: str = "", content: str = "", append: str = "",
             and are archived by the daemon.
         force: Override a foreign advisory lock.
     """
-    store, config = _get_store()
+    try:
+        store, config, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .store import EditPolicyError, LockHeldError
 
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     if not node:
@@ -814,7 +1184,8 @@ def edit(node_id: str, title: str = "", content: str = "", append: str = "",
     except (EditPolicyError, LockHeldError, ValueError) as e:
         return f"Error: {e}"
 
-    return (f"Edited {updated.get('title', '')} ({updated['id']}) — "
+    updated_ref = _display_ref(graph, updated["id"], incoming_ref=node_id)
+    return (f"Edited {updated.get('title', '')} ({updated_ref}) — "
             f"fields: {', '.join(sorted(provided))}")
 
 
@@ -834,10 +1205,13 @@ def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") 
         expires: Optional expiry date for the new node (YYYY-MM-DD).
         reason: Why the node is being replaced (kept as provenance).
     """
-    store, config = _get_store()
+    try:
+        store, config, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .store import LockHeldError
 
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     if not node:
@@ -854,7 +1228,94 @@ def supersede(node_id: str, new_text: str, expires: str = "", reason: str = "") 
     except (LockHeldError, ValueError) as e:
         return f"Error: {e}"
 
-    return f"Superseded {node['title']} ({node['id']}) -> new node {new['id']}"
+    old_ref = _display_ref(graph, node["id"], incoming_ref=node_id)
+    new_ref = _display_ref(graph, new["id"], incoming_ref=node_id)
+    return f"Superseded {node['title']} ({old_ref}) -> new node {new_ref}"
+
+
+def _context_hits(stores, topic: str, top_k: int, client: str | None,
+                  *, trusted_only: bool, evaluation_time: str):
+    """Retrieve each graph independently before rank federation and rendering."""
+    from .retrieve import federate_graph_results, hybrid_search
+    from .store import node_expired, node_retired
+
+    hits = {}
+    warnings = {}
+    for graph, store in stores.items():
+        fence, grounding = {}, {}
+        if topic:
+            rows = hybrid_search(
+                store, topic, top_k=top_k, trusted_only=trusted_only,
+                evaluation_time=evaluation_time, fence_stats=fence,
+                grounding=grounding,
+            )
+        else:
+            recent = store.recent_nodes(n=top_k)
+            today = evaluation_time[:10] if trusted_only else None
+            expired = [r for r in recent if node_expired(r, today=today)]
+            inactive = [r for r in recent if r not in expired and node_retired(r)]
+            rows = [r for r in recent if r not in expired and r not in inactive]
+            if trusted_only:
+                from .trust import filter_trusted_nodes
+                rows, omissions = filter_trusted_nodes(store, rows, at=evaluation_time)
+                omissions["invalidated"] = omissions.get("invalidated", 0) + len(expired)
+                omissions["inactive"] = omissions.get("inactive", 0) + len(inactive)
+                fence["trusted_omissions"] = omissions
+        hits[graph] = _scope_results(rows, client)
+        warnings[graph] = (grounding, fence.get("trusted_omissions"))
+    merged = federate_graph_results(hits.get("project", []), hits.get("global", []),
+                                    top_k=top_k)
+    return merged, warnings
+
+
+def _render_context_sources(stores, results, warnings, *, topic: str, level: str,
+                            client: str | None, evaluation_time: str,
+                            trusted_only: bool = False, max_tokens: int = 0) -> str:
+    """Render graph-local sections; split one total budget across contributors."""
+    from .retrieve import (TIER_BUDGETS, _estimate_tokens, build_trust_note,
+                           format_context_block)
+
+    by_graph = {graph: [] for graph in stores}
+    for row in results:
+        by_graph[row["_graph_source"]].append(row)
+    contributing = [graph for graph in stores if by_graph[graph]]
+    if not contributing:
+        return ""
+    aware = _graph_aware_session()
+    total_budget = max_tokens if max_tokens > 0 else TIER_BUDGETS.get(level, 1500)
+    headings = len(contributing) > 1 or aware or "global" in contributing
+    denied = []
+    if trusted_only:
+        for graph in stores:
+            if graph not in contributing:
+                omissions = warnings[graph][1] or {}
+                if any(omissions.values()):
+                    denied.append(f"{graph.title()} graph: {build_trust_note(omissions)}")
+    preamble = "\n".join(denied)
+    if preamble:
+        preamble += "\n\n"
+    heading_cost = (_estimate_tokens(preamble)
+                    + _estimate_tokens("\n\n".join(
+                        f"## {graph.title()} graph\n\n" if headings else ""
+                        for graph in contributing)))
+    per_budget = max(1, (total_budget - heading_cost) // len(contributing))
+    sections = []
+    for graph in contributing:
+        grounding, omissions = warnings[graph]
+        kwargs = ({"max_tokens_approx": per_budget}
+                  if len(contributing) > 1 or max_tokens > 0 else {})
+        if max_tokens <= 0:
+            kwargs["level"] = level
+        formatter = ((lambda node_id, source=graph: _display_ref(source, node_id))
+                     if aware or graph == "global" else None)
+        block = format_context_block(
+            stores[graph], by_graph[graph], query=topic, adapter=client,
+            trusted_only=trusted_only, evaluation_time=evaluation_time,
+            grounding=grounding, reference_formatter=formatter,
+            trust_omissions=omissions if trusted_only else None, **kwargs,
+        )
+        sections.append((f"## {graph.title()} graph\n\n" if headings else "") + block)
+    return preamble + "\n\n".join(sections)
 
 
 @_tool()
@@ -863,6 +1324,7 @@ def context(
     level: str = "abridged",
     max_tokens: int = 0,
     trusted_only: bool = False,
+    graph: str = "auto",
 ) -> str:
     """Get a formatted context block for injection into conversation.
 
@@ -872,87 +1334,29 @@ def context(
         max_tokens: Token budget (overrides level with auto-selection if set).
         trusted_only: Admit only current, explicitly verified,
             non-contradicted knowledge. False preserves ordinary recall.
+        graph: Read scope: auto, project, or global.
     """
-    store, _ = _get_store()
-    from .retrieve import build_trust_note, format_context_block, hybrid_search
-    from .store import node_expired, node_retired
-
-    evaluation_time = None
-    fence_stats: dict = {}
-    if trusted_only:
-        evaluation_time = operation_now()
-
-    client = _mcp_client()
-    if topic:
-        results = hybrid_search(
-            store,
-            topic,
-            top_k=15,
-            trusted_only=trusted_only,
-            evaluation_time=evaluation_time,
-            fence_stats=fence_stats,
-        )
-    else:
-        # Fall back to recent high-weight nodes (skip expired and
-        # retired knowledge — archived/superseded stays retired here too)
-        recent = store.recent_nodes(n=15)
-        if trusted_only:
-            from .trust import parse_rfc3339
-            today = parse_rfc3339(
-                evaluation_time, field="evaluation_time"
-            ).date().isoformat()
-            expired_count = sum(
-                1 for result in recent if node_expired(result, today=today)
-            )
-            inactive_count = sum(
-                1 for result in recent
-                if not node_expired(result, today=today) and node_retired(result)
-            )
-            results = [
-                result for result in recent
-                if not node_expired(result, today=today) and not node_retired(result)
-            ]
-        else:
-            results = [
-                result for result in recent
-                if not node_expired(result) and not node_retired(result)
-            ]
-        if trusted_only:
-            from .trust import filter_trusted_nodes
-            results, omissions = filter_trusted_nodes(
-                store, results, at=evaluation_time
-            )
-            omissions["invalidated"] = (
-                omissions.get("invalidated", 0) + expired_count
-            )
-            omissions["inactive"] = omissions.get("inactive", 0) + inactive_count
-            fence_stats["trusted_omissions"] = omissions
-    results = _scope_results(results, client)
-
-    if not results:
-        result = "No relevant knowledge found."
-        if trusted_only:
-            result += "\n" + build_trust_note(fence_stats.get("trusted_omissions"))
-        return result
-
-    kwargs = {"level": level}
-    if max_tokens > 0:
-        kwargs = {"max_tokens_approx": max_tokens}
-
-    result = format_context_block(
-        store,
-        results,
-        query=topic,
-        adapter=client,
-        trusted_only=trusted_only,
-        evaluation_time=evaluation_time,
-        **kwargs,
-    )
-    if trusted_only:
-        result = result.rstrip() + "\n" + build_trust_note(
-            fence_stats.get("trusted_omissions")
-        )
-    return result
+    from .retrieve import build_trust_note
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            stores = {name: source for name, source in
+                      (("project", selected), ("global", outer)) if source is not None}
+            now = operation_now()
+            client = _mcp_client()
+            results, warnings = _context_hits(
+                stores, topic, 15, client, trusted_only=trusted_only,
+                evaluation_time=now)
+            if not results:
+                notes = ("\n" + "\n".join(
+                    f"{name}: {build_trust_note(warnings[name][1])}" for name in stores)
+                         if trusted_only else "")
+                return "No relevant knowledge found." + notes
+            return _render_context_sources(
+                stores, results, warnings, topic=topic, level=level,
+                client=client, evaluation_time=now, trusted_only=trusted_only,
+                max_tokens=max_tokens)
+    except ValueError as exc:
+        return f"Error: {exc}"
 
 
 @_tool()
@@ -1113,15 +1517,18 @@ def verify(
     Reviewer identity is asserted audit text within the local trust boundary;
     this tool does not authenticate it.
     """
-    store, _ = _get_store()
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     operation_instant = operation_now()
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     if node is None:
         return "Error: invalid_input: Node not found: " + node_id
     try:
-        return store.verify_node(
+        result = store.verify_node(
             node["id"],
             verified_by=verified_by,
             prov_method=prov_method,
@@ -1129,6 +1536,10 @@ def verify(
             valid_at=valid_at or None,
             invalid_at=invalid_at or None,
         )
+        result = {**result, "id": _display_ref(graph, node["id"], incoming_ref=node_id)}
+        if graph == "global":
+            result["graph"] = graph
+        return result
     except ValueError as exc:
         return _state_error(exc)
 
@@ -1156,9 +1567,12 @@ def invalidate(
     """
     from .store import LockHeldError
 
-    store, _ = _get_store()
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     operation_instant = operation_now()
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     if node is None:
@@ -1169,13 +1583,17 @@ def invalidate(
     except LockHeldError as exc:
         return f"Error: {exc}"
     try:
-        return store.invalidate_node(
+        result = store.invalidate_node(
             node["id"],
             invalidated_by=actor,
             asserted_by=invalidated_by,
             disposition_code=disposition_code,
             invalid_at=invalid_at or operation_instant,
         )
+        result = {**result, "id": _display_ref(graph, node["id"], incoming_ref=node_id)}
+        if graph == "global":
+            result["graph"] = graph
+        return result
     except ValueError as exc:
         return _state_error(exc)
 
@@ -1187,11 +1605,22 @@ def show(node_id: str) -> str:
     Args:
         node_id: Node ID or title to look up.
     """
-    store, _ = _get_store()
-    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    try:
+        node = store.get_node(raw_id) or store.get_node_by_title(raw_id)
+        detail = _node_detail(store, node, graph=graph,
+                              incoming_ref=node_id) if node else None
+    finally:
+        if graph == "global":
+            store.close()
     if not node:
         return f"Node not found: {node_id}"
-    return _node_detail(store, node)
+    display_id = _display_ref(graph, node["id"], incoming_ref=node_id)
+    return (f"[graph: {graph}, id: {display_id}]\n{detail}"
+            if display_id != node["id"] else detail)
 
 
 @_tool()
@@ -1223,9 +1652,15 @@ def link(
         weight: Edge strength 0.0-1.0. Use 0.7+ for strong connections, 0.3-0.5 for weak ones.
         reason: Why this connection exists (stored as provenance — always provide this).
     """
-    store, _ = _get_store()
-    a, error_a = _node_for_write(store, node_a)
-    b, error_b = _node_for_write(store, node_b)
+    try:
+        store, _, raw_a, graph_a = _routed_ref(node_a, write=True)
+        other, _, raw_b, graph_b = _routed_ref(node_b, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    if graph_a != graph_b:
+        return "Error: cross-graph links are not supported; both nodes must belong to one graph"
+    a, error_a = _node_for_write(store, raw_a)
+    b, error_b = _node_for_write(other, raw_b)
     if error_a or error_b:
         return error_a or error_b
     if not a:
@@ -1245,6 +1680,7 @@ def list_nodes(
     audience: str = "",
     tags: str = "",
     limit: int = 100,
+    graph: str = "auto",
 ) -> str:
     """List nodes in the knowledge graph with optional filters.
 
@@ -1254,33 +1690,32 @@ def list_nodes(
         audience: Filter by audience (private, team, org, public).
         tags: Filter by tags (comma-separated, AND logic — node must have all).
         limit: Maximum number of nodes to return.
+        graph: auto (both allowed stores), project, or global.
     """
-    store, _ = _get_store()
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    nodes = store.all_nodes(
-        node_type=node_type or None,
-        status=status or None,
-        audience=audience or None,
-        tags=tag_list,
-        limit=_bounded(limit),
-    )
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            nodes = _read_rows(sources, lambda _, store, n: store.all_nodes(
+                node_type=node_type or None, status=status or None,
+                audience=audience or None, tags=tag_list, limit=n), _bounded(limit))
+    except ValueError as exc:
+        return f"Error: {exc}"
     if not nodes:
         return "No nodes found matching filters."
 
     lines = [f"{len(nodes)} node(s):\n"]
     for n in nodes:
-        lines.append(_node_summary(n))
+        lines.append(_node_summary(n, graph=n["_graph_source"]))
     return "\n".join(lines)
 
 
-@_tool()
-def status() -> str:
+def _status_one(store, source: str) -> str:
     """Get knowledge graph health and statistics.
 
     Returns node/edge counts, type distribution, orphan count,
     and active operational nodes (constraints, watches, directives).
     """
-    store, _ = _get_store()
     stats = store.stats()
     op = store.operational_summary()
     from .store import SCHEMA_RECOVERY_PATH_META, SCHEMA_RECOVERY_REASON_META
@@ -1325,7 +1760,8 @@ def status() -> str:
             f"{archive_duplicate_count} duplicate ID(s) need review"
         )
     if archive_failed_count:
-        sample = ", ".join(failure.id for failure in archive_failed[:5])
+        sample = ", ".join(_display_ref(source, failure.id)
+                           for failure in archive_failed[:5])
         lines.append(
             "Archive warning: "
             f"{archive_failed_count} node(s) could not be archived last cycle ({sample})"
@@ -1354,19 +1790,40 @@ def status() -> str:
     if constraints:
         lines.append(f"\n## Active Constraints ({len(constraints)})")
         for c in constraints[:10]:
-            lines.append(f"  - {c.get('title', c['id'])}")
+            lines.append(f"  - {c.get('title', c['id'])} "
+                         f"(id={_display_ref(source, c['id'])})"
+                         if _display_ref(source, c["id"]) != c["id"]
+                         else f"  - {c.get('title', c['id'])}")
 
     watches = op.get("watches", [])
     if watches:
         lines.append(f"\n## Active Watches ({len(watches)})")
         for w in watches[:10]:
-            lines.append(f"  - {w.get('title', w['id'])}")
+            lines.append(f"  - {w.get('title', w['id'])} "
+                         f"(id={_display_ref(source, w['id'])})"
+                         if _display_ref(source, w["id"]) != w["id"]
+                         else f"  - {w.get('title', w['id'])}")
 
     return "\n".join(lines)
 
 
 @_tool()
-def ask(question: str) -> str:
+def status(graph: str = "auto") -> str:
+    """Get per-graph health and statistics for the selected read scope."""
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            if len(sources) == 1 and "project" in sources:
+                return _status_one(selected, "project")
+            return "\n\n".join(
+                f"## {source.title()} graph\n\n{_status_one(store, source)}"
+                for source, store in sources.items())
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+
+@_tool()
+def ask(question: str, graph: str = "auto") -> str:
     """Ask a question of the knowledge graph.
 
     Classifies the question type (factual, procedural, decision, exploratory),
@@ -1374,10 +1831,8 @@ def ask(question: str) -> str:
 
     Args:
         question: Natural language question.
+        graph: Read scope: auto, project, or global.
     """
-    store, config = _get_store()
-    from .retrieve import format_context_block, hybrid_search
-
     # Simple question classification
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
@@ -1390,25 +1845,28 @@ def ask(question: str) -> str:
         qtype = "exploratory"
 
     top_k = {"factual": 5, "procedural": 8, "decision": 10, "exploratory": 12}.get(qtype, 10)
-    client = _mcp_client()
-    grounding: dict = {}
-    results = _scope_results(
-        hybrid_search(store, question, top_k=top_k, grounding=grounding), client)
-
-    if not results:
-        return f"[{qtype}] No relevant knowledge found for: {question}"
-
-    # The verdict rides through format_context_block, which is the single place
-    # rows become context text — so `ask` does not re-implement the gate, it
-    # just hands the verdict to the canonical renderer.
-    level = "full" if qtype in ("procedural", "decision") else "abridged"
-    block = format_context_block(store, results, query=question, level=level,
-                                 adapter=client, grounding=grounding)
-    return f"[{qtype} question]\n\n{block}"
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            stores = {name: source for name, source in
+                      (("project", selected), ("global", outer)) if source is not None}
+            now = operation_now()
+            client = _mcp_client()
+            results, warnings = _context_hits(
+                stores, question, top_k, client, trusted_only=False,
+                evaluation_time=now)
+            if not results:
+                return f"[{qtype}] No relevant knowledge found for: {question}"
+            level = "full" if qtype in ("procedural", "decision") else "abridged"
+            block = _render_context_sources(
+                stores, results, warnings, topic=question, level=level,
+                client=client, evaluation_time=now)
+            return f"[{qtype} question]\n\n{block}"
+    except ValueError as exc:
+        return f"Error: {exc}"
 
 
 @_tool()
-def suggest(limit: int = 10) -> str:
+def suggest(limit: int = 10, graph: str = "auto") -> str:
     """Show pending bridge opportunity suggestions.
 
     These are potential connections between concepts that Kindex detected
@@ -1416,15 +1874,34 @@ def suggest(limit: int = 10) -> str:
 
     Args:
         limit: Maximum suggestions to show.
+        graph: auto (both allowed stores), project, or global.
     """
-    store, _ = _get_store()
-    suggestions = store.pending_suggestions(limit=limit)
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            # Suggestion receipts are integers local to each store, not node IDs.
+            lists = {name: store.pending_suggestions(limit=_bounded(limit))
+                     for name, store in sources.items()}
+            suggestions = []
+            for rank in range(_bounded(limit)):
+                for name in ("global", "project"):
+                    if name in lists and rank < len(lists[name]):
+                        suggestions.append((name, lists[name][rank]))
+                        if len(suggestions) >= _bounded(limit):
+                            break
+                if len(suggestions) >= _bounded(limit):
+                    break
+    except ValueError as exc:
+        return f"Error: {exc}"
     if not suggestions:
         return "No pending suggestions."
 
     lines = [f"{len(suggestions)} pending suggestion(s):\n"]
-    for s in suggestions:
-        lines.append(f"  #{s['id']}: {s['concept_a']} <-> {s['concept_b']}")
+    for source, s in suggestions:
+        endpoint = lambda key: (_display_ref(source, s[key])
+                                if s.get("identity_kind") == "node_id" else s[key])
+        label = f"{source} #" if len(sources) > 1 or source == "global" else "#"
+        lines.append(f"  {label}{s['id']}: {endpoint('concept_a')} <-> {endpoint('concept_b')}")
         if s.get("reason"):
             lines.append(f"      Reason: {s['reason']}")
     return "\n".join(lines)
@@ -1448,7 +1925,7 @@ def _is_substantive_concept(concept: dict) -> bool:
 
 
 @_tool()
-def learn(text: str) -> str:
+def learn(text: str, graph: str = "", source_refs: str = "") -> str:
     """Extract knowledge from text and add it to the graph.
 
     USE THIS: after reading long files, articles, command outputs, or completing
@@ -1461,8 +1938,14 @@ def learn(text: str) -> str:
 
     Args:
         text: Text to extract knowledge from (session notes, documentation, etc.).
+        graph: project (selected graph) or global (configured outer graph).
+        source_refs: Comma-separated graph-qualified evidence IDs. A global
+            source routes extracted knowledge to the global graph.
     """
-    store, config = _get_store()
+    try:
+        store, config, graph = _derived_write_store(graph, source_refs)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .budget import BudgetLedger
     from .extract import extract
     from .schema import ADDABLE_NODE_TYPES
@@ -1555,10 +2038,8 @@ def learn(text: str) -> str:
     return ", ".join(parts)
 
 
-@_tool()
-def graph_stats() -> str:
-    """Get graph analytics: density, components, centrality, and communities."""
-    store, _ = _get_store()
+def _graph_stats_one(store, source: str) -> str:
+    """Compute analytics within one store; never combine graph topology."""
     from .graph import store_bridges, store_centrality, store_communities, store_stats
 
     stats = store_stats(store)
@@ -1593,19 +2074,39 @@ def graph_stats() -> str:
     if centrality:
         lines.append("\n## Top Nodes (Betweenness Centrality)")
         for nid, title, score in centrality:
-            lines.append(f"  {title}: {score:.4f}")
+            ref = _display_ref(source, nid)
+            lines.append(f"  {title}" + (f" (id={ref})" if ref != nid else "")
+                         + f": {score:.4f}")
 
     if communities:
         lines.append(f"\n## Communities ({len(communities)})")
         for i, comm in enumerate(communities[:5], 1):
-            members = ", ".join(n.get("title", n["id"]) for n in comm[:5])
+            members = ", ".join(
+                n.get("title", n["id"]) +
+                (f" (id={_display_ref(source, n['id'])})"
+                 if _display_ref(source, n["id"]) != n["id"] else "")
+                for n in comm[:5])
             lines.append(f"  Cluster {i} ({len(comm)} nodes): {members}")
 
     return "\n".join(lines)
 
 
 @_tool()
-def graph_heal() -> str:
+def graph_stats(graph: str = "auto") -> str:
+    """Get source-separated graph analytics for auto, project, or global."""
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            if len(sources) == 1 and "project" in sources:
+                return _graph_stats_one(selected, "project")
+            return "\n\n".join(
+                f"## {source.title()} graph\n\n{_graph_stats_one(store, source)}"
+                for source, store in sources.items())
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+
+def _graph_heal_one(store, source: str) -> str:
     """Diagnose and report graph health issues with actionable recommendations.
 
     Reports:
@@ -1620,7 +2121,6 @@ def graph_heal() -> str:
     # Read-only by design: graph_heal performs no merges today. If a merge
     # is ever added here, it must call snapshots.snapshot_db first
     # (PRD lineage item 2 — pre-merge snapshot stopgap).
-    store, _ = _get_store()
     from .graph import store_bridges, store_stats
 
     lines = ["# Graph Health Report\n"]
@@ -1639,7 +2139,7 @@ def graph_heal() -> str:
         for o in orphans[:10]:
             weight = o.get('weight', 0)
             lines.append(f"  - [{o.get('type', '?')}] {o['title']} "
-                         f"(id={o['id']}, w={weight:.2f})")
+                         f"(id={_display_ref(source, o['id'])}, w={weight:.2f})")
             if weight < 0.15:
                 lines.append(f"    -> Low weight, candidate for archival")
             else:
@@ -1654,7 +2154,9 @@ def graph_heal() -> str:
     if bridges:
         lines.append(f"\n## Bridge Edges (critical connections)")
         for b in bridges:
-            lines.append(f"  - {b['from_title']} <-> {b['to_title']} "
+            lines.append(f"  - {b['from_title']} "
+                         f"(id={_display_ref(source, b['from_id'])}) <-> "
+                         f"{b['to_title']} (id={_display_ref(source, b['to_id'])}) "
                          f"(betweenness: {b['betweenness']:.4f})")
         lines.append("  -> Consider adding parallel links to reduce fragility")
 
@@ -1669,7 +2171,7 @@ def graph_heal() -> str:
             lines.append(f"\n## Fading Nodes ({len(low)} below 0.1 weight)")
             for r in low:
                 lines.append(f"  - [{r['type']}] {r['title']} "
-                             f"(id={r['id']}, w={r['weight']:.3f})")
+                             f"(id={_display_ref(source, r['id'])}, w={r['weight']:.3f})")
             lines.append("  -> Access these nodes to refresh weight, or let them fade to archive")
     except Exception:
         pass
@@ -1680,6 +2182,21 @@ def graph_heal() -> str:
         lines.append("  -> Use `suggest` to find cross-component link candidates")
 
     return "\n".join(lines)
+
+
+@_tool()
+def graph_heal(graph: str = "auto") -> str:
+    """Diagnose each allowed graph independently without modifying it."""
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            if len(sources) == 1 and "project" in sources:
+                return _graph_heal_one(selected, "project")
+            return "\n\n".join(
+                f"## {source.title()} graph\n\n{_graph_heal_one(store, source)}"
+                for source, store in sources.items())
+    except ValueError as exc:
+        return f"Error: {exc}"
 
 
 @_tool()
@@ -1700,18 +2217,25 @@ def stale_check(base_dir: str = "", rebind: str = "") -> str:
             re-hash its referent and rebind to the current state (moves
             true_of to now, keeps asserted_at, clears the stale marker).
     """
-    store, _ = _get_store()
+    if rebind:
+        try:
+            store, _, raw_rebind, graph = _routed_ref(rebind, write=True)
+        except ValueError as exc:
+            return f"Error: {exc}"
+    else:
+        store, _ = _get_store()
     from .referent import rebind as rebind_fn
     from .referent import stale_sweep
 
     base = base_dir or None
     if rebind:
         try:
-            node = rebind_fn(store, rebind, base)
+            node = rebind_fn(store, raw_rebind, base)
         except Exception as e:
             return f"Error: {e}"
         ref = node.get("referent") or {}
-        return (f"Rebound {node['id']} to "
+        display_id = _display_ref(graph, node["id"], incoming_ref=rebind)
+        return (f"Rebound {display_id} to "
                 f"{(ref.get('content_digest') or '')[:12]} "
                 f"(true_of {node.get('true_of')}); stale marker cleared.")
 
@@ -1755,15 +2279,22 @@ def graph_merge(source_id: str, target_id: str, keep: str = "target",
         keep: Which node to keep: 'target' (default) or 'source'.
         force: Merge additive types / override a foreign lock.
     """
-    store, config = _get_store()
+    try:
+        store, config, source_ref, source_graph = _routed_ref(source_id, write=True)
+        other, _, target_ref, target_graph = _routed_ref(target_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    if source_graph != target_graph:
+        return "Error: cross-graph merges are not supported"
     from .schema import edit_class_for
     from .store import LockHeldError
 
     if keep == "source":
-        source_id, target_id = target_id, source_id
+        source_ref, target_ref = target_ref, source_ref
+    source_id, target_id = source_ref, target_ref
 
-    source = store.get_node(source_id)
-    target = store.get_node(target_id)
+    source = store.get_node(source_ref)
+    target = other.get_node(target_ref)
     if not source:
         return f"Source node not found: {source_id}"
     if not target:
@@ -1913,14 +2444,14 @@ def dream(
 
 
 @_tool()
-def changelog(since: str = "", days: int = 7) -> str:
+def changelog(since: str = "", days: int = 7, graph: str = "auto") -> str:
     """Show recent changes to the knowledge graph.
 
     Args:
         since: ISO date/timestamp to look back from (e.g. '2026-02-20').
         days: Look back N days from now (default 7, ignored if 'since' is set).
+        graph: auto (both allowed stores), project, or global.
     """
-    store, _ = _get_store()
     import datetime
 
     if since:
@@ -1929,7 +2460,23 @@ def changelog(since: str = "", days: int = 7) -> str:
         dt = datetime.datetime.now(tz=None) - datetime.timedelta(days=days)
         since_iso = dt.isoformat(timespec="seconds")
 
-    entries = store.activity_since(since_iso)
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            entries = [(source, entry) for source, store in sources.items()
+                       for entry in store.activity_since(since_iso, limit=51)]
+            entries.sort(key=lambda item: (item[1].get("timestamp", ""),
+                                           item[0] == "global"), reverse=True)
+            truncated = len(entries) > 50
+            entries = entries[:50]
+            node_targets = {
+                (source, entry.get("target_id"))
+                for source, entry in entries
+                if entry.get("target_id") and
+                sources[source].peek_node(entry["target_id"]) is not None
+            }
+    except ValueError as exc:
+        return f"Error: {exc}"
     if not entries:
         return f"No changes since {since_iso}."
 
@@ -1940,15 +2487,23 @@ def changelog(since: str = "", days: int = 7) -> str:
         s = " ".join(s.split())
         return s if len(s) <= limit else s[:limit - 1] + "…"
 
-    lines = [f"{len(entries)} change(s) since {since_iso}:\n"]
-    for e in entries[:50]:
+    count_label = (f"Latest {len(entries)} change(s) since {since_iso} (more may exist)"
+                   if truncated else f"{len(entries)} change(s) since {since_iso}")
+    lines = [f"{count_label}:\n"]
+    for source, e in entries:
         ts = e.get("timestamp", "?")[:19]
         action = e.get("action", "?")
         target = e.get("target_title") or e.get("target_id") or "?"
+        target_id = e.get("target_id")
+        if (source, target_id) in node_targets:
+            display = _display_ref(source, target_id)
+            if display != target_id:
+                target += f" (id={display})"
         actor = e.get("actor", "")
         details = e.get("details") or {}
         actor_str = f" by {actor}" if actor else ""
-        lines.append(f"  {ts} {action} {target}{actor_str}")
+        label = f"[{source}] " if len(sources) > 1 or source == "global" else ""
+        lines.append(f"  {label}{ts} {action} {target}{actor_str}")
         # Compact per-field diff lines for edits
         diffs = details.get("diffs") if isinstance(details, dict) else None
         if isinstance(diffs, dict):
@@ -2009,29 +2564,46 @@ def ingest(source: str, limit: int = 0, repo: str = "", since: str = "") -> str:
 @_safe_output
 def resource_status() -> str:
     """Current knowledge graph statistics."""
-    store, _ = _get_store()
-    stats = store.stats()
-    return _json(stats, indent=2)
+    with _selected_read_stores() as (selected, outer):
+        sources = _read_sources(selected, outer)
+        if len(sources) == 1 and "project" in sources:
+            return _json(selected.stats(), indent=2)
+        return _json({source: store.stats() for source, store in sources.items()}, indent=2)
 
 
 @mcp.resource("kindex://node/{node_id}")
 @_safe_output
 def resource_node(node_id: str) -> str:
     """Full details of a specific knowledge node."""
-    store, _ = _get_store()
-    node = store.get_node(node_id) or store.get_node_by_title(node_id)
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    try:
+        node = store.get_node(raw_id) or store.get_node_by_title(raw_id)
+        detail = _node_detail(store, node, graph=graph,
+                              incoming_ref=node_id) if node else None
+    finally:
+        if graph == "global":
+            store.close()
     if not node:
         return f"Node not found: {node_id}"
-    return _node_detail(store, node)
+    display_id = _display_ref(graph, node["id"], incoming_ref=node_id)
+    return (f"[graph: {graph}, id: {display_id}]\n{detail}"
+            if display_id != node["id"] else detail)
 
 
 @mcp.resource("kindex://recent")
 @_safe_output
 def resource_recent() -> str:
     """Recently active nodes in the knowledge graph."""
-    store, _ = _get_store()
-    nodes = store.recent_nodes(n=20)
-    lines = [_node_summary(n) for n in nodes]
+    with _selected_read_stores() as (selected, outer):
+        sources = _read_sources(selected, outer)
+        nodes = [(source, node) for source, store in sources.items()
+                 for node in store.recent_nodes(n=20)]
+        nodes.sort(key=lambda pair: (pair[1].get("updated_at", ""),
+                                     pair[0] == "global"), reverse=True)
+        lines = [_node_summary(node, graph=source) for source, node in nodes[:20]]
     return "\n".join(lines) if lines else "No recent nodes."
 
 
@@ -2039,14 +2611,18 @@ def resource_recent() -> str:
 @_safe_output
 def resource_orphans() -> str:
     """Nodes with no connections (candidates for linking or removal)."""
-    store, _ = _get_store()
-    orphans = store.orphans()
+    with _selected_read_stores() as (selected, outer):
+        sources = _read_sources(selected, outer)
+        lists = {source: store.orphans() for source, store in sources.items()}
+        orphans = _read_rows(sources, lambda source, _, limit: lists[source][:limit],
+                             MAX_TOOL_ROWS)
+        total = sum(len(rows) for rows in lists.values())
     if not orphans:
         return "No orphan nodes."
-    lines = [_node_summary(n) for n in orphans[:MAX_TOOL_ROWS]]
-    if len(orphans) > MAX_TOOL_ROWS:
-        lines.append(f"... {len(orphans) - MAX_TOOL_ROWS} more (use graph_heal or list_nodes)")
-    return f"{len(orphans)} orphan(s):\n" + "\n".join(lines)
+    lines = [_node_summary(n, graph=n["_graph_source"]) for n in orphans]
+    if total > MAX_TOOL_ROWS:
+        lines.append(f"... {total - MAX_TOOL_ROWS} more (use graph_heal or list_nodes)")
+    return f"{total} orphan(s):\n" + "\n".join(lines)
 
 
 # ── Prompts ───────────────────────────────────────────────────────────
@@ -2054,41 +2630,42 @@ def resource_orphans() -> str:
 
 @mcp.prompt()
 @_safe_output
-def prime(topic: str = "") -> str:
+def prime(topic: str = "", graph: str = "auto") -> str:
     """Generate a full context priming block for the current session.
 
     Args:
         topic: Optional topic to focus on.
+        graph: Read scope: auto, project, or global.
     """
-    store, _ = _get_store()
-    from .retrieve import format_context_block, hybrid_search
-    from .store import node_expired, node_retired
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            stores = {name: source for name, source in
+                      (("project", selected), ("global", outer)) if source is not None}
+            now = operation_now()
+            client = _mcp_client()
+            results, warnings = _context_hits(
+                stores, topic, 15, client, trusted_only=False, evaluation_time=now)
+            if not results:
+                return "No knowledge available for priming."
+            if len(stores) == 1 and not _graph_aware_session() and "project" in stores:
+                stats = selected.stats()
+                header = (f"# Kindex Context\n\n"
+                          f"Graph: {stats['nodes']} nodes, {stats['edges']} edges\n\n")
+            else:
+                counts = [f"{name.title()} graph: {stats['nodes']} nodes, "
+                          f"{stats['edges']} edges" for name, source in stores.items()
+                          for stats in [source.stats()]]
+                header = "# Kindex Context\n\n" + "\n".join(counts) + "\n\n"
+            block = _render_context_sources(
+                stores, results, warnings, topic=topic, level="full",
+                client=client, evaluation_time=now)
+            return header + block
+    except ValueError as exc:
+        return f"Error: {exc}"
 
-    client = _mcp_client()
-    if topic:
-        results = hybrid_search(store, topic, top_k=15)
-    else:
-        results = [r for r in store.recent_nodes(n=15)
-                   if not node_expired(r) and not node_retired(r)]
-    results = _scope_results(results, client)
 
-    if not results:
-        return "No knowledge available for priming."
-
-    stats = store.stats()
-    header = (
-        f"# Kindex Context\n\n"
-        f"Graph: {stats['nodes']} nodes, {stats['edges']} edges\n\n"
-    )
-    block = format_context_block(store, results, query=topic, level="full", adapter=client)
-    return header + block
-
-
-@mcp.prompt()
-@_safe_output
-def orient() -> str:
-    """Quick orientation: graph stats, recent activity, and key nodes."""
-    store, _ = _get_store()
+def _orient_one(store, source: str) -> str:
+    """One store's orientation, with source-bound node references."""
     from .graph import store_stats
 
     from .store import node_retired
@@ -2107,21 +2684,41 @@ def orient() -> str:
     if recent:
         lines.append("## Recently Active")
         for n in recent[:10]:
-            lines.append(f"  - {_node_summary(n)}")
+            lines.append(f"  - {_node_summary(n, graph=source)}")
 
     constraints = op.get("constraints", [])
     if constraints:
         lines.append(f"\n## Active Constraints ({len(constraints)})")
         for c in constraints[:5]:
-            lines.append(f"  - {c.get('title', c['id'])}")
+            ref = _display_ref(source, c["id"])
+            lines.append(f"  - {c.get('title', c['id'])}" +
+                         (f" (id={ref})" if ref != c["id"] else ""))
 
     watches = op.get("watches", [])
     if watches:
         lines.append(f"\n## Active Watches ({len(watches)})")
         for w in watches[:5]:
-            lines.append(f"  - {w.get('title', w['id'])}")
+            ref = _display_ref(source, w["id"])
+            lines.append(f"  - {w.get('title', w['id'])}" +
+                         (f" (id={ref})" if ref != w["id"] else ""))
 
     return "\n".join(lines)
+
+
+@mcp.prompt()
+@_safe_output
+def orient(graph: str = "auto") -> str:
+    """Quick source-separated orientation for auto, project, or global."""
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+            if len(sources) == 1 and "project" in sources:
+                return _orient_one(selected, "project")
+            return "\n\n".join(
+                f"## {source.title()} graph\n\n{_orient_one(store, source)}"
+                for source, store in sources.items())
+    except ValueError as exc:
+        return f"Error: {exc}"
 
 
 # ── Session tags ──────────────────────────────────────────────────────
@@ -2308,7 +2905,8 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
 @_tool()
 def task_add(text: str, priority: int = 3, due: str = "",
              scope: str = "contextual", link_to: str = "",
-             effort: str = "", project_path: str = "", session_id: str = "") -> str:
+             effort: str = "", project_path: str = "", session_id: str = "",
+             graph: str = "", source_refs: str = "") -> str:
     """Add a task to the knowledge graph.
 
     Tasks are graph-connected -- link them to concepts, projects, or other
@@ -2322,17 +2920,33 @@ def task_add(text: str, priority: int = 3, due: str = "",
         scope: 'global' (always visible) or 'contextual' (surfaces by proximity).
         link_to: Comma-separated node IDs or titles to link this task to.
         effort: Optional effort estimate (small, medium, large).
-        project_path: Explicit repository path; do not infer from the MCP process cwd.
+        project_path: Explicit repository path overrides the inferred association.
+            When omitted, a contextual task routed to the global graph from
+            an implicitly selected project is bound to that selected project
+            (not the MCP process cwd). Other creation keeps legacy behavior.
         session_id: Optional host conversation ID for contextual reminders.
+        graph: project (selected graph) or global (configured outer graph).
+        source_refs: Comma-separated graph-qualified evidence IDs. A global
+            source routes this task to the global graph.
     """
-    store, _ = _get_store()
+    try:
+        store, _, graph = _derived_write_store(
+            graph, source_refs, link_to)
+        refs = [ref.strip() for ref in link_to.split(",") if ref.strip()]
+        links = _validated_link_targets(store, graph, refs)
+    except ValueError as exc:
+        return f"Could not create task: {exc}"
     from .tasks import create_task
-    links = [s.strip() for s in link_to.split(",") if s.strip()] if link_to else None
+    task_project_path = project_path or None
+    if (task_project_path is None and scope == "contextual" and graph == "global"
+            and _graph_aware_session()):
+        _, selected_config = _get_store()
+        task_project_path = str(selected_config._project_path)
     try:
         task_id = create_task(
             store, text, priority=priority, due=due or None, scope=scope,
-            effort=effort or None, link_to=links,
-            project_path=project_path or None, session_id=session_id or None,
+            effort=effort or None, link_to=links or None,
+            project_path=task_project_path, session_id=session_id or None,
         )
     except ValueError as exc:
         return f"Could not create task: {exc}"
@@ -2341,13 +2955,18 @@ def task_add(text: str, priority: int = 3, due: str = "",
     p_label = {1: "urgent", 2: "high", 3: "normal", 4: "low", 5: "someday"}.get(
         extra.get("priority", 3), "normal")
     due_info = f", due: {extra.get('due', '')}" if extra.get("due") else ""
-    return f"Created task: {task_id} [{p_label}]{due_info} — {text}"
+    display_id = _display_ref(graph, task_id)
+    return f"Created task: {display_id} [{p_label}]{due_info} — {text}"
 
 
 @_tool()
 def task_list(status: str = "open", scope: str = "",
-              priority: str = "", project_path: str = "", limit: int = 20) -> str:
+              priority: str = "", project_path: str = "", limit: int = 20,
+              graph: str = "auto") -> str:
     """List tasks, optionally filtered.
+
+    With an implicitly selected project graph, also includes relevant tasks
+    from the configured global graph and returns qualified IDs.
 
     Args:
         status: Filter: open, in_progress, done, all. Default: open.
@@ -2355,6 +2974,9 @@ def task_list(status: str = "open", scope: str = "",
         priority: Max priority level to show (1-5). Empty for all.
         project_path: Optional explicit project filter.
         limit: Maximum number of matching tasks to return.
+        graph: auto (selected project plus relevant outer tasks), project
+            (selected store only), or global (configured outer store only).
+            This is independent of task scope.
     """
     store, config = _get_store()
     from .tasks import list_tasks, format_task_list
@@ -2366,16 +2988,45 @@ def task_list(status: str = "open", scope: str = "",
             pass
     from .project_store import is_project_store
     local_project = str(config._project_path) if config._project_path else ""
-    default_project = (not project_path and scope != "global" and not config.active_profile
-                       and bool(local_project) and is_project_store(store, local_project))
-    tasks = list_tasks(store, status=status, scope=scope or None,
-                       project_path=project_path or (local_project if default_project else None),
-                       max_priority=max_pri, limit=None if default_project else max(1, min(limit, 500)))
-    if default_project:
-        from pathlib import Path
-        tasks = [task for task in tasks if not (task.get("extra") or {}).get("project_path")
-                 or Path(task["extra"]["project_path"]).resolve() == Path(local_project).resolve()]
-        tasks = tasks[:max(1, min(limit, 500))]
+    default_project = (graph == "auto" and not project_path and scope != "global"
+                       and not config.active_profile and bool(local_project)
+                       and is_project_store(store, local_project))
+    max_rows = max(1, min(limit, 500))
+    tasks = []
+    try:
+        with _selected_read_stores(graph) as (selected, home):
+            if selected is not None:
+                tasks = list_tasks(
+                    selected, status=status, scope=scope or None,
+                    project_path=project_path or (local_project if default_project else None),
+                    max_priority=max_pri, limit=None if default_project else max_rows)
+                if default_project:
+                    tasks = [task for task in tasks
+                             if not (task.get("extra") or {}).get("project_path")
+                             or Path(task["extra"]["project_path"]).resolve()
+                             == Path(local_project).resolve()]
+                tasks = [_task_with_graph_ref(task, "project") for task in tasks]
+            if home is not None:
+                home_tasks = list_tasks(
+                    home, status=status, scope=scope or None,
+                    project_path=(project_path or None) if graph == "global" else None,
+                    max_priority=max_pri, limit=None if graph == "auto" else max_rows)
+                if graph == "auto":
+                    target = Path(project_path or local_project).resolve()
+                    for task in home_tasks:
+                        extra = task.get("extra") or {}
+                        task_project = extra.get("project_path")
+                        task_root = Path(task_project).resolve() if task_project else None
+                        if (extra.get("scope") == "global" or task_root
+                                and (task_root == target or task_root in target.parents)):
+                            tasks.append(_task_with_graph_ref(task, "global"))
+                    tasks.sort(key=lambda task: (-task.get("weight", 0),
+                                                 (task.get("extra") or {}).get("due") or "9999"))
+                else:
+                    tasks = [_task_with_graph_ref(task, "global") for task in home_tasks]
+    except ValueError as exc:
+        return f"Error: {exc}"
+    tasks = tasks[:max_rows]
     if not tasks:
         return "No tasks found."
     return format_task_list(tasks)
@@ -2391,14 +3042,18 @@ def task_done(id: str, agent: str = "", force: bool = False) -> str:
             agent's live claim refuses the change unless force is true.
         force: Complete even though another agent holds a live claim.
     """
-    store, _ = _get_store()
+    try:
+        store, _, task_id, graph = _routed_ref(id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .tasks import TaskClaimedError, complete_task
     try:
-        result = complete_task(store, id, actor=_default_agent(agent), force=force)
+        result = complete_task(store, task_id, actor=_default_agent(agent), force=force)
     except TaskClaimedError as exc:
         return f"Error: {exc.code}: {exc}"
     if result:
-        return f"Completed: {result['title']} ({id})"
+        return (f"Completed: {result['title']} "
+                f"({_display_ref(graph, result['id'], incoming_ref=id)})")
     return f"Task not found: {id}"
 
 
@@ -2414,11 +3069,14 @@ def task_claim(id: str, agent: str = "", ttl_minutes: int = 120,
         note: Optional claim note.
         force: Override an existing unexpired claim.
     """
-    store, _ = _get_store()
+    try:
+        store, _, task_id, graph = _routed_ref(id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .tasks import claim_task
     try:
         result = claim_task(
-            store, id, _default_agent(agent),
+            store, task_id, _default_agent(agent),
             ttl_minutes=ttl_minutes,
             note=note,
             force=force,
@@ -2429,7 +3087,8 @@ def task_claim(id: str, agent: str = "", ttl_minutes: int = 120,
         return f"Task not found: {id}"
     claim = (result.get("extra") or {}).get("claim") or {}
     return (
-        f"Claimed task: {result['title']} ({id}) by {claim.get('agent')} "
+        f"Claimed task: {result['title']} "
+        f"({_display_ref(graph, result['id'], incoming_ref=id)}) by {claim.get('agent')} "
         f"until {claim.get('expires_at')}"
     )
 
@@ -2443,15 +3102,19 @@ def task_release(id: str, agent: str = "", force: bool = False) -> str:
         agent: Agent name. Required to match the claim unless force is true.
         force: Release even if the agent does not match.
     """
-    store, _ = _get_store()
+    try:
+        store, _, task_id, graph = _routed_ref(id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .tasks import release_task_claim
     try:
-        result = release_task_claim(store, id, agent=_default_agent(agent), force=force)
+        result = release_task_claim(store, task_id, agent=_default_agent(agent), force=force)
     except ValueError as e:
         return f"Could not release task claim: {e}"
     if not result:
         return f"Task not found: {id}"
-    return f"Released task claim: {result['title']} ({id})"
+    return (f"Released task claim: {result['title']} "
+            f"({_display_ref(graph, result['id'], incoming_ref=id)})")
 
 
 @_tool()
@@ -2459,9 +3122,18 @@ def task_get(id: str) -> dict:
     """Get a complete structured durable task by its exact graph ID."""
     from .tasks import get_task
     from .task_service import task_record
-    store, _ = _get_store()
-    node = get_task(store, id)
-    return {"ok": True, "task": task_record(node)} if node else {
+    try:
+        store, _, task_id, graph = _routed_ref(id)
+    except ValueError as exc:
+        return {"ok": False, "error": {"code": "graph_unavailable", "message": str(exc)}}
+    try:
+        node = get_task(store, task_id)
+    finally:
+        if graph == "global":
+            store.close()
+    record = task_record(node) if node else None
+    record = _display_task_record(record, graph, incoming_ref=id)
+    return {"ok": True, "task": record} if node else {
         "ok": False, "error": {"code": "not_found", "message": "Task not found"}}
 
 
@@ -2482,18 +3154,36 @@ def task_update(id: str, title: str | None = None, content: str | None = None,
     from .tasks import update_task
     from .task_service import task_record
     from .privacy import safe_error
-    store, _ = _get_store()
+    try:
+        store, _, task_id, graph = _routed_ref(id, write=True)
+    except ValueError as exc:
+        return {"ok": False, "error": {"code": "graph_unavailable", "message": str(exc)}}
+    try:
+        qualified_deps = [_split_graph_ref(dep) for dep in dependencies] if dependencies else []
+    except ValueError as exc:
+        return {"ok": False, "error": {"code": "graph_unavailable", "message": str(exc)}}
+    if any(source and source[0] != graph for source in qualified_deps):
+        return {"ok": False, "error": {"code": "cross_graph_dependency",
+                                      "message": "Task dependencies must be in one graph"}}
+    if dependencies:
+        try:
+            dependencies = _validated_link_targets(store, graph, dependencies)
+        except ValueError as exc:
+            return {"ok": False, "error": {"code": "invalid_argument",
+                                          "message": safe_error(exc)}}
     fields = {key: value for key, value in {
         "title": title, "content": content, "task_status": status,
         "priority": priority, "due": due, "owner": owner,
         "dependencies": dependencies, "expected_version": expected_version,
     }.items() if value is not None}
     try:
-        node = update_task(store, id, actor=_default_agent(agent), force=force, **fields)
+        node = update_task(store, task_id, actor=_default_agent(agent), force=force, **fields)
     except ValueError as exc:
         return {"ok": False, "error": {"code": getattr(exc, "code", "invalid_argument"),
                                        "message": safe_error(exc)}}
-    return {"ok": True, "task": task_record(node)} if node else {
+    record = task_record(node) if node else None
+    record = _display_task_record(record, graph, incoming_ref=id)
+    return {"ok": True, "task": record} if node else {
         "ok": False, "error": {"code": "not_found", "message": "Task not found"}}
 
 
@@ -2575,10 +3265,15 @@ def coord_start(name: str, task_id: str = "", agent: str = "",
     store, _ = _get_store()
     from .coordination import create_conversation
     try:
+        related_task = None
+        if task_id:
+            related_task = _validated_link_targets(store, "project", [task_id])[0]
+            if store.peek_node(related_task)["type"] != "task":
+                raise ValueError(f"Related node {task_id} is not a task")
         conv_id = create_conversation(
             store,
             name,
-            task_id=task_id or None,
+            task_id=related_task,
             ttl_minutes=ttl_minutes,
             created_by=_default_agent(agent),
         )
@@ -2665,14 +3360,19 @@ def coord_attach(name: str, node_id: str) -> str:
         name: Conversation ID or name.
         node_id: Node ID or title to attach.
     """
-    store, _ = _get_store()
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    if graph == "global":
+        return "Error: cross-graph coordination attachments are not supported"
     from .coordination import attach_resource
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     try:
         resources = attach_resource(store, name,
-                                    node["id"] if node else node_id)
+                                    node["id"] if node else raw_id)
     except ValueError as e:
         return f"Could not attach resource: {e}"
     return f"Attached. Resources on {name}: {', '.join(resources)}"
@@ -2786,10 +3486,13 @@ def lock_acquire(node_id: str, ttl_minutes: int = 60, note: str = "",
         note: Why the node is locked.
         force: Take over a foreign unexpired lock.
     """
-    store, _ = _get_store()
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .locks import lock_node
     from .store import LockHeldError
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     if not node:
@@ -2799,7 +3502,8 @@ def lock_acquire(node_id: str, ttl_minutes: int = 60, note: str = "",
                          ttl_minutes=ttl_minutes, note=note, force=force)
     except (LockHeldError, ValueError) as e:
         return f"Could not lock node: {e}"
-    return (f"Locked {node['title']} ({node['id']}) for {lock['agent']} "
+    display_id = _display_ref(graph, node["id"], incoming_ref=node_id)
+    return (f"Locked {node['title']} ({display_id}) for {lock['agent']} "
             f"until {lock['expires_at']}")
 
 
@@ -2811,10 +3515,13 @@ def lock_release(node_id: str, force: bool = False) -> str:
         node_id: Node ID or title to unlock.
         force: Clear a lock held by another agent.
     """
-    store, _ = _get_store()
+    try:
+        store, _, raw_id, graph = _routed_ref(node_id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
     from .locks import unlock_node
     from .store import LockHeldError
-    node, error = _node_for_write(store, node_id)
+    node, error = _node_for_write(store, raw_id)
     if error:
         return error
     if not node:
@@ -2823,9 +3530,10 @@ def lock_release(node_id: str, force: bool = False) -> str:
         cleared = unlock_node(store, node["id"], _default_agent(), force=force)
     except LockHeldError as e:
         return f"Could not unlock node: {e}"
+    display_id = _display_ref(graph, node["id"], incoming_ref=node_id)
     if cleared:
-        return f"Unlocked {node['title']} ({node['id']})"
-    return f"No lock on {node['title']} ({node['id']})"
+        return f"Unlocked {node['title']} ({display_id})"
+    return f"No lock on {node['title']} ({display_id})"
 
 
 # ── Watches ──────────────────────────────────────────────────────────
@@ -2833,7 +3541,8 @@ def lock_release(node_id: str, force: bool = False) -> str:
 
 @_tool()
 def watch_add(text: str, owner: str = "", expires: str = "",
-              link_to: str = "") -> str:
+              link_to: str = "", graph: str = "",
+              source_refs: str = "") -> str:
     """Create a watch node for something needing periodic attention.
 
     Watches surface in every session's context. Use for:
@@ -2846,8 +3555,16 @@ def watch_add(text: str, owner: str = "", expires: str = "",
         owner: Who owns this watch (person or team).
         expires: When this watch expires (YYYY-MM-DD). Auto-archived after expiry.
         link_to: Comma-separated node IDs/titles to link this watch to.
+        graph: project (selected graph) or global (configured outer graph).
+        source_refs: Comma-separated graph-qualified evidence IDs. A global
+            source routes this watch to the global graph.
     """
-    store, _ = _get_store()
+    refs = [ref.strip() for ref in link_to.split(",") if ref.strip()]
+    try:
+        store, _, graph = _derived_write_store(graph, source_refs, link_to)
+        targets = _validated_link_targets(store, graph, refs)
+    except ValueError as exc:
+        return f"Error: {exc}"
 
     extra = {"watch_status": "active"}
     if owner:
@@ -2869,36 +3586,38 @@ def watch_add(text: str, owner: str = "", expires: str = "",
         extra=extra,
     )
 
-    # Link to specified nodes
-    if link_to:
-        for ref in link_to.split(","):
-            ref = ref.strip()
-            if not ref:
-                continue
-            target = store.get_node(ref) or store.get_node_by_title(ref)
-            if target:
-                store.add_edge(nid, target["id"], edge_type="relates_to",
-                               weight=0.5, provenance="watch context")
+    for target_id in targets:
+        store.add_edge(nid, target_id, edge_type="relates_to",
+                       weight=0.5, provenance="watch context")
 
     exp = f", expires {expires}" if expires else ""
     own = f", owner: {owner}" if owner else ""
-    return f"Watch created: {text} (id={nid}{exp}{own})"
+    display_id = _display_ref(graph, nid)
+    return f"Watch created: {text} (id={display_id}{exp}{own})"
 
 
 @_tool()
-def watch_list(status: str = "active") -> str:
+def watch_list(status: str = "active", graph: str = "auto") -> str:
     """List watch nodes.
 
     Args:
         status: Filter by status: active (default), archived, all.
+        graph: auto (both allowed stores), project, or global.
     """
-    store, _ = _get_store()
-    if status == "all":
-        watches = store.all_nodes(node_type="watch", limit=50)
-    elif status == "archived":
-        watches = store.all_nodes(node_type="watch", status="archived", limit=50)
-    else:
-        watches = store.active_watches()
+    try:
+        with _selected_read_stores(graph) as (selected, outer):
+            sources = _read_sources(selected, outer)
+
+            def fetch(_, store, limit):
+                if status == "all":
+                    return store.all_nodes(node_type="watch", limit=limit)
+                if status == "archived":
+                    return store.all_nodes(node_type="watch", status="archived", limit=limit)
+                return store.active_watches()[:limit]
+
+            watches = _read_rows(sources, fetch, 50)
+    except ValueError as exc:
+        return f"Error: {exc}"
 
     if not watches:
         return "No watches found."
@@ -2906,7 +3625,7 @@ def watch_list(status: str = "active") -> str:
     lines = [f"Watches ({len(watches)}):"]
     for w in watches:
         extra = w.get("extra") or {}
-        parts = [f"- {w['title']} (id={w['id']})"]
+        parts = [f"- {w['title']} (id={_display_ref(w['_graph_source'], w['id'])})"]
         if extra.get("owner"):
             parts.append(f"@{extra['owner']}")
         if extra.get("expires"):
@@ -2923,8 +3642,11 @@ def watch_resolve(id: str, reason: str = "") -> str:
         id: Watch node ID.
         reason: Why this watch is being resolved.
     """
-    store, _ = _get_store()
-    node = store.get_node(id)
+    try:
+        store, _, raw_id, graph = _routed_ref(id, write=True)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    node = store.get_node(raw_id)
     if not node or node.get("type") != "watch":
         return f"Watch not found: {id}"
 
@@ -2934,9 +3656,10 @@ def watch_resolve(id: str, reason: str = "") -> str:
 
     # Atomic extra mutation first, then the status/weight flip without
     # passing extra — a concurrent extra writer is never clobbered.
-    store.atomic_extra_update(id, _mutate)
-    store.update_node(id, status="archived", weight=0.01)
-    return f"Resolved watch: {node['title']} ({id})"
+    store.atomic_extra_update(raw_id, _mutate)
+    store.update_node(raw_id, status="archived", weight=0.01)
+    return (f"Resolved watch: {node['title']} "
+            f"({_display_ref(graph, node['id'], incoming_ref=id)})")
 
 
 # ── Reminders ─────────────────────────────────────────────────────────
@@ -3168,15 +3891,19 @@ def mode_create(name: str, primer: str, boundary: str, permissions: str,
     """
     store, _ = _get_store()
     from .modes import create_mode
-    links = [s.strip() for s in link_to.split(",") if s.strip()] if link_to else None
-    mode_id = create_mode(
-        store, name,
-        primer=primer,
-        boundary=boundary,
-        permissions=permissions,
-        description=description,
-        link_to=links,
-    )
+    refs = [ref.strip() for ref in link_to.split(",") if ref.strip()]
+    try:
+        links = _validated_link_targets(store, "project", refs)
+        mode_id = create_mode(
+            store, name,
+            primer=primer,
+            boundary=boundary,
+            permissions=permissions,
+            description=description,
+            link_to=links or None,
+        )
+    except ValueError as exc:
+        return f"Could not create mode: {exc}"
     return f"Created mode: {name} ({mode_id})"
 
 

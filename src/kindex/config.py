@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
@@ -682,6 +683,11 @@ class Config(BaseModel):
     # cron legacy-remainder pass can find the legacy graph even when this
     # invocation resolved to a profile.
     _legacy_data_dir: str | None = PrivateAttr(default=None)
+    # User-level graph before a repository-local store takes precedence.
+    _global_data_dir: str | None = PrivateAttr(default=None)
+    # User-owned settings before the repository layer changes policy or
+    # retrieval defaults. Secondary MCP stores must use this trust boundary.
+    _global_config_data: dict = PrivateAttr(default_factory=dict)
     # Keys a repository's .kin/config set that only the user's own config may
     # set; they were ignored (see _PROJECT_LAYER_UNTRUSTED_KEYS).
     _ignored_project_keys: list[str] = PrivateAttr(default_factory=list)
@@ -964,16 +970,20 @@ def load_config(
             profiles_base = p.parent
             break  # use first global found
 
+    global_data_dir = str(merged.get("data_dir") or Config().data_dir)
+    global_config_data = copy.deepcopy({k: v for k, v in merged.items() if k != "profile"})
     project_layers = _project_config_paths(project_root)
 
     # Layer 2: local config (project-level) merges over global
     kin_profile = merged.pop("profile", None)
     ignored_project_keys: list[str] = []
     project_data_dir: str | None = None
+    project_edit_policy = False
     for p in project_layers:
         if p.is_file():
             data, ignored_project_keys = _strip_project_authority(
                 _load_kin_config_with_inheritance(p))
+            project_edit_policy = "edit_policy" in data
             if "profile" in data:
                 kin_profile = data.pop("profile")
             # A relative data_dir in a project config means "inside this
@@ -992,6 +1002,8 @@ def load_config(
             break  # use first local found
 
     cfg = Config(**merged) if merged else Config()
+    cfg._global_data_dir = global_data_dir
+    cfg._global_config_data = global_config_data
     cfg._ignored_project_keys = ignored_project_keys
     cfg = _resolve_profile(cfg, profile, kin_profile, profiles_base=profiles_base)
     cfg = _contain_data_dir(cfg)
@@ -1000,6 +1012,7 @@ def load_config(
     # inspection is deliberately limited to presence; project_data_path keeps
     # symlink and tracked-store refusals explicit instead of silently falling
     # back to another scope.
+    selected_project_store = False
     if not cfg.active_profile and not data_dir:
         from .project_store import project_data_path
         local = project_root / ".kin" / "local"
@@ -1021,7 +1034,26 @@ def load_config(
         if explicit_project or project_store_present:
             project_store = project_data_path(project_root)
             cfg.data_dir = str(project_store)
+            selected_project_store = True
     cfg = _attach_project_path(_override_data_dir(cfg, data_dir), project_root)
+    # A clone's edit-policy override belongs only to storage selected as that
+    # repository's own. A user profile/global store can live under the root
+    # (especially with bind_root) without becoming project-owned.
+    local = project_root.resolve() / ".kin" / "local"
+    canonical = cfg.data_path.resolve() in (local, local / "kindex")
+    explicit_canonical = bool(data_dir and canonical)
+    declared_local = False
+    if project_data_dir:
+        declared_path = Path(project_data_dir).expanduser().resolve()
+        declared_local = (declared_path.is_relative_to(project_root.resolve())
+                          and _same_path(cfg.data_dir, declared_path)
+                          and not _same_path(declared_path, _resolve_path(global_data_dir)))
+    project_owned = (not cfg.active_profile and
+                     ((canonical and (selected_project_store or explicit_canonical))
+                      or declared_local))
+    if project_edit_policy and not project_owned:
+        cfg.edit_policy = Config(**global_config_data).edit_policy
+        cfg._ignored_project_keys = sorted(set(cfg._ignored_project_keys) | {"edit_policy"})
     if project_data_dir and _same_path(cfg.data_dir, project_data_dir):
         # A repository may name its own local store; it may not name one that
         # a clone delivered. Asked only of the store actually selected: an

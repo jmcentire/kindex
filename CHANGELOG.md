@@ -5,6 +5,10 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 ## [Unreleased]
 
 ### Added
+- MCP reads in a repository-local session can consult both the selected project
+  graph and configured user graph, with explicit per-call `auto`, `project`, and
+  `global` scopes on retrieval, listings, and diagnostics. Session-qualified
+  references keep results usable for follow-up node, task, and watch operations.
 - Scheduler logs (`cron.log`, `cron-error.log`, `reminders.log`,
   `reminders-error.log`, `dream.log`) now stamp every line with the local
   time it was written, e.g. `2026-09-29T14:36:02-07:00 Checked [hoo3]: 0
@@ -19,6 +23,15 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 - Graph exports use a stable schema per audience and deterministic node/edge
   ordering. Directed relationships retain their stored direction on import;
   public/org exports preserve existing privacy omissions.
+
+### Fixed
+- Derived MCP writes route qualified global evidence to the user graph and
+  refuse ambiguous or cross-store links before creating nodes. Contextual
+  tasks routed outward retain the selected project association for `task_list`.
+- Repository `edit_policy` no longer governs an explicitly selected profile,
+  global, or external primary store; it still applies to repository-owned local
+  storage. Graph diagnostics remain source-separated and global reads stay
+  read-only.
 
 ## [0.45.0] - 2026-09-28
 
