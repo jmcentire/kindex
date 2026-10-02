@@ -140,3 +140,22 @@ def test_openai_request_carries_instructions_effort_and_schema(monkeypatch):
     assert sent["reasoning"] == {"effort": "high"}
     assert sent["text"]["format"]["name"] == "x"
     assert "sample" not in sent
+
+
+def test_team_knowledge_is_listed_and_counted(store, tmp_path, monkeypatch):
+    fake = FakeMessages()
+    monkeypatch.setattr(answer_mod, "get_client", lambda config, timeout=None: SimpleNamespace(messages=fake))
+    result = answer_mod.answer_question(store, "kayak trips?", _config(tmp_path, plan=False),
+                                        team=["Kayak rentals must be booked through the shared calendar."])
+    user = fake.calls[-1]["messages"][0]["content"]
+    assert "## Team knowledge" in user
+    assert "- Kayak rentals must be booked through the shared calendar." in user
+    assert user.index("## Team knowledge") < user.index("## Evidence, oldest first")
+    assert result.context_tokens > 0
+
+
+def test_without_team_knowledge_the_prompt_is_unchanged(store, tmp_path, monkeypatch):
+    fake = FakeMessages()
+    monkeypatch.setattr(answer_mod, "get_client", lambda config, timeout=None: SimpleNamespace(messages=fake))
+    answer_mod.answer_question(store, "kayak trips?", _config(tmp_path, plan=False))
+    assert "Team knowledge" not in fake.calls[-1]["messages"][0]["content"]

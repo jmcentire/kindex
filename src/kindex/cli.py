@@ -3759,7 +3759,10 @@ def cmd_ask(args):
     from .answer import answer_question
     ledger, cfg = _ledger(args)
     try:
-        result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None))
+        team = None
+        if getattr(args, "context_file", None):
+            team = Path(args.context_file).read_text().splitlines()
+        result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None), team=team)
     except Exception as exc:
         print(f"Answer failed ({safe_error(exc)}); showing search results.", file=sys.stderr)
         result = None
@@ -7634,6 +7637,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("question", nargs="+")
     s.add_argument("--as-of", dest="as_of", default=None,
                    help="Today's date for the answer (resolves 'now', 'ago'); defaults to the current date")
+    s.add_argument("--context-file", dest="context_file", default=None,
+                   help="Shared knowledge to answer with, one item per line (Kinbase passes its signed facts)")
     _common(s)
     s.set_defaults(func=cmd_ask)
 

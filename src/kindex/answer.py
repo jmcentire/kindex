@@ -210,9 +210,16 @@ def standing_directives(store: Store) -> list[dict]:
     return out
 
 
-def assemble(results: list[dict], directives: list[dict], budget_tokens: int) -> tuple[str, int, list[dict]]:
-    """The context: nodes chosen in rank order within the budget, shown oldest first."""
-    chosen, used = [], 0
+TEAM_HEADER = ("## Team knowledge\nCurrent shared knowledge about the user's work (decisions, constraints, how "
+               "the code works), supplied by the system asking; use it for questions about that work.")
+
+
+def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
+             team: list[str] | None = None) -> tuple[str, int, list[dict]]:
+    """The context: nodes chosen in rank order within the budget, shown oldest first.
+    `team` items are listed first, after the directives, and count against the budget."""
+    team = [t.strip() for t in team or [] if t.strip()]
+    chosen, used = [], sum(estimate_tokens(t) + 2 for t in team)
     for node in results:
         cost = estimate_tokens(node_text(node)) + 12
         if chosen and used + cost > budget_tokens:
@@ -226,6 +233,10 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int) ->
         parts.append("## Standing directives")
         parts.extend(f"- {node_text(d)}" for d in directives)
         parts.append("")
+    if team:
+        parts.append(TEAM_HEADER)
+        parts.extend(f"- {t}" for t in team)
+        parts.append("")
     parts.append("## Evidence, oldest first")
     for node in chosen:
         when = node.get("prov_when") or (node_date(node).date().isoformat() if node_date(node) else "undated")
@@ -235,8 +246,10 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int) ->
 
 
 def answer_question(store: Store, question: str, config: Config, ledger=None, *,
-                    as_of: str | date | datetime | None = None) -> AskResult | None:
-    """Answers `question` from the graph, or returns None when no LLM is configured."""
+                    as_of: str | date | datetime | None = None,
+                    team: list[str] | None = None) -> AskResult | None:
+    """Answers `question` from the graph, or returns None when no LLM is configured.
+    `team` is shared knowledge a caller supplies (Kinbase passes its signed facts)."""
     if not config.llm.enabled or (ledger is not None and not ledger.can_spend()):
         return None
     client = get_client(config, timeout=config.ask.timeout_seconds)
@@ -245,9 +258,9 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     intent, queries, needs_all = plan_question(question, config, client, ledger, as_of)
     searches = [question] + [q for q in queries if q.lower() != question.lower()]
     results = gather(store, searches, config.ask.top_k)
-    if not results:
+    if not results and not team:
         return AskResult(answer="No relevant knowledge found.", intent=intent, queries=searches)
-    context, used, chosen = assemble(results, standing_directives(store), config.ask.context_tokens)
+    context, used, chosen = assemble(results, standing_directives(store), config.ask.context_tokens, team)
     cfg = config.ask
     user = (f"Today's date: {_today(as_of)}\n\n{context}\n\nQuestion: {question}\n\n"
             f"{STYLE.get(intent, DEFAULT_STYLE)}{READINGS if cfg.readings else ''}")
