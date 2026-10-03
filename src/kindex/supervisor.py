@@ -174,7 +174,7 @@ def preflight(config, conversation: str) -> tuple[str, str] | None:
         if not shutil.which(command):
             return "unavailable", "command_unavailable"
         if "simulacrum" in command and not any(os.environ.get(name) for name in
-                ("ANTHROPIC_API_KEY", "WANDER_ANTHROPIC_API_KEY", "JMC_ANTHROPIC_API_KEY")):
+                config.sim.api_key_env):
             return "unavailable", "credential_unavailable"
         allowance = config.sim.max_review_cost
         if (budget.today_spend + allowance > budget.limits.daily or
