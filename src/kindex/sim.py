@@ -611,7 +611,7 @@ def call_sim(
             max_tokens=sc.max_output_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        from .llm import calculate_cost
+        from .llm import calculate_cost, response_text
 
         cost = calculate_cost(model, response.usage)
         ledger.record(
@@ -621,7 +621,7 @@ def call_sim(
             cache_read_tokens=cost.get("cache_read_tokens", 0),
             conversation_id=conversation_id, estimate=est,
         )
-        parsed = _parse_sim(response.content[0].text)
+        parsed = _parse_sim(response_text(response))
     except Exception as exc:
         return None, {"status": "llm_error", "error": safe_error(exc)}
 
@@ -1109,7 +1109,7 @@ def _verify_findings(
             max_tokens=sc.max_output_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        from .llm import calculate_cost
+        from .llm import calculate_cost, response_text
 
         cost = calculate_cost(model, response.usage)
         ledger.record(
@@ -1119,7 +1119,7 @@ def _verify_findings(
             cache_read_tokens=cost.get("cache_read_tokens", 0),
             conversation_id=conversation_id, estimate=0.0,
         )
-        parsed = _parse_sim(response.content[0].text)
+        parsed = _parse_sim(response_text(response))
     except Exception:
         return []
     keep = parsed.get("keep")

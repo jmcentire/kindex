@@ -110,7 +110,7 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
      | python3 -c "import json,sys; n='io.github.wandercom/kindex'; e=[x['server'] for x in json.load(sys.stdin)['servers'] if x['server']['name']==n and x['_meta']['io.modelcontextprotocol.registry/official']['isLatest']]; print(e[0]['version'] if e else 'MISSING')"
    ```
 
-   The registry is how MCP clients discover the server, and it stalled at 0.38.0 through six PyPI releases because nothing automated it.
+   The registry is how MCP clients discover the server.
 10. Verify the MCP listing metadata is current: `server.json` version/package fields match the release, and https://mcpmarket.com/server/kindex reflects the published package after indexing.
 
 **Definition of done:** The release is complete when (a) all workflow jobs are green, (b) the new version appears on PyPI, (c) `pip install kindex==X.Y.Z` succeeds, and (d) MCP/server metadata has been updated or a marketplace refresh has been requested. If any job fails, fix the issue, bump to a new patch version, and repeat from step 1 -- do not re-tag or force-push an existing tag.

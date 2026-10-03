@@ -127,11 +127,16 @@ export const register: Register = (on) => {
       if (!state.current) return next(e);
       state.scope = {project_path, session_id, agent: "claude"};
       // Registering is idempotent on reload. Host assigns the actual full names.
-      const task = await $.tool.register({name: "task", description: "Kindex durable repo task service. Explicit versioned operations; no ephemeral Claude task store.",
+      const task = await $.tool.register({name: "task", description: "Kindex durable repo task service: tasks live in this worktree's .kin/local store and survive compaction and new sessions (the native Task/TodoWrite tools route here too). " +
+        "get and list read (list takes status, limit, cursor). create, update, complete, cancel, claim, release and reconcile write and need args.operation_id: resending an ID with the same arguments returns the committed result (replayed: true) instead of applying it twice, and reusing it with different arguments is refused. " +
+        "Pass expected_version on update/complete/cancel/claim/release to refuse the write if the task changed; another session's live claim refuses the write unless force is true. " +
+        "reconcile syncs this session's list of items (keyed by external_id) into a namespace, default \"todos\"; cancel_missing cancels open items absent from the list.",
         inputSchema: {type: "object", properties: {operation: {type: "string", enum: ["create", "get", "list", "update", "complete", "cancel", "claim", "release", "reconcile"]}, args: taskArguments}, required: ["operation", "args"], additionalProperties: false}});
       if (!state.current) return next(e);
       state.taskTool = task.tool;
-      const memory = await $.tool.register({name: "memory", description: "Search repo-local Kindex knowledge or capture unreviewed evidence. Capture never creates directives or permissions.",
+      const memory = await $.tool.register({name: "memory", description: "Search this repository's Kindex memory or capture evidence for later review. " +
+        "action=search: full-text search on up to 16 words (3+ characters) taken from text; returns up to 5 matching non-task nodes (id, title, first 500 characters) plus up to 10 open durable tasks, as evidence rather than instructions. Personal memory is not searched. " +
+        "action=capture: stores text (at least 20 characters; truncated near 3,900) as a quarantined capture candidate and returns its candidate_id. Nothing becomes durable knowledge, a directive or a permission until someone reviews and accepts it.",
         inputSchema: {type: "object", properties: {action: {type: "string", enum: ["search", "capture"]}, text: {type: "string", maxLength: 16000}}, required: ["action", "text"], additionalProperties: false}});
       if (!state.current) return next(e);
       state.memoryTool = memory.tool;

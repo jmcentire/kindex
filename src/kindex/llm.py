@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import copy
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -17,6 +18,21 @@ from .budget import BudgetLedger
 from .config import Config
 from .privacy import redact, redact_text
 from .privacy import redacting_print as print
+
+
+# Thinking counts toward max_tokens. A model that thinks by default (Claude
+# Opus 5.5 always does; Claude Opus 5, Claude Sonnet 5 and 5.5 and the Fable
+# and Mythos models do unless told otherwise) can spend a cap sized for the
+# visible reply alone before writing any text block.
+_THINKS_BY_DEFAULT = re.compile(r"claude-(?:opus|sonnet)-5|claude-(?:fable|mythos)-")
+THINKING_HEADROOM_TOKENS = 8000
+
+
+def max_tokens_for(model: str, reply_tokens: int) -> int:
+    """``max_tokens`` for a reply of about ``reply_tokens`` on ``model``."""
+    if _THINKS_BY_DEFAULT.search(str(model or "").lower()):
+        return reply_tokens + THINKING_HEADROOM_TOKENS
+    return reply_tokens
 
 
 class _PrivateMessages:
@@ -29,6 +45,8 @@ class _PrivateMessages:
         return getattr(self._messages, name)
 
     def create(self, **kwargs):
+        if isinstance(kwargs.get("max_tokens"), int):
+            kwargs["max_tokens"] = max_tokens_for(kwargs.get("model", ""), kwargs["max_tokens"])
         response = self._messages.create(**redact(kwargs))
         blocks = getattr(response, "content", None)
         if isinstance(blocks, list):
@@ -68,6 +86,34 @@ PRICING = {
     "claude-opus-4-6": {
         "input": 5.00e-6, "output": 25.00e-6,
         "cache_write": 6.25e-6, "cache_read": 0.50e-6,
+    },
+    "claude-haiku-4-5": {
+        "input": 1.00e-6, "output": 5.00e-6,
+        "cache_write": 1.25e-6, "cache_read": 0.10e-6,
+    },
+    "claude-sonnet-5": {
+        "input": 2.00e-6, "output": 10.00e-6,
+        "cache_write": 2.50e-6, "cache_read": 0.20e-6,
+    },
+    "claude-sonnet-5-5": {
+        "input": 2.00e-6, "output": 10.00e-6,
+        "cache_write": 2.50e-6, "cache_read": 0.20e-6,
+    },
+    "claude-opus-4-8": {
+        "input": 5.00e-6, "output": 25.00e-6,
+        "cache_write": 6.25e-6, "cache_read": 0.50e-6,
+    },
+    "claude-opus-5": {
+        "input": 5.00e-6, "output": 25.00e-6,
+        "cache_write": 6.25e-6, "cache_read": 0.50e-6,
+    },
+    "claude-opus-5-5": {
+        "input": 4.00e-6, "output": 20.00e-6,
+        "cache_write": 5.00e-6, "cache_read": 0.20e-6,
+    },
+    "claude-fable-5-1": {
+        "input": 10.00e-6, "output": 50.00e-6,
+        "cache_write": 12.50e-6, "cache_read": 0.25e-6,
     },
     "gpt-5.4-nano": {
         "input": 0.20e-6, "output": 1.25e-6,
@@ -237,6 +283,25 @@ def _usage_value(usage, *names: str) -> int:
     return 0
 
 
+def response_text(response) -> str:
+    """The reply text of a messages response: its ``text`` blocks, joined.
+
+    A model that thinks by default (Claude Opus 5 and 5.5, Claude Sonnet 5 and
+    5.5) can return ``thinking`` blocks before the answer, and a refusal can
+    return no text at all, so ``content[0]`` is not the reply. Blocks without a
+    ``type`` (the OpenAI adapter's) count as text.
+    """
+    parts: list[str] = []
+    for block in getattr(response, "content", None) or []:
+        if isinstance(block, dict):
+            kind, text = block.get("type", "text"), block.get("text")
+        else:
+            kind, text = getattr(block, "type", "text"), getattr(block, "text", None)
+        if kind == "text" and isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
 # A request with no deadline waited up to the SDK default of ten minutes with
 # two retries. Commands get a minute; a hook passes its own budget, retries
 # nothing, and so finishes (and records its spend) before the host kills it.
@@ -327,6 +392,36 @@ def estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     return _estimate_cost(model, tokens_in, tokens_out)
 
 
+# A prompt prefix shorter than the model's minimum is not cached even with a
+# cache_control marker (no error; cache_creation_input_tokens stays 0). The
+# minimum is not monotonic across generations. First match wins.
+_MIN_CACHEABLE_TOKENS = (
+    ("claude-sonnet-5-5", 512),
+    ("claude-opus-5", 512),        # claude-opus-5 and claude-opus-5-5
+    ("claude-fable-", 512),
+    ("claude-mythos-5", 512),
+    ("claude-sonnet-5", 1024),
+    ("claude-opus-4-8", 1024),
+    ("claude-sonnet-4", 1024),     # Sonnet 4.6, 4.5 and 4
+    ("claude-opus-4-1", 1024),
+    ("claude-opus-4-0", 1024),
+    ("claude-opus-4-2025", 1024),
+    ("claude-opus-4-7", 2048),
+    ("claude-opus-4-6", 4096),
+    ("claude-opus-4-5", 4096),
+    ("claude-haiku-4-5", 4096),
+)
+
+
+def min_cacheable_tokens(model: str) -> int:
+    """The smallest prompt prefix ``model`` will cache, in tokens."""
+    name = str(model or "").lower()
+    for prefix, minimum in _MIN_CACHEABLE_TOKENS:
+        if prefix in name:
+            return minimum
+    return 2048
+
+
 def classify_for_graph(
     text: str,
     existing_slugs: list[str],
@@ -376,7 +471,7 @@ is_skill: false  # true if this describes an ability/capability
 
         # Parse YAML from response
         import yaml
-        text_out = response.content[0].text
+        text_out = response_text(response)
         # Extract yaml block
         if "```yaml" in text_out:
             text_out = text_out.split("```yaml")[1].split("```")[0]
@@ -425,7 +520,7 @@ Respond with ONLY a comma-separated list of slugs, most relevant first. Max 10."
         ledger.record(cost, model=config.llm.model, purpose="search",
                       tokens_in=tokens_in, tokens_out=tokens_out)
 
-        text_out = response.content[0].text.strip()
+        text_out = response_text(response).strip()
         slugs = [s.strip() for s in text_out.split(",")]
         return [s for s in slugs if s in existing_slugs]
     except Exception:
