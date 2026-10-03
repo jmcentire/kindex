@@ -81,6 +81,27 @@ def test_cli_transfer_preserves_lifecycle_without_importing_authority(tmp_path, 
     dest.close()
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_cli_import_accepts_jsonl_with_unicode_line_separator_in_content(tmp_path, separator):
+    source_dir, dest_dir = tmp_path / "source", tmp_path / "dest"
+    content = f"Before{separator}after"
+    source = Store(Config(data_dir=str(source_dir)))
+    source.add_node("Unicode evidence", node_id="unicode", content=content, audience="team")
+    source.close()
+
+    exported = cli(source_dir, "export", "--audience", "team", "--format", "jsonl")
+    assert exported.returncode == 0, exported.stderr
+    transfer = tmp_path / "graph.jsonl"
+    transfer.write_text(json.dumps(json.loads(exported.stdout), ensure_ascii=False) + "\n")
+    assert separator in transfer.read_text()
+
+    imported = cli(dest_dir, "import", str(transfer))
+    assert imported.returncode == 0, imported.stderr
+    dest = Store(Config(data_dir=str(dest_dir)))
+    assert dest.get_node("unicode")["content"] == content
+    dest.close()
+
+
 def test_cli_import_conflict_is_atomic_and_does_not_concatenate(tmp_path):
     data_dir = tmp_path / "data"
     store = Store(Config(data_dir=str(data_dir)))
