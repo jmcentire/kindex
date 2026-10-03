@@ -425,3 +425,79 @@ before `kin config set` or `kin agent-config set` runs.
 
 For a human-facing walkthrough with reminders, docs site URLs, and release
 metadata checks, see [human-guide.md](human-guide.md).
+
+### Durable source evidence
+
+In graph-aware MCP sessions, pass freshly searched qualified IDs in
+`source_refs` when calling `add`, `learn`, `task_add`, or `watch_add`.
+Newly created captures store versioned records in `extra.source_refs`, containing the
+source node ID, persistent graph UUID, absolute SQLite database locator, and
+available project/profile hints. `learn` puts these records on both new
+concepts and its learned-text source document. Graph UUIDs are stamped on
+writable database opens; ordinary secondary reads never stamp them.
+
+When supplied evidence grounds matched concepts or valid relationships, `learn`
+creates its learned-text evidence document even when no concept is new. It links
+that document to the matched concepts and relationship endpoints, retaining each
+call's source records on replay without overwriting existing concept provenance.
+Empty/invalid extraction does not create a document solely because refs were supplied.
+This closes incomplete coverage of the new durable-reference guarantee; base
+behavior did not previously persist structured relationship evidence.
+
+`show(node_id)` displays `prov_why` and the stored source records without opening
+their databases. `show(node_id, resolve_sources=True)` also returns a JSON source
+resolution list. Each item is `resolved` with the source node's ID, title,
+content, and status, or `unresolved` with a reason such as `database_missing`,
+`graph_identity_missing`, `graph_identity_mismatch`, `node_missing`,
+`database_unavailable`, or `invalid_source_ref`. Resolution opens only the saved
+locator with SQLite `mode=ro`; it never creates, migrates, stamps, or updates a
+source graph. At most 200 records are resolved per call.
+
+Session result IDs remain temporary authorization handles. Durable records are
+inspection evidence and cannot be supplied to mutation tools to bypass fresh
+searches or session scope validation. Older nodes with only a textual
+`prov_why` cannot reconstruct source identity and report
+`no_durable_source_refs`. A moved database reports `database_missing`; automatic
+discovery or explicit locator rebinding is future work. A copied database retains
+its UUID, so resolution verifies identity at the saved locator rather than
+asserting that the locator is the only copy of that graph.
+
+#### Git worktrees and disposable caches
+
+SQLite databases are disposable caches. For project knowledge, JSONLs are the
+canonical bearer of knowledge, and the agent is responsible for maintaining
+complete knowledge from `kindex.db` in those sources as it works. Existing
+JSON artifacts need explicit, lossless reconciliation when migrating to JSONL.
+This is the required workflow, not a claim of automatic runtime enforcement.
+
+Each implicitly selected worktree currently has a separate ignored
+`.kin/local/kindex/kindex.db` (or legacy local layout), with its own cache graph
+UUID. The UUID identifies that database, not the Git repository, branch, commit,
+or evidence revision. A sibling cache's matching node ID cannot establish source
+identity or authorize mutation.
+
+Worktrees are ephemeral and may be deleted outside our control. No knowledge
+guarantee may require preserving, archiving, merging, or rescuing their SQLite
+databases, or running a pre-deletion hook. Optional database merging is an
+optimization only. Agents must maintain canonical sources continuously and
+commit project JSONLs alongside the relevant code; deletion is not the point at
+which durable knowledge should first be serialized.
+
+The current locator-only resolver has a narrower observable contract. A Git
+merge transfers tracked files, not the ignored cache. After worktree removal,
+a saved database locator can return `database_missing`. A newly initialized
+cache at the same path has a new UUID and returns `graph_identity_mismatch`.
+These are expected cache availability results, not evidence that deletion itself
+is a Kindex defect or that an agent must recover the removed database. Missing
+cache availability also does not by itself establish that a derived claim is
+false or stale.
+
+Evaluate canonical serialization and reference consistency separately: all
+knowledge, relationships, provenance, and evidence bindings must be represented
+losslessly in canonical sources, and references must identify the correct source
+and revision independently of cache paths. The current project registry stores
+paths, `.kin/index.json` stores selected summaries, and `repo-memory` publishes
+selected shareable evidence. None establishes complete coverage or independent
+source resolution. This PR adds graph-bound cache locators, not canonical JSONL
+serialization or a resolver for those canonical sources. Those implementation
+gaps remain real; database survival is not their remedy.

@@ -199,6 +199,7 @@ def create_task(
     external_id: str = "",
     namespace: str = "",
     source_tool: str = "",
+    source_refs: list[dict] | None = None,
 ) -> str:
     """Create a task node and optionally link it to existing nodes."""
     pri = _parse_priority(priority)
@@ -211,6 +212,8 @@ def create_task(
         "priority": pri,
         "scope": scope if scope in VALID_SCOPES else "contextual",
     }
+    if source_refs:
+        extra["source_refs"] = source_refs
     if due:
         extra["due"] = due
     if effort and effort in VALID_EFFORTS:
