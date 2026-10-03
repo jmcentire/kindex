@@ -378,12 +378,12 @@ class TestLLMProviderConfig:
     def test_resolve_api_key_uses_first_available_fallback(self, monkeypatch):
         from kindex.llm import resolve_api_key
 
-        monkeypatch.delenv("JMC_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ORG_OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
         cfg = Config(llm=LLMConfig(
             enabled=True,
             provider="openai",
-            api_key_env="JMC_OPENAI_API_KEY,OPENAI_API_KEY",
+            api_key_env="ORG_OPENAI_API_KEY,OPENAI_API_KEY",
         ))
 
         key, env_name = resolve_api_key(cfg)
@@ -394,12 +394,12 @@ class TestLLMProviderConfig:
     def test_openai_configured_with_fallback_key(self, monkeypatch):
         from kindex.llm import is_configured
 
-        monkeypatch.delenv("JMC_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ORG_OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
         cfg = Config(llm=LLMConfig(
             enabled=True,
             provider="openai",
-            api_key_env="JMC_OPENAI_API_KEY,OPENAI_API_KEY",
+            api_key_env="ORG_OPENAI_API_KEY,OPENAI_API_KEY",
         ))
 
         assert is_configured(cfg) is True

@@ -86,7 +86,7 @@ shared a shape: **a failure that reported success.**
 3. **LLM extraction was dead too.** `extract.py` did a bare
    `os.environ.get(config.llm.api_key_env)` while `llm.py` correctly parsed the
    comma-separated fallback list the config documents, so a config of
-   `"JMC_OPENAI_API_KEY,OPENAI_API_KEY"` looked up an env var of that literal
+   `"ORG_OPENAI_API_KEY,OPENAI_API_KEY"` looked up an env var of that literal
    name and silently fell back to keyword extraction forever. It also hardcoded
    the Anthropic SDK while ignoring `llm.provider`. Both were the same shape:
    two authorities for one fact. Fixed by delegating to `llm.py`.

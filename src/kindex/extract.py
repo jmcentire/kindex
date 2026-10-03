@@ -20,7 +20,7 @@ def _get_client(config: Config, timeout: float | None = None):
     # Key resolution has ONE authority: llm.resolve_api_key. This used to do a
     # bare os.environ.get(config.llm.api_key_env), which silently broke every
     # install using the comma-separated fallback syntax that llm.py has always
-    # supported — a config of "JMC_OPENAI_API_KEY,OPENAI_API_KEY" looked up an
+    # supported — a config of "ORG_OPENAI_API_KEY,OPENAI_API_KEY" looked up an
     # env var of that literal name, found nothing, and fell back to keyword
     # extraction forever. Two resolvers for one fact is how that happened.
     from .llm import get_client, resolve_api_key
