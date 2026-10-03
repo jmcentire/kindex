@@ -37,3 +37,9 @@ kin.yaml
 # Agents
 /.claude
 /.codex
+
+# Factory run records and generated Pact run state: local working records with
+# absolute workstation paths; not needed to operate or to reproduce a result.
+/.factory/
+/.pact/state.json
+/.pact/test-gen/analysis.json

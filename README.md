@@ -682,7 +682,7 @@ profiles:
     roots: [~/Work]
   personal:
     data_dir: ~/.kindex
-    roots: [~/Code, ~/Personal]
+    roots: [~/src, ~/notes]
 default_profile: personal
 ```
 
@@ -699,7 +699,7 @@ Resolution order (first match wins):
 kin profile list                 # configured profiles + file-level stats
 kin profile which                # which profile this invocation resolves to
 # Two-step adoption: first register your existing graph as the default...
-kin profile create personal --data-dir ~/.kindex --roots ~/Code,~/Personal --default
+kin profile create personal --data-dir ~/.kindex --roots ~/src,~/notes --default
 # ...then add the sequestered one
 kin profile create work --data-dir ~/.kindex-work --roots ~/Work
 kin status                       # shows: Profile: work (via roots)
@@ -817,10 +817,10 @@ Projects use `.kin/` directories that encode their communication style, engineer
 ~/.kindex/voices/acme.kin             # Org voice (downloadable, public)
     ^
     |  inherits
-~/Code/platform/.kin/config           # Platform team context
+~/src/platform/.kin/config           # Platform team context
     ^
     |  inherits
-~/Code/payments-service/.kin/config   # Service-specific context
+~/src/payments-service/.kin/config   # Service-specific context
 ```
 
 ```yaml
@@ -1178,8 +1178,8 @@ attention:
   cooldown_seconds: 1800          # suppress repeat injections
 
 project_dirs:
-  - ~/Code
-  - ~/Personal
+  - ~/src
+  - ~/notes
 
 defaults:
   hops: 2

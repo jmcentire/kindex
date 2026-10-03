@@ -13,8 +13,8 @@ Routing rules (the profile feature's core sequestration guarantee):
 - Only when no cwd could be extracted do we fall back to the Claude-encoded
   project directory name. Because that encoding replaces every
   non-alphanumeric character with '-', a prefix match alone cannot
-  distinguish a true subdirectory (~/Code/acme/tools) from a punctuated
-  sibling (~/Code/acme-tools); prefix matches are therefore verified
+  distinguish a true subdirectory (~/src/acme/tools) from a punctuated
+  sibling (~/src/acme-tools); prefix matches are therefore verified
   against the real filesystem before a profile may claim the session.
 """
 
@@ -95,8 +95,8 @@ def _enc_suffix_is_subdir(root: Path, suffix: str, _depth: int = 0) -> bool:
     """True if an encoded-name suffix maps to a real directory chain under root.
 
     Disambiguates a genuine subdirectory (root/tools encodes to
-    enc(root)+'-tools') from a punctuated sibling (root '~/Code/acme' vs
-    directory '~/Code/acme-tools' — identical encodings). Conservative:
+    enc(root)+'-tools') from a punctuated sibling (root '~/src/acme' vs
+    directory '~/src/acme-tools' — identical encodings). Conservative:
     if the chain cannot be verified on the filesystem, it does not match,
     so an ambiguous name can never pull a session across profile bounds.
     """

@@ -16,7 +16,7 @@ quarantined automatic captures, session tags, and a per-repo `.kin/` export
 driver (`kin_merge.py`) already handles `.kin` merges; the authoritative SQLite DB is
 **not** in git — `.kin` is a projection of it.
 
-The factory (`~/Code/factory`) is a separate evidence-ledger build system whose runs
+The factory (a separate repository) is a separate evidence-ledger build system whose runs
 currently die on commissioning defects and intent-authoring gaps; a standing need is a
 queryable record of *why runs die* (gate-failure Pareto) so findings route into repair.
 
@@ -176,7 +176,7 @@ surfaces contradicting node pairs ranked by attestation strength (verification s
 provenance, R0 freshness), so the better-attested node wins recall and the loser
 becomes a supersession/invalidation candidate.
 
-**Build note — do not write this from scratch.** `~/Code/meditate` (v0.5) already ships
+**Build note — do not write this from scratch.** `meditate` (v0.5, a separate repository) already ships
 an evidence-grounded read-only Analyst that nominates exactly these classes —
 contradiction, supersession, under/over-specification — over directive prose, with
 local citation validation and a nomination-only boundary (the Analyst cannot draft,

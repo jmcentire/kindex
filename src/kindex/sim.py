@@ -44,7 +44,7 @@ incident-response rule: match spend to confirmed stakes, round up when unsure):
   Tier 2  high-impact moves  -> the review self-rates `stakes` and sets `escalate`;
     (money, big workflow,       by default the note carries a light RECOMMENDATION
      irreversible/architecture) to run a deeper review. Only when sim.advocate is
-                                enabled does it actually invoke ~/Code/advocate (the
+                                enabled does it actually invoke Advocate (the
                                 multi-persona engine incl. the Helland seat), verify
                                 the findings against the window (drop hallucinations),
                                 and fold the survivors in — gated + cooldown-capped.
@@ -562,7 +562,7 @@ def call_sim(
         if not shutil.which(first):
             return None, {"status": "command_unavailable"}
         if "simulacrum" in first and not any(os.environ.get(name) for name in
-                ("ANTHROPIC_API_KEY", "WANDER_ANTHROPIC_API_KEY", "JMC_ANTHROPIC_API_KEY")):
+                sc.api_key_env):
             return None, {"status": "credential_unavailable"}
         # Opaque subprocesses cannot report reliable token usage. Reserve the
         # configured per-call allowance before launch, including failed calls.
@@ -899,7 +899,7 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
 #
 # The default path is LIGHT: a high-stakes review sets `escalate` and the note
 # carries a recommendation. Only when sim.advocate.enabled is turned on does a
-# high-stakes escalation actually invoke ~/Code/advocate (the multi-persona
+# high-stakes escalation actually invoke Advocate (the multi-persona
 # adversarial engine, including the Helland seat). Because Advocate is multi-call,
 # its findings are run through an adversarial verify pass before surfacing — the
 # 2026-06-09 head-to-head experiment showed an unverified multi-call path smuggles
@@ -975,7 +975,7 @@ _ADVOCATE_DROP_SEVERITIES = {"low", "info"}  # keep only what could change direc
 def _parse_advocate_findings(text: str) -> list[str]:
     """Pull short finding strings out of Advocate's JSON output.
 
-    Matches the REAL ~/Code/advocate schema (verified 2026-09-02): `advocate
+    Matches the REAL Advocate CLI schema (verified 2026-09-02): `advocate
     review -o <file>` writes a full Review model dump — findings are NESTED under
     `persona_reports[].findings[]`, each {persona, severity, dimension, title,
     detail, evidence, recommendation}. Low/info findings are dropped (they don't

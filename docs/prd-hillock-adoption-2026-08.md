@@ -11,7 +11,7 @@ Three of Hillock's four proposals target problems Kindex does not have. The four
 real, already-known Kindex defect that a ~150-line change fixes without importing any of
 Hillock's machinery.
 
-Measured on the live graph today (`~/Personal/Conv/kindex.db`, 1.34 GB):
+Measured on the live graph today (the primary `kindex.db`, 1.34 GB):
 
 | Measurement | Value |
 |---|---|
@@ -300,15 +300,16 @@ actually used them, deposit on the pair.
 
 ### W5 — Panel tools: billing and backing models
 
-`WANDER_ANTHROPIC_API_KEY` is present in `~/.profile`, and all three tools already resolve it
-first. **Billing is already correct; no change is needed there.**
+The intended Anthropic billing key is present in the operator's environment, and all three
+tools already resolve it first (each tool's key-name order is a user config option, outside
+the repo). **Billing is already correct; no change is needed there.**
 
 | Tool | Current | Action |
 |---|---|---|
-| **Advocate** | `claude-opus-5` (`provider.py:333`), Claude-5 thinking handling and legacy-ID alias map present, Wander-first keys (`provider.py:65`) | **Nothing to do** |
+| **Advocate** | `claude-opus-5` (`provider.py:333`), Claude-5 thinking handling and legacy-ID alias map present, billing-key-first lookup (`provider.py:65`) | **Nothing to do** |
 | **Constrain** (live) | `claude-sonnet-4-6` (`backends/anthropic.py:14`) | Bump to `claude-opus-5` — volume is low, interview quality is the product |
 | **Constrain** (pact pipeline) | `claude-sonnet-4-20250514` — **retired** | Fix `pact.yaml:1` and `sops.md:37`; regenerate or delete the stale `src_constrain_engine` contract |
-| **Simulacrum** | `claude-sonnet-4-6` (`run.py:60`), Wander-first keys (`run.py:87`) | Classifier → `claude-sonnet-5`; specialist → `claude-opus-5` |
+| **Simulacrum** | `claude-sonnet-4-6` (`run.py:60`), billing-key-first lookup (`run.py:87`) | Classifier → `claude-sonnet-5`; specialist → `claude-opus-5` |
 
 **On the defunct pin.** `claude-sonnet-4-20250514` is retired and appears in `pact.yaml:1`,
 `sops.md:37`, `contracts/src_constrain_engine/interface.py:6`, and
@@ -322,8 +323,8 @@ for all 5-family models. On Opus 5 that is accepted only at effort `high` or bel
 forfeits the model's default adaptive thinking. Better: drop the disable, set
 `output_config: {effort: "medium"}`, and raise `max_tokens` above 1500 — the graph already
 records that ceiling truncating long multi-part evaluations. The GENERALIST branch stays on its
-OpenAI fine-tune by design; `WANDER_ANTHROPIC_API_KEY` governs every Anthropic call, not that
-one.
+OpenAI fine-tune by design; the configured Anthropic billing key governs every Anthropic call,
+not that one.
 
 ---
 
