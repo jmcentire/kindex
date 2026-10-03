@@ -1,4 +1,4 @@
-/** Claude Code 2.1.274 early-access contract. No legacy shell hooks or host-wide
+/** Claude Code mod (2.1.287+; type-checked on 2.1.288). No legacy shell hooks or host-wide
  * redaction here: signet-eval owns the latter; Kindex protects its own sinks. */
 import type { Register, EngineInterface } from "claude-code";
 import runtime from "./runtime";

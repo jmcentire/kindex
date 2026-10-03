@@ -101,3 +101,47 @@ def test_a_legacy_install_writes_no_plugin_key(tmp_path, monkeypatch):
     written = json.loads((cfg.claude_path / "settings.json").read_text())
     assert "enabledPlugins" not in written
     assert written["model"] == "opus"
+
+
+def _modern_install_with_host(tmp_path, monkeypatch, version, validate_rc=0):
+    import kindex.claude_install as installer
+    import kindex.setup as setup
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:] == ["--version"]:
+            return SimpleNamespace(stdout=f"{version} (Claude Code)\n", returncode=0)
+        return SimpleNamespace(stdout="", stderr="hooks: refused" if validate_rc else "",
+                               returncode=validate_rc)
+
+    monkeypatch.setattr(setup, "_find_kin_path", lambda: "/usr/bin/kin")
+    monkeypatch.setattr(installer.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    cfg = Config(claude_dir=str(tmp_path / "claude"))
+    cfg.claude_path.mkdir()
+    return installer, cfg, calls
+
+
+def test_mods_release_installs_when_the_host_validates_the_plugin(tmp_path, monkeypatch):
+    installer, cfg, calls = _modern_install_with_host(tmp_path, monkeypatch, "2.1.290")
+    install(cfg, mode="modern")
+    state = json.loads((cfg.claude_path / "settings.json").read_text())
+    assert state["enabledPlugins"]["kindex-modern@skills-dir"]
+    # Mods are on by default from 2.1.287; the early-access switch is not written.
+    assert "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS" not in state.get("env", {})
+    assert any(argv[1:3] == ["plugin", "validate"] for argv in calls)
+
+
+def test_a_host_that_refuses_the_plugin_blocks_the_modern_switch(tmp_path, monkeypatch):
+    installer, cfg, _ = _modern_install_with_host(tmp_path, monkeypatch, "2.1.290", validate_rc=1)
+    with pytest.raises(ValueError, match="refuses the Kindex plugin"):
+        install(cfg, mode="modern")
+    assert not (cfg.claude_path / "skills/kindex-modern").exists()
+
+
+def test_a_host_between_early_access_and_mods_is_refused(tmp_path, monkeypatch):
+    installer, cfg, calls = _modern_install_with_host(tmp_path, monkeypatch, "2.1.280")
+    with pytest.raises(ValueError, match="predates mods"):
+        install(cfg, mode="modern")
+    assert not any(argv[1:3] == ["plugin", "validate"] for argv in calls)
