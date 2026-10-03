@@ -119,7 +119,8 @@ kin repo-memory publish NODE_ID ANOTHER_NODE_ID
 kin repo-memory import
 ```
 
-`.kin/knowledge.json` transports semantic text and selected-peer relationships.
+New repos use `.kin/knowledge.jsonl` for semantic text and selected-peer
+relationships; repos with `.kin/knowledge.json` keep that format.
 Publication preserves a content-addressed union instead of regenerating from an
 incomplete database. Different versions of one logical node remain distinct
 records. Hashes check bytes, not trust. Imports are quarantined candidates and

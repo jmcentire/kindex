@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from kindex.config import Config
-from kindex.repo_memory import (SCHEMA, _artifact_lock, _encoded, import_candidates, publish)
+from kindex.repo_memory import (SCHEMA, _artifact_lock, _encoded, _load, _path, import_candidates, publish)
 from kindex.store import Store
 
 
@@ -29,7 +29,7 @@ def _node(store, title, **kwargs):
 
 
 def _document(root):
-    return json.loads((root / ".kin" / "knowledge.json").read_text())
+    return _load(_path(root))
 
 
 def _write_document(root, records):
@@ -67,7 +67,7 @@ def test_unshareable_nodes_do_not_publish_any_selected_subset(stores, kwargs):
     bad = _node(source, "Not shareable", **kwargs)
     with pytest.raises(ValueError):
         publish(source, root, [good, bad])
-    assert not (root / ".kin" / "knowledge.json").exists()
+    assert not _path(root).exists()
     assert not source.conn.in_transaction
 
 
@@ -77,9 +77,9 @@ def test_publication_preserves_union_revisions_and_is_order_deterministic(stores
     second = _node(source, "Peer concept", node_id="second")
     source.add_edge(first, second, edge_type="depends_on", provenance="Implementation evidence")
     publish(source, root, [first, second])
-    before = (root / ".kin" / "knowledge.json").read_bytes()
+    before = _path(root).read_bytes()
     assert publish(source, root, [second, first, first])["added"] == 0
-    assert (root / ".kin" / "knowledge.json").read_bytes() == before
+    assert _path(root).read_bytes() == before
     third = _node(other, "Independent store evidence")
     assert publish(other, root, [third])["records"] == 3
     source.update_node(first, content="New evidence, original history remains")
@@ -87,6 +87,64 @@ def test_publication_preserves_union_revisions_and_is_order_deterministic(stores
     records = list(_document(root)["records"].values())
     assert len([r for r in records if r["id"] == first]) == 2
     assert any(r["id"] == third for r in records)
+
+
+def test_new_transport_is_flat_jsonl_sorted_by_id_with_revisions(stores):
+    source, clone, root = stores
+    last = _node(source, "Last", node_id="z")
+    first = _node(source, "First", node_id="a")
+    publish(source, root, [last])
+    publish(source, root, [first])
+    source.update_node(first, content="Revised evidence")
+    publish(source, root, [first])
+
+    path = _path(root)
+    assert path.name == "knowledge.jsonl"
+    assert not (path.parent / "knowledge.json").exists()
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [row["id"] for row in rows] == ["a", "a", "z"]
+    assert all("kind" not in row and "value" not in row for row in rows)
+    assert import_candidates(clone, root)["new"] == 3
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_jsonl_unicode_separators_survive_publish_import_and_republish(stores, separator):
+    source, clone, root = stores
+    content = f"Before{separator}after"
+    node_id = _node(source, "Unicode evidence", node_id="unicode", content=content)
+
+    assert publish(source, root, [node_id])["added"] == 1
+    assert separator in _path(root).read_text(encoding="utf-8")
+    imported = import_candidates(clone, root)
+    assert imported["new"] == 1
+    assert clone.get_capture_candidate(imported["candidates"][0])["content"] == content
+    assert publish(source, root, [node_id])["added"] == 0
+
+
+def test_existing_knowledge_json_remains_selected(stores):
+    source, clone, root = stores
+    legacy = root / ".kin" / "knowledge.json"
+    legacy.parent.mkdir()
+    legacy.write_text(json.dumps({"schema": SCHEMA, "records": {}}))
+    node_id = _node(source, "Existing format")
+    result = publish(source, root, [node_id])
+    assert result["path"] == str(legacy)
+    assert not legacy.with_suffix(".jsonl").exists()
+    assert import_candidates(clone, root)["new"] == 1
+
+
+def test_jsonl_duplicate_row_and_field_are_rejected(stores):
+    source, clone, root = stores
+    node_id = _node(source, "Evidence")
+    publish(source, root, [node_id])
+    path = _path(root)
+    original = path.read_text()
+    path.write_text(original + original)
+    with pytest.raises(ValueError, match="Duplicate"):
+        import_candidates(clone, root)
+    path.write_text(original.rstrip()[:-1] + ',"id":"duplicate"}\n')
+    with pytest.raises(ValueError, match="Duplicate"):
+        import_candidates(clone, root)
 
 
 def test_publication_keeps_source_read_lock_and_does_not_touch_access_time(stores, monkeypatch):
@@ -191,8 +249,11 @@ def test_malformed_bundle_is_rejected_before_any_candidate_or_file_rewrite(store
 def test_digest_mismatch_and_duplicate_fields_are_rejected(stores):
     source, clone, root = stores
     node_id = _node(source, "Evidence")
+    legacy = root / ".kin" / "knowledge.json"
+    legacy.parent.mkdir()
+    legacy.write_text(json.dumps({"schema": SCHEMA, "records": {}}))
     publish(source, root, [node_id])
-    path = root / ".kin" / "knowledge.json"
+    path = legacy
     doc = _document(root)
     next(iter(doc["records"].values()))["content"] = "Tampered"
     path.write_text(json.dumps(doc))
@@ -203,7 +264,7 @@ def test_digest_mismatch_and_duplicate_fields_are_rejected(stores):
         import_candidates(clone, root)
 
 
-@pytest.mark.parametrize("target", [".kin", ".kin/knowledge.json", ".kin/local"])
+@pytest.mark.parametrize("target", [".kin", ".kin/knowledge.json", ".kin/knowledge.jsonl", ".kin/local"])
 def test_symlinked_transport_or_lock_location_is_refused(stores, tmp_path, target):
     source, _, root = stores
     node_id = _node(source, "Evidence")

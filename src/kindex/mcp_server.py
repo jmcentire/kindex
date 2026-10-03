@@ -533,6 +533,95 @@ def _derived_write_store(graph: str, source_refs: str, link_refs: str = ""):
     return store, config, graph
 
 
+def _durable_source_refs(source_refs: str) -> list[dict]:
+    """Snapshot current session evidence into durable, graph-bound locators."""
+    from .models import DurableSourceRef
+
+    primary, config = _get_store()
+    records = []
+    for ref in dict.fromkeys(item.strip() for item in source_refs.split(",") if item.strip()):
+        source = _split_graph_ref(ref)
+        if source is None:
+            raise ValueError("Source references must be graph-qualified result IDs")
+        role, node_id = source
+        evidence = primary if role == "project" else _global_read_store(primary, config)
+        if evidence is None:
+            raise ValueError(f"{role} graph is unavailable for this MCP session")
+        try:
+            if evidence.peek_node(node_id) is None:
+                raise ValueError(f"Source node {ref} is unavailable")
+            graph_id = evidence.graph_id
+            if not graph_id and role == "global":
+                # This is the existing configured global write boundary, never
+                # a write to an arbitrary saved locator or a secondary read.
+                writable = _global_store(primary, config, write=True)
+                if writable is None:
+                    raise ValueError("Source graph has no persistent identity")
+                graph_id = writable.graph_id
+            if not graph_id:
+                raise ValueError("Source graph has no persistent identity; open it writable first")
+            records.append(DurableSourceRef(
+                node_id=node_id, graph_id=graph_id,
+                db_path=str(evidence.db_path.resolve()),
+                project_path=str(evidence.config._project_path or ""),
+                profile=evidence.config.active_profile or "",
+            ).model_dump(mode="json"))
+        finally:
+            if evidence is not primary:
+                evidence.close()
+    return records
+
+
+def _resolve_source_refs(records) -> list[dict]:
+    """Inspect saved locators in SQLite read-only mode, without Store setup."""
+    from .models import DurableSourceRef
+
+    if not isinstance(records, list):
+        return [{"status": "unresolved", "reason": "invalid_source_refs"}]
+    results = []
+    for raw in records[:MAX_TOOL_ROWS]:
+        result = {"source_ref": raw, "status": "unresolved"}
+        try:
+            source = DurableSourceRef.model_validate(raw)
+        except (ValueError, TypeError):
+            result["reason"] = "invalid_source_ref"
+            results.append(result)
+            continue
+        conn = None
+        try:
+            path = Path(source.db_path)
+            if not path.is_file():
+                result["reason"] = "database_missing"
+            else:
+                conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA query_only=ON")
+                identity = conn.execute(
+                    "SELECT value FROM meta WHERE key='graph_id'").fetchone()
+                if identity is None:
+                    result["reason"] = "graph_identity_missing"
+                elif identity["value"] != str(source.graph_id):
+                    result["reason"] = "graph_identity_mismatch"
+                else:
+                    node = conn.execute(
+                        "SELECT id,title,content,status FROM nodes WHERE id=?",
+                        (source.node_id,)).fetchone()
+                    if node is None:
+                        result["reason"] = "node_missing"
+                    else:
+                        result.update(status="resolved", node=dict(node))
+        except (OSError, sqlite3.Error, ValueError):
+            result["reason"] = "database_unavailable"
+        finally:
+            if conn is not None:
+                conn.close()
+        results.append(result)
+    if len(records) > MAX_TOOL_ROWS:
+        results.append({"status": "unresolved", "reason": "resolution_limit",
+                        "remaining": len(records) - MAX_TOOL_ROWS})
+    return results
+
+
 def _validated_link_targets(store, graph: str, refs: list[str]) -> list[str]:
     """Resolve all requested links before writing; bare refs must be unambiguous."""
     from .store import AmbiguousTitleError
@@ -754,11 +843,15 @@ def _node_detail(store, node: dict, *, graph: str = "project",
         prov_parts.append(f"activity={node['prov_activity']}")
     if node.get("prov_source"):
         prov_parts.append(f"source={node['prov_source']}")
+    if node.get("prov_why"):
+        prov_parts.append(f"why={node['prov_why']}")
     if prov_parts:
         lines.append(f"\nProvenance: {', '.join(prov_parts)}")
 
     extra = node.get("extra")
     if extra and isinstance(extra, dict):
+        if "source_refs" in extra:
+            lines.append(f"\nSource references: {_json(extra['source_refs'])}")
         state = extra.get("current_state")
         if state:
             lines.append(f"\nState: {_json(state)}")
@@ -1048,6 +1141,7 @@ def add(
     """
     try:
         store, config, graph = _derived_write_store(graph, source_refs)
+        evidence_refs = _durable_source_refs(source_refs)
     except ValueError as exc:
         return f"Error: {exc}"
     from .extract import keyword_extract
@@ -1100,6 +1194,7 @@ def add(
             audience=audience,
             prov_activity="mcp-add",
             prov_why=f"Derived from {source_refs}" if source_refs else "",
+            extra={"source_refs": evidence_refs} if evidence_refs else {},
             **binding,
         )
     except ValueError as e:
@@ -1642,11 +1737,13 @@ def invalidate(
 
 
 @_tool()
-def show(node_id: str) -> str:
+def show(node_id: str, resolve_sources: bool = False) -> str:
     """Show full details of a node including edges and provenance.
 
     Args:
         node_id: Node ID or title to look up.
+        resolve_sources: Inspect durable evidence with read-only SQLite opens.
+            Saved references never authorize writes or bypass session scopes.
     """
     try:
         store, _, raw_id, graph = _routed_ref(node_id)
@@ -1661,6 +1758,11 @@ def show(node_id: str) -> str:
             store.close()
     if not node:
         return f"Node not found: {node_id}"
+    if resolve_sources:
+        sources = (node.get("extra") or {}).get("source_refs")
+        resolution = (_resolve_source_refs(sources) if sources is not None else
+                      [{"status": "unresolved", "reason": "no_durable_source_refs"}])
+        detail += f"\nSource resolution: {_json(resolution)}"
     display_id = _display_ref(graph, node["id"], incoming_ref=node_id)
     return (f"[graph: {graph}, id: {display_id}]\n{detail}"
             if display_id != node["id"] else detail)
@@ -1992,6 +2094,7 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
     """
     try:
         store, config, graph = _derived_write_store(graph, source_refs)
+        evidence_refs = _durable_source_refs(source_refs)
     except ValueError as exc:
         return f"Error: {exc}"
     from .budget import BudgetLedger
@@ -2026,30 +2129,13 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
             node_type=proposed if proposed in ADDABLE_NODE_TYPES else "concept",
             domains=concept.get("domains", []),
             prov_activity="mcp-learn",
+            prov_why=f"Derived from {source_refs}" if source_refs else "",
+            extra={"source_refs": evidence_refs} if evidence_refs else {},
         )
         created_ids.append(nid)
         grounded_ids.append(nid)
 
     created = len(created_ids)
-
-    # Ground every concept to a source node so newly created concepts never
-    # orphan, even when no connections are extracted. This is the structural
-    # fix for the mcp-learn orphan bug: provenance lives in the graph, not just
-    # in prov_activity.
-    if created_ids:
-        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-        source_id = store.add_node(
-            title=f"Learned: {first_line[:72]}" if first_line else "Learned note",
-            content=text.strip()[:500],
-            node_type="document",
-            prov_activity="mcp-learn-source",
-            prov_why="source text passed to learn()",
-        )
-        for cid in grounded_ids:
-            store.add_edge(source_id, cid,
-                           edge_type="context_of",
-                           weight=0.4,
-                           provenance="extracted via learn()")
 
     for conn in extraction.get("connections", []):
         a = store.get_node_by_title(conn.get("from_title", ""))
@@ -2060,6 +2146,27 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
                            weight=0.4,
                            provenance=conn.get("why", "extracted via MCP"))
             linked += 1
+            if evidence_refs:
+                grounded_ids.extend((a["id"], b["id"]))
+
+    # Keep each learning event's evidence on the existing source-document
+    # path, including relationship-only updates and replayed learning. Do not
+    # overwrite existing concepts' provenance or invent concepts for capture.
+    if created_ids or (evidence_refs and grounded_ids):
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        source_id = store.add_node(
+            title=f"Learned: {first_line[:72]}" if first_line else "Learned note",
+            content=text.strip()[:500],
+            node_type="document",
+            prov_activity="mcp-learn-source",
+            prov_why="source text passed to learn()",
+            extra={"source_refs": evidence_refs} if evidence_refs else {},
+        )
+        for cid in dict.fromkeys(grounded_ids):
+            store.add_edge(source_id, cid,
+                           edge_type="context_of",
+                           weight=0.4,
+                           provenance="extracted via learn()")
 
     decisions = extraction.get("decisions", [])
     questions = extraction.get("questions", [])
@@ -2980,6 +3087,7 @@ def task_add(text: str, priority: int = 3, due: str = "",
     try:
         store, _, graph = _derived_write_store(
             graph, source_refs, link_to)
+        evidence_refs = _durable_source_refs(source_refs)
         refs = [ref.strip() for ref in link_to.split(",") if ref.strip()]
         links = _validated_link_targets(store, graph, refs)
     except ValueError as exc:
@@ -2995,6 +3103,7 @@ def task_add(text: str, priority: int = 3, due: str = "",
             store, text, priority=priority, due=due or None, scope=scope,
             effort=effort or None, link_to=links or None,
             project_path=task_project_path, session_id=session_id or None,
+            source_refs=evidence_refs or None,
         )
     except ValueError as exc:
         return f"Could not create task: {exc}"
@@ -3610,11 +3719,14 @@ def watch_add(text: str, owner: str = "", expires: str = "",
     refs = [ref.strip() for ref in link_to.split(",") if ref.strip()]
     try:
         store, _, graph = _derived_write_store(graph, source_refs, link_to)
+        evidence_refs = _durable_source_refs(source_refs)
         targets = _validated_link_targets(store, graph, refs)
     except ValueError as exc:
         return f"Error: {exc}"
 
     extra = {"watch_status": "active"}
+    if evidence_refs:
+        extra["source_refs"] = evidence_refs
     if owner:
         extra["owner"] = owner
     if expires:
