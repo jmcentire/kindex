@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.46.0](https://img.shields.io/badge/version-0.46.0-purple.svg)](https://github.com/wandercom/kindex/releases)
+[![v0.47.0](https://img.shields.io/badge/version-0.47.0-purple.svg)](https://github.com/wandercom/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
 [![Tests](https://github.com/wandercom/kindex/actions/workflows/ci.yml/badge.svg)](https://github.com/wandercom/kindex/actions/workflows/ci.yml)
@@ -25,8 +25,10 @@ Docs: [kindex.tools](https://kindex.tools/) is the canonical public site, served
 Development preview: [Claude function hooks and signet-eval coexistence](docs/claude-function-hooks.md)
 adds repo-local durable tasks, secret minimization at Kindex-owned boundaries,
 and separately selectable modern/legacy adapters. The default remains compatible
-legacy hooks. Function hooks are qualified on Claude Code 2.1.274; this is not a
-promise that all Claude logs can be redacted or a published 1.0 release.
+legacy hooks. The modern adapter is a Claude Code mod: it installs on Claude Code
+2.1.287 or newer when that host's `claude plugin validate` accepts it (last
+verified on 2.1.288). This is not a promise that all Claude logs can be redacted
+or a published 1.0 release.
 
 Pick whichever installer you already use. They all install the same `kin` and `kin-mcp` binaries.
 
@@ -112,6 +114,36 @@ Extras — combine in one install (`'kindex[mcp,llm,reminders]'`) or use `'kinde
 Each agent reads MCP servers from a different config file. The `kin setup-*-mcp` commands write the right shape into the right path; the manual snippet is shown alongside in case you'd rather edit the file yourself.
 
 ### Claude Code
+
+As a plugin (MCP server, skills, and session hooks in one install):
+
+```bash
+claude plugin marketplace add wandercom/kindex
+claude plugin install kindex@kindex
+```
+
+or, inside a session, `/plugin install kindex --marketplace wandercom/kindex`.
+
+What the plugin runs:
+
+- **MCP server** (`scripts/claude-plugin/kin-mcp`): your installed `kin-mcp` when
+  one is on `PATH`, so the server and the `kin` CLI share one version and one
+  database. Otherwise it runs the matching PyPI release with
+  `uvx --from 'kindex[mcp]==<version>' kin-mcp`, which downloads kindex and its
+  dependencies from PyPI once and caches them. That needs
+  [uv](https://docs.astral.sh/uv/); without uv or kindex it exits with an install hint.
+- **Hooks** (`hooks/hooks.json`, through `scripts/claude-plugin/kin`): session
+  start, prompt submit, pre-tool-use, pre-compact and stop call your installed
+  `kin` to prime context, check prompts against the graph and capture the
+  session. Without an installed `kin` they do nothing. They source
+  `~/.profile` first so a `kin` installed by pipx, uv or Homebrew is found.
+- **Skills**: `kindex-prime`, `kindex-capture`, `kindex-learn`.
+
+Everything stays on your machine: the graph is a local SQLite database
+(`~/.kindex/` and per-repo `.kin/`). Nothing is sent anywhere unless you
+configure an LLM or embedding provider (see [Privacy](PRIVACY.md)).
+
+Or as a bare MCP server:
 
 ```bash
 claude mcp add --scope user --transport stdio kindex -- kin-mcp

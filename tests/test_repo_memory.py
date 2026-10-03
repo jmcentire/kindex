@@ -311,3 +311,15 @@ def test_clone_tracked_local_database_is_refused_before_open(tmp_path):
         open_project_store({"project_path": str(root), "session_id": "test"})
     assert database.read_bytes() == b"synthetic-clone-controlled-database"
     assert not (root / ".kin" / ".gitignore").exists()
+
+
+def test_both_knowledge_files_fail_closed_instead_of_dropping_records(stores):
+    source, clone, root = stores
+    node_id = _node(source, "Published as JSONL")
+    publish(source, root, [node_id])
+    # A client from before JSONL then writes the legacy file beside it.
+    (root / ".kin" / "knowledge.json").write_text(json.dumps({"schema": SCHEMA, "records": {}}))
+    with pytest.raises(ValueError, match="Both .kin/knowledge.json and .kin/knowledge.jsonl"):
+        import_candidates(clone, root)
+    with pytest.raises(ValueError, match="Both"):
+        publish(source, root, [node_id])

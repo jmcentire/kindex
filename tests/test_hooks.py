@@ -337,7 +337,7 @@ class TestRemindKindexUsage:
         config.reminders.remind_kindex_usage = False
         output = prime_context(store, topic="anything", config=config)
         assert "Session directives" not in output
-        assert "You MUST use kindex MCP tools" not in output
+        assert "use kindex MCP tools" not in output
 
     def test_directive_enabled_via_config(self, store, config):
         from kindex.hooks import prime_context

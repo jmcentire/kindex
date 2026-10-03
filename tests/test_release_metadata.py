@@ -43,6 +43,8 @@ def test_version_is_consistent_across_release_surfaces():
         "src/kindex/claude_modern/.claude-plugin/plugin.json",
     ):
         assert json.loads((ROOT / manifest).read_text())["version"] == version
+    launcher = (ROOT / "scripts/claude-plugin/kin-mcp").read_text()
+    assert re.findall(r"kindex\[mcp\]==([0-9.]+)", launcher) == [version]
     assert f"version-{version}-purple" in readme
     assert f"v{version}" in docs
     assert re.search(rf"^## \[{re.escape(version)}\]", changelog, re.MULTILINE)

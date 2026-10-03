@@ -41,8 +41,8 @@ DEFAULT_MODES = {
         "boundary": (
             "Quality means the output contains something I didn't already think — "
             "a reframe, a real objection, a distinction that changes the shape of "
-            "the problem. Reasoning must be visible and the epistemic status must "
-            "be honest: what you know versus what you're constructing. Precision is "
+            "the problem. Show what each claim rests on, and keep the epistemic status "
+            "honest: what you know versus what you're constructing. Precision is "
             "not optional; vague claims need to be named as such."
         ),
         "permissions": (

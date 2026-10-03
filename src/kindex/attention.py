@@ -910,7 +910,7 @@ def judge_candidates(
             messages=[{"role": "user", "content": prompt}],
         )
         usage = response.usage
-        from .llm import calculate_cost
+        from .llm import calculate_cost, response_text
 
         cost = calculate_cost(config.llm.model, usage)
         ledger.record(
@@ -926,7 +926,7 @@ def judge_candidates(
             metadata={"candidate_count": len(candidates)},
         )
 
-        text_out = response.content[0].text
+        text_out = response_text(response)
         parsed = _parse_json_response(text_out)
     except Exception as exc:
         return [], {"status": "llm_error", "error": safe_error(exc), "estimate": estimate}

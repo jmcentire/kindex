@@ -1,0 +1,9 @@
+#!/bin/sh
+# Run the installed kin for a Claude plugin hook. The plugin ships no kin of its
+# own: without one, the hook does nothing (its input is drained so Claude never
+# sees a broken pipe), and the plugin's MCP server still works through uvx.
+if command -v kin >/dev/null 2>&1; then
+    exec kin "$@"
+fi
+cat >/dev/null
+exit 0

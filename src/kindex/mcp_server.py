@@ -48,7 +48,7 @@ mcp = FastMCP(
     "kindex",
     instructions=(
         "Kindex is a persistent knowledge graph that remembers across sessions. "
-        "You MUST use these tools proactively — the user depends on this graph as external memory.\n\n"
+        "Use these tools proactively: the user depends on this graph as external memory.\n\n"
 
         "## Session lifecycle\n"
         "1. START: `tag_start` or `tag_resume` to name this session\n"
@@ -69,7 +69,7 @@ mcp = FastMCP(
         "- checkpoint: pre-flight checklists — things to verify before an event\n\n"
 
         "## When to use each tool\n"
-        "- `search`: ALWAYS before adding — if a matching node already exists, "
+        "- `search`: before adding — if a matching node already exists, "
         "prefer `edit`/`supersede` over `add` (edit, don't re-add)\n"
         "- Retain either `project:<session>:<id>` or `global:<session>:<id>` "
         "when returned; pass the full reference to follow-on reads and writes\n"
@@ -92,7 +92,7 @@ mcp = FastMCP(
         "- `link`: when you notice two concepts relate — specify the relationship type "
         "(relates_to, depends_on, implements, contradicts, blocks, context_of)\n"
         "- `learn`: after reading long files/outputs — bulk-extracts multiple concepts at once\n"
-        "- `task_add`: for work items — ALWAYS link to relevant concepts via link_to parameter\n"
+        "- `task_add`: for work items — link them to relevant concepts with the link_to parameter\n"
         "- `task_claim`/`task_release`: coordinate shared work with expiring task claims\n"
         "- `task_done`/`task_list`: manage tasks — they surface contextually via graph proximity\n"
         "- `coord_start`/`coord_post`/`coord_read`/`coord_end`: short-lived agent coordination "
@@ -116,8 +116,8 @@ mcp = FastMCP(
         "- `ask`: query the graph conversationally\n\n"
 
         "## Linking strategy\n"
-        "The graph's value is in connections. When you add a node, think: what does this relate to? "
-        "Use `link` aggressively. Edge types: relates_to (general), depends_on (prerequisite), "
+        "The graph's value is in connections: when you add a node, `link` it to the nodes it "
+        "relates to. Edge types: relates_to (general), depends_on (prerequisite), "
         "implements (realization), contradicts (tension), blocks (impediment), "
         "context_of (background), answers (resolves a question), supersedes (replaces)."
     ),
@@ -551,13 +551,17 @@ def _durable_source_refs(source_refs: str) -> list[dict]:
             if evidence.peek_node(node_id) is None:
                 raise ValueError(f"Source node {ref} is unavailable")
             graph_id = evidence.graph_id
+            if not graph_id and evidence is primary:
+                # The session's own writable graph; its open skipped stamping
+                # only because another writer held the lock at that moment.
+                graph_id = primary.ensure_graph_identity()
             if not graph_id and role == "global":
                 # This is the existing configured global write boundary, never
                 # a write to an arbitrary saved locator or a secondary read.
                 writable = _global_store(primary, config, write=True)
                 if writable is None:
                     raise ValueError("Source graph has no persistent identity")
-                graph_id = writable.graph_id
+                graph_id = writable.ensure_graph_identity()
             if not graph_id:
                 raise ValueError("Source graph has no persistent identity; open it writable first")
             records.append(DurableSourceRef(
@@ -1104,7 +1108,8 @@ def add(
     graph: str = "",
     source_refs: str = "",
 ) -> str:
-    """Add a knowledge node to the graph. ALWAYS `search` first to avoid duplicates.
+    """Add a knowledge node to the graph. `search` first: when a matching node
+    already exists, change it with `edit` or `supersede` instead of adding a duplicate.
 
     Choose the right node_type — it determines how the node behaves:
     - concept: facts, patterns, key files, domain terms (default, most common)
@@ -1516,8 +1521,13 @@ def candidate_list(status: str = "", limit: int = 20) -> Any:
 def candidate_show(candidate_id: str) -> Any:
     """Show the exact untrusted candidate payload plus its freshness token.
 
-    The returned token proves snapshot freshness only. It is not caller
-    authentication, authorization, or proof of reviewer identity.
+    Read this before `candidate_accept`, which needs the returned
+    `review_token`. The token proves snapshot freshness only: it goes stale
+    when the candidate or the graph state it was checked against changes. It is
+    not caller authentication, authorization, or proof of reviewer identity.
+
+    Args:
+        candidate_id: Exact capture-candidate ID (from `candidate_list`).
     """
     store, _ = _get_store()
     candidate = store.get_capture_candidate(candidate_id)
@@ -1537,7 +1547,25 @@ def candidate_accept(
     valid_at: str = "",
     invalid_at: str = "",
 ) -> Any:
-    """Accept a fresh candidate with asserted reviewer and verification method."""
+    """Accept a fresh candidate with asserted reviewer and verification method.
+
+    Promotes the candidate to a durable node. Refused when the token is stale,
+    the candidate is expired or already accepted/rejected, its payload carries
+    credentials, a durable node already has its title, or a proposed
+    `contradicts` edge conflicts with verified knowledge. Use this only after
+    reviewing the payload from `candidate_show`.
+
+    Args:
+        candidate_id: Exact capture-candidate ID.
+        review_token: The `review_token` from a current `candidate_show`.
+        reviewed_by: Asserted reviewer identifier (audit text, not
+            authenticated; at most 128 characters).
+        prov_method: How the content was verified, as short audit text
+            (at most 128 characters).
+        valid_at: Optional RFC 3339 start of the half-open valid interval.
+        invalid_at: Optional RFC 3339 exclusive end; must be later than
+            valid_at.
+    """
     store, _ = _get_store()
     operation_instant = operation_now()
     try:
@@ -1593,7 +1621,15 @@ def candidate_prune() -> Any:
 
 @_tool()
 def candidate_erase(candidate_id: str) -> Any:
-    """Erase a candidate or minimized review receipt by exact ID."""
+    """Erase a candidate or minimized review receipt by exact ID.
+
+    Deletes the row outright, whatever its status; the activity log keeps only
+    the ID and prior status. A promoted node is not affected. Returns
+    `erased: false` when no such ID exists.
+
+    Args:
+        candidate_id: Exact capture-candidate ID.
+    """
     store, _ = _get_store()
     return {"id": candidate_id, "erased": store.erase_capture_candidate(candidate_id)}
 
@@ -1609,8 +1645,19 @@ def verify(
 ) -> Any:
     """Assert node verification and an optional half-open valid interval.
 
-    Reviewer identity is asserted audit text within the local trust boundary;
-    this tool does not authenticate it.
+    Verified, current, non-contradicted nodes are what `trusted_only=True`
+    search and context admit. Reviewer identity is asserted audit text within
+    the local trust boundary; this tool does not authenticate it.
+
+    Args:
+        node_id: Node ID, graph-qualified reference, or exact title.
+        verified_by: Asserted verifier identifier (at most 128 characters).
+        prov_method: How the node was verified, as short audit text
+            (at most 128 characters).
+        verified_at: Optional RFC 3339 verification time (default: now).
+        valid_at: Optional RFC 3339 start of the half-open valid interval.
+        invalid_at: Optional RFC 3339 exclusive end; must be later than
+            valid_at.
     """
     try:
         store, _, raw_id, graph = _routed_ref(node_id, write=True)
@@ -1733,7 +1780,7 @@ def link(
     weight: float = 0.5,
     reason: str = "",
 ) -> str:
-    """Create an edge between two nodes. Links are the graph's primary value — use liberally.
+    """Create an edge between two nodes. Links are the graph's primary value.
 
     Choose the right relationship type:
     - relates_to: general connection (default)
@@ -2034,9 +2081,14 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
     complex multi-step tasks. Summarize what happened and pass the text here
     for automatic concept extraction and linking.
 
-    Analyzes the text for concepts, decisions, questions, and connections.
-    Creates nodes and links automatically. Every extracted concept is grounded
-    to a source node so it can never orphan.
+    Extracts with the configured LLM when one is available (it reads the first
+    4,000 characters) and with keyword matching otherwise. Creates up to 10
+    concept nodes: low-information ones are rejected, and a concept whose title
+    already exists reuses that node. When it creates any, it grounds them to a
+    new source node holding the first 500 characters of the text. It links
+    extracted connections between nodes whose titles match and stores bridge
+    suggestions. Decisions and questions found in the text are counted in the
+    result but not created; capture those with `add`.
 
     Args:
         text: Text to extract knowledge from (session notes, documentation, etc.).

@@ -4,6 +4,45 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-03
+
+### Added
+- Kindex is a Claude plugin you can install by name:
+  `claude plugin marketplace add wandercom/kindex`, then
+  `claude plugin install kindex@kindex`. Its MCP server uses an installed
+  `kin-mcp` and otherwise runs this release through `uvx`, so the plugin works
+  without a separate install. Its hooks do nothing until `kin` is installed,
+  instead of failing every prompt. The manifest is ready for Anthropic's plugin
+  directory.
+- New repo knowledge artifacts are written as `.kin/knowledge.jsonl`; an existing
+  `.kin/knowledge.json` keeps its format. Publish and import refuse a repo that
+  has both until they are merged, so neither file's records are dropped.
+- MCP captures record graph-bound source references that survive restarts, and
+  `show` can resolve them read-only (`resolve_sources`).
+- Prices for Claude Opus 4.8, 5 and 5.5, Sonnet 5 and 5.5, and Fable 5.1.
+
+### Changed
+- The Claude mod (`kin setup-hooks --mode modern`) installs on Claude Code
+  2.1.287 and newer when that host's `claude plugin validate` accepts it; it
+  previously refused everything but 2.1.274. Last verified on 2.1.288.
+- An unpriced model is costed at the highest known rate, so budget caps fail
+  closed; prices resolve through `us.anthropic.` prefixes and date suffixes.
+- Prompt text audited for current Claude models: the MCP instructions, prime
+  directives, tool descriptions, skills and generated CLAUDE.md/AGENTS.md blocks
+  use plain wording, and the `learn` tool describes what it actually creates.
+
+### Fixed
+- `kin` imports again on Python 3.10 and 3.11, which `requires-python` has always
+  promised: a 3.12-only f-string in `cli.py` (since 0.36.1) and `datetime.UTC` in
+  `vectors.py` broke every command there. CI now byte-compiles the package on 3.10.
+- LLM replies are read by block type. On models that think by default the first
+  block is a thinking block, and a refusal has no text, so extraction, `kin ask`,
+  attention, Sim and reinforcement silently returned nothing there. Those models
+  also get `max_tokens` headroom for thinking.
+- `kin ask` uses each model's real minimum cacheable prompt length.
+- Opening a graph created before graph identities no longer fails with
+  "database is locked" while another process is writing.
+
 ## [0.46.0] - 2026-10-01
 
 ### Added
