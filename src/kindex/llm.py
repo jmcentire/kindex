@@ -128,10 +128,22 @@ PRICING = {
         "cache_write": 0.05e-6, "cache_read": 0.005e-6,
     },
 }
-_DEFAULT_PRICE = {
-    "input": 1.00e-6, "output": 5.00e-6,
-    "cache_write": 1.25e-6, "cache_read": 0.10e-6,
-}
+# An unpriced model is costed at the most expensive known rate, so a budget cap
+# can only over-count it: a new model must never slip past the cap at a cheap
+# fallback price.
+_DEFAULT_PRICE = max(PRICING.values(), key=lambda price: price["output"])
+_PLATFORM_PREFIX = re.compile(r"^(?:[a-z]{2,4}\.)?anthropic\.")
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+
+def price_for(model: str) -> dict:
+    """Per-token prices for ``model``: exact ID, then the ID without a platform
+    prefix (``us.anthropic.``) or date suffix, then the conservative default."""
+    name = str(model or "")
+    if name in PRICING:
+        return PRICING[name]
+    bare = _DATE_SUFFIX.sub("", _PLATFORM_PREFIX.sub("", name.lower()))
+    return PRICING.get(bare, _DEFAULT_PRICE)
 
 
 def _key_env_names(config: Config) -> list[str]:
@@ -353,7 +365,7 @@ _get_client = get_client
 
 def calculate_cost(model: str, usage) -> dict:
     """Calculate cost from response usage, cache-aware."""
-    p = PRICING.get(model, _DEFAULT_PRICE)
+    p = price_for(model)
     tokens_in = _usage_value(usage, "input_tokens", "prompt_tokens")
     tokens_out = _usage_value(usage, "output_tokens", "completion_tokens")
     cache_write = _usage_value(usage, "cache_creation_input_tokens")
@@ -383,7 +395,7 @@ def calculate_cost(model: str, usage) -> dict:
 
 def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     """Legacy cost estimation (no cache awareness)."""
-    pricing = PRICING.get(model, _DEFAULT_PRICE)
+    pricing = price_for(model)
     return tokens_in * pricing["input"] + tokens_out * pricing["output"]
 
 

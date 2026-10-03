@@ -479,7 +479,7 @@ def prime_context(
         lines.append("Kindex is the user's external memory: use kindex MCP tools proactively.")
         lines.append("**Capture as you go** — don't batch, don't wait until the end:")
         lines.append("- `search` first to see what's known, and before every `add` to avoid duplicates")
-        lines.append("- `add` discoveries, decisions (--type decision), questions (--type question)")
+        lines.append("- `add` discoveries, decisions (node_type=\"decision\"), questions (node_type=\"question\")")
         lines.append("- `watch_add` for things needing monitoring (flaky tests, unstable APIs, pending items)")
         lines.append("- `watch_resolve` when a watched issue is fixed or no longer relevant")
         lines.append("- `link` related nodes — the graph's value is in connections, not isolated nodes")
@@ -850,9 +850,9 @@ def generate_session_directive(store: Store) -> str:
     Returns markdown string with instructions for capturing knowledge during sessions.
     """
     lines = [
-        "## Kindex: Knowledge Capture (REQUIRED)",
+        "## Kindex: Knowledge Capture",
         "",
-        "You MUST use kindex MCP tools throughout this session to capture knowledge.",
+        "Use the kindex MCP tools throughout this session to capture knowledge.",
         "Prefer MCP tools (`add`, `search`, `link`, `learn`) over CLI when available.",
         "",
         "### What to capture",
@@ -865,7 +865,7 @@ def generate_session_directive(store: Store) -> str:
         "- **Connections**: when two concepts relate -- `link` with reason",
         "",
         "### Rules",
-        "- Always `search` before `add` to avoid duplicates",
+        "- `search` before `add` to avoid duplicates",
         "- Use `learn` for bulk extraction from long text/files",
         "- Use `tag_start`/`tag_update` to track session context",
         "- Use `remind_create` with `action`/`instructions`/`wake` for deferred tasks",

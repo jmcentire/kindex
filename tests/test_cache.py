@@ -359,6 +359,17 @@ class TestCalculateCost:
         result = calculate_cost("unknown-model-v99", usage)
         assert result["amount"] > 0
 
+    def test_unknown_model_is_costed_at_the_highest_known_rate(self):
+        from kindex.llm import PRICING, _estimate_cost
+        highest = max(_estimate_cost(m, 1000, 100) for m in PRICING)
+        assert _estimate_cost("unknown-model-v99", 1000, 100) == highest
+
+    def test_platform_prefixed_and_dated_ids_use_the_model_price(self):
+        from kindex.llm import price_for, PRICING
+        assert price_for("us.anthropic.claude-opus-5-5") is PRICING["claude-opus-5-5"]
+        assert price_for("anthropic.claude-sonnet-5-5") is PRICING["claude-sonnet-5-5"]
+        assert price_for("claude-haiku-4-5-20251001") is PRICING["claude-haiku-4-5-20251001"]
+
     def test_openai_cached_usage_from_dict(self):
         from kindex.llm import calculate_cost
         usage = {
