@@ -4,13 +4,7 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-## [0.46.0] - 2026-10-01
-
 ### Added
-- MCP reads in a repository-local session can consult both the selected project
-  graph and configured user graph, with explicit per-call `auto`, `project`, and
-  `global` scopes on retrieval, listings, and diagnostics. Session-qualified
-  references keep results usable for follow-up node, task, and watch operations.
 - `kin ingest conversations --directory DIR` stores chat transcripts (JSON or
   JSONL: `{"id", "date", "messages": [{"role", "content", "name"}]}`) without
   loss: whole messages packed into dated `document` nodes of at most 4,000
@@ -39,6 +33,16 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   Without an LLM it still prints search results.
 - The OpenAI provider passes system instructions, reasoning effort and JSON
   schemas, and retries rate limits and server errors.
+
+## [0.46.0] - 2026-10-01
+
+### Added
+- MCP reads in a repository-local session can consult both the selected project
+  graph and configured user graph, with explicit per-call `auto`, `project`, and
+  `global` scopes on retrieval, listings, and diagnostics. Session-qualified
+  references keep results usable for follow-up node, task, and watch operations.
+
+### Changed
 - Scheduler logs (`cron.log`, `cron-error.log`, `reminders.log`,
   `reminders-error.log`, `dream.log`) now stamp every line with the local
   time it was written, e.g. `2026-09-29T14:36:02-07:00 Checked [hoo3]: 0
