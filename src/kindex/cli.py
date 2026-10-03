@@ -3669,8 +3669,9 @@ def cmd_embed(args):
                       f"active nodes, {result['embedding_count']} embedded")
                 print(f"Calibrated at: {result['calibrated_at']}")
                 enforce = store.config.grounding.enforce
-                print(f"Enforcement: {'ON' if enforce else 'SHADOW MODE '
-                      '(verdict reported, no rows dropped)'}")
+                mode = ("ON" if enforce
+                        else "SHADOW MODE (verdict reported, no rows dropped)")
+                print(f"Enforcement: {mode}")
         elif action == "plan":
             print(f"Nodes: {result['nodes']}")
             print(f"Chunks: {result['chunks']}")

@@ -4,6 +4,11 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+### Fixed
+- `kin` imports again on Python 3.10 and 3.11, which `requires-python` has always
+  promised: a 3.12-only f-string in `cli.py` (since 0.36.1) and `datetime.UTC` in
+  `vectors.py` broke every command there. CI now byte-compiles the package on 3.10.
+
 ## [0.46.0] - 2026-10-01
 
 ### Added
