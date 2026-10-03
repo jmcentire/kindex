@@ -551,13 +551,17 @@ def _durable_source_refs(source_refs: str) -> list[dict]:
             if evidence.peek_node(node_id) is None:
                 raise ValueError(f"Source node {ref} is unavailable")
             graph_id = evidence.graph_id
+            if not graph_id and evidence is primary:
+                # The session's own writable graph; its open skipped stamping
+                # only because another writer held the lock at that moment.
+                graph_id = primary.ensure_graph_identity()
             if not graph_id and role == "global":
                 # This is the existing configured global write boundary, never
                 # a write to an arbitrary saved locator or a secondary read.
                 writable = _global_store(primary, config, write=True)
                 if writable is None:
                     raise ValueError("Source graph has no persistent identity")
-                graph_id = writable.graph_id
+                graph_id = writable.ensure_graph_identity()
             if not graph_id:
                 raise ValueError("Source graph has no persistent identity; open it writable first")
             records.append(DurableSourceRef(

@@ -27,8 +27,15 @@ def _encoded(value):
 def _path(root):
     directory = Path(root) / ".kin"
     legacy = directory / "knowledge.json"
+    current = directory / "knowledge.jsonl"
+    present = [p for p in (legacy, current) if p.exists() or p.is_symlink()]
+    # A client from before JSONL writes knowledge.json beside a newer client's
+    # knowledge.jsonl; choosing either would silently drop the other's records.
+    if len(present) == 2:
+        raise ValueError("Both .kin/knowledge.json and .kin/knowledge.jsonl exist; "
+                         "merge them into one before publishing or importing")
     # Never migrate a tracked JSON artifact implicitly. New repos use JSONL.
-    path = legacy if legacy.exists() or legacy.is_symlink() else directory / "knowledge.jsonl"
+    path = legacy if present == [legacy] else current
     if path.is_symlink() or path.parent.is_symlink():
         raise ValueError("Refusing symlinked repo evidence")
     return path
