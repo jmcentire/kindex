@@ -19,6 +19,12 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   conversation date), including what the assistant recommended. `kin ask` lists
   retrieved facts by date above the conversation excerpts. Off by default: it
   reads every conversation in full once.
+- A conversation file entry may carry `"expires": "YYYY-MM-DD"` (its nodes and
+  everything derived from them stop surfacing after that date) or
+  `"retracted": true` (it, its summary and facts, and directives no other
+  conversation gave are removed). Re-ingesting a conversation reconciles it:
+  appended, edited and removed messages update the stored nodes and links, and
+  a changed conversation is digested again.
 
 ### Changed
 - `kin ask` answers from planned searches over dated evidence
@@ -30,9 +36,17 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   questions. Previously it saw five results truncated to 500 characters, with
   no dates, and answered in at most 500 tokens. Settings live under `ask:`
   (`plan`, `top_k`, `context_tokens`, `samples`, `effort`, `readings`).
-  Without an LLM it still prints search results.
+  Without an LLM it still prints search results. The budget is checked before
+  every model call; the context budget covers every section, and what did not
+  fit is reported. Counting, ordering and summary questions search deeper and
+  say when coverage may be incomplete. Stored text is escaped so evidence
+  cannot pose as a directive. The `ask:` and `conversations:` sections decide
+  LLM spend, so a repository's `.kin/config` cannot set them, and `ask:`
+  values are bounded.
 - The OpenAI provider passes system instructions, reasoning effort and JSON
-  schemas, and retries rate limits and server errors.
+  schemas. It retries rate limits and server errors only for callers that ask
+  (`kin ask`, `kin digest`), within an optional overall deadline; hooks get no
+  retries.
 
 ## [0.46.0] - 2026-10-01
 
@@ -41,8 +55,6 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   graph and configured user graph, with explicit per-call `auto`, `project`, and
   `global` scopes on retrieval, listings, and diagnostics. Session-qualified
   references keep results usable for follow-up node, task, and watch operations.
-
-### Changed
 - Scheduler logs (`cron.log`, `cron-error.log`, `reminders.log`,
   `reminders-error.log`, `dream.log`) now stamp every line with the local
   time it was written, e.g. `2026-09-29T14:36:02-07:00 Checked [hoo3]: 0

@@ -122,9 +122,12 @@ def is_configured(config: Config) -> bool:
 class _OpenAIResponsesMessages:
     """Small adapter that exposes the Anthropic-like messages.create shape."""
 
-    def __init__(self, api_key: str, timeout: float = 30):
+    def __init__(self, api_key: str, timeout: float = 30, retries: int = 0,
+                 deadline: float | None = None):
         self.api_key = api_key
         self.timeout = timeout
+        self.retries = retries
+        self.deadline = deadline
 
     def create(
         self,
@@ -171,15 +174,24 @@ class _OpenAIResponsesMessages:
             },
             method="POST",
         )
-        # Rate limits and server errors are transient: retry them with backoff.
-        for attempt in range(4):
+        # Rate limits and server errors are transient: a caller that asked for
+        # retries gets them with backoff, all inside its deadline when it set one.
+        stop = None if self.deadline is None else time.monotonic() + self.deadline
+        for attempt in range(self.retries + 1):
+            wait = self.timeout
+            if stop is not None:
+                wait = min(wait, stop - time.monotonic())
+                if wait <= 0:
+                    raise RuntimeError("OpenAI API deadline exceeded")
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                with urllib.request.urlopen(request, timeout=wait) as response:
                     data = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
-                if (exc.code == 429 or exc.code >= 500) and attempt < 3:
-                    time.sleep(5 * (attempt + 1))
+                pause = 5 * (attempt + 1)
+                if ((exc.code == 429 or exc.code >= 500) and attempt < self.retries
+                        and (stop is None or time.monotonic() + pause < stop)):
+                    time.sleep(pause)
                     continue
                 # Provider response bodies can echo prompts or authorization data.
                 # Status is sufficient for this adapter's fallback behavior.
@@ -206,8 +218,9 @@ class _OpenAIResponsesMessages:
 
 
 class _OpenAIResponsesClient:
-    def __init__(self, api_key: str, timeout: float = 30):
-        self.messages = _OpenAIResponsesMessages(api_key, timeout)
+    def __init__(self, api_key: str, timeout: float = 30, retries: int = 0,
+                 deadline: float | None = None):
+        self.messages = _OpenAIResponsesMessages(api_key, timeout, retries, deadline)
 
 
 def _extract_openai_text(data: dict) -> str:
@@ -273,8 +286,13 @@ def _usage_value(usage, *names: str) -> int:
 DEFAULT_LLM_TIMEOUT_SECONDS = 60.0
 
 
-def get_client(config: Config, timeout: float | None = None):
-    """Get configured LLM client, or None if not available."""
+def get_client(config: Config, timeout: float | None = None, retries: int | None = None,
+               deadline: float | None = None):
+    """Get configured LLM client, or None if not available. ``timeout`` bounds
+    each request. ``retries`` is how many times a rate-limited or failed
+    request is retried; a caller that passes a timeout (a hook) gets none
+    unless it asks, and the OpenAI client retries only when asked. ``deadline`` bounds one call, retries and backoff
+    included; it defaults to the timeout when there are no retries."""
     if not config.llm.enabled:
         return None
     api_key, key_env = resolve_api_key(config)
@@ -288,8 +306,12 @@ def get_client(config: Config, timeout: float | None = None):
 
     provider = config.llm.provider.lower()
     if provider == "openai":
+        retries = retries or 0
         return _PrivateClient(_OpenAIResponsesClient(
-            api_key, timeout if timeout is not None else 30))
+            api_key, timeout if timeout is not None else 30, retries,
+            deadline if deadline is not None else (timeout if not retries else None)))
+    if retries is None:
+        retries = 0 if timeout is not None else 2
 
     if provider != "anthropic":
         print(
@@ -304,7 +326,7 @@ def get_client(config: Config, timeout: float | None = None):
         return _PrivateClient(anthropic.Anthropic(
             api_key=api_key,
             timeout=timeout if timeout is not None else DEFAULT_LLM_TIMEOUT_SECONDS,
-            max_retries=0 if timeout is not None else 2,
+            max_retries=retries,
         ))
     except ImportError:
         print("Warning: LLM enabled but 'anthropic' package not installed. "

@@ -3768,6 +3768,10 @@ def cmd_ask(args):
         result = None
     if result is not None:
         print(result.answer)
+        if result.omitted or result.truncated:
+            print(f"Note: {result.omitted} retrieved item(s) did not fit in the context"
+                  f"{f' and {result.truncated} were shortened' if result.truncated else ''} "
+                  "(ask.context_tokens).", file=sys.stderr)
         store.close()
         return
 
