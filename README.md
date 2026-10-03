@@ -115,6 +115,36 @@ Each agent reads MCP servers from a different config file. The `kin setup-*-mcp`
 
 ### Claude Code
 
+As a plugin (MCP server, skills, and session hooks in one install):
+
+```bash
+claude plugin marketplace add wandercom/kindex
+claude plugin install kindex@kindex
+```
+
+or, inside a session, `/plugin install kindex --marketplace wandercom/kindex`.
+
+What the plugin runs:
+
+- **MCP server** (`scripts/claude-plugin/kin-mcp`): your installed `kin-mcp` when
+  one is on `PATH`, so the server and the `kin` CLI share one version and one
+  database. Otherwise it runs the matching PyPI release with
+  `uvx --from 'kindex[mcp]==<version>' kin-mcp`, which downloads kindex and its
+  dependencies from PyPI once and caches them. That needs
+  [uv](https://docs.astral.sh/uv/); without uv or kindex it exits with an install hint.
+- **Hooks** (`hooks/hooks.json`, through `scripts/claude-plugin/kin`): session
+  start, prompt submit, pre-tool-use, pre-compact and stop call your installed
+  `kin` to prime context, check prompts against the graph and capture the
+  session. Without an installed `kin` they do nothing. They source
+  `~/.profile` first so a `kin` installed by pipx, uv or Homebrew is found.
+- **Skills**: `kindex-prime`, `kindex-capture`, `kindex-learn`.
+
+Everything stays on your machine: the graph is a local SQLite database
+(`~/.kindex/` and per-repo `.kin/`). Nothing is sent anywhere unless you
+configure an LLM or embedding provider (see [Privacy](PRIVACY.md)).
+
+Or as a bare MCP server:
+
 ```bash
 claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init

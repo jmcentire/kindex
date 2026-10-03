@@ -64,6 +64,9 @@ def check_claude_host(claude: str, version: str, assets: Path) -> bool:
                          + " | ".join(detail))
     return False
 PLUGIN_NAME = "kindex-modern"
+# The packaged Claude plugin (repo root) reaches kin through this shim, which
+# runs an installed kin and otherwise lets the hook pass (scripts/claude-plugin/kin).
+PACKAGED_PLUGIN_KIN = "${CLAUDE_PLUGIN_ROOT}/scripts/claude-plugin/kin"
 
 
 def legacy_manifest(config, kin_path: str) -> dict:

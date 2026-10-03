@@ -16,8 +16,9 @@ def test_advice_never_grants_permission():
 
 
 def test_packaged_legacy_manifest_is_generated_from_installer():
+    from kindex.claude_install import PACKAGED_PLUGIN_KIN
     path = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
-    assert json.loads(path.read_text()) == {"hooks": legacy_manifest(Config(), "kin")}
+    assert json.loads(path.read_text()) == {"hooks": legacy_manifest(Config(), PACKAGED_PLUGIN_KIN)}
     assert all(1 <= h["timeout"] <= 10 for entries in legacy_manifest(Config(), "kin").values()
                for entry in entries for h in entry["hooks"])
 
