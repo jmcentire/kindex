@@ -152,3 +152,13 @@ def test_kinbase_directives_are_not_standing_instructions(tmp_path):
     store.add_node("Answer in metric", node_id="ud", node_type="directive")
     assert [n["id"] for n in standing_directives(store)] == ["ud"]
     store.close()
+
+
+def test_a_small_explicit_budget_is_honoured(kayak, monkeypatch):
+    from kindex.retrieve import _estimate_tokens
+
+    server, _, _ = kayak
+    _no_llm(monkeypatch)
+    out = server.ask("When did I go kayaking?", max_tokens=120)
+    evidence = out.split("\n\n", 1)[1]
+    assert _estimate_tokens(evidence) <= 120

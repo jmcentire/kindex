@@ -3770,6 +3770,9 @@ def cmd_ask(args):
     except Exception as exc:
         print(f"Answer failed ({safe_error(exc)}); showing search results.", file=sys.stderr)
         result = None
+    # Once the answer pipeline has run, its failure is not followed by another
+    # model call: that would charge again and repeat any text already shown.
+    attempted = cfg.llm.enabled
     if result is not None:
         print("" if result.streamed else result.answer)
         if result.omitted or result.truncated:
@@ -3801,7 +3804,7 @@ def cmd_ask(args):
 
     # Try LLM-powered answer
     ledger, cfg = _ledger(args)
-    answer = _ask_llm(question, results, cfg, ledger, qtype=qtype, store=store)
+    answer = None if attempted else _ask_llm(question, results, cfg, ledger, qtype=qtype, store=store)
 
     if answer:
         print(answer)
@@ -3815,7 +3818,8 @@ def cmd_ask(args):
         }
         level = level_map.get(qtype, "abridged")
         block = format_context_block(store, results, query=question, level=level)
-        print(f"[{qtype} question] (No LLM available — showing search results)\n")
+        reason = "No answer drafted" if attempted else "No LLM available"
+        print(f"[{qtype} question] ({reason} — showing search results)\n")
         print(block)
 
     store.close()

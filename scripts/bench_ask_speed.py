@@ -94,18 +94,19 @@ def kin(src: Path, args: list[str], env: dict) -> tuple[float, subprocess.Comple
     return time.perf_counter() - t0, done
 
 
-def kin_tty(src: Path, args: list[str], env: dict) -> tuple[float, float, str]:
+def kin_tty(src: Path, args: list[str], env: dict) -> tuple[float, float, str, int, str]:
     """`kin` run in a pseudo-terminal, as a person runs it: (seconds to the first
-    printed text, seconds to the end, output). A tree that streams its answer
-    shows text before it finishes."""
+    printed text, seconds to the end, output, exit status, stderr). A tree that
+    streams its answer shows text before it finishes."""
     import os as _os
     import pty
     import select
 
     master, slave = pty.openpty()
+    err = tempfile.TemporaryFile()
     t0 = time.perf_counter()
     proc = subprocess.Popen([sys.executable, "-m", "kindex.cli", *args], env={**env, "PYTHONPATH": str(src)},
-                            stdin=subprocess.DEVNULL, stdout=slave, stderr=subprocess.DEVNULL)
+                            stdin=subprocess.DEVNULL, stdout=slave, stderr=err)
     _os.close(slave)
     first, chunks = None, []
     while True:
@@ -125,7 +126,15 @@ def kin_tty(src: Path, args: list[str], env: dict) -> tuple[float, float, str]:
     proc.wait()
     _os.close(master)
     total = time.perf_counter() - t0
-    return (first if first is not None else total), total, b"".join(chunks).decode("utf-8", "replace")
+    err.seek(0)
+    stderr = err.read().decode("utf-8", "replace")
+    err.close()
+    return ((first if first is not None else total), total, b"".join(chunks).decode("utf-8", "replace"),
+            proc.returncode, stderr)
+
+
+# What `kin ask` prints when it did not get an answer from the model.
+FALLBACK_MARKERS = ("showing search results", "Answer failed", "No relevant knowledge found")
 
 
 def ledger_tokens(data_dir: Path) -> dict:
@@ -231,22 +240,26 @@ def main() -> None:
             # Alternate the trees per question so provider drift hits both alike.
             times: dict[str, list[float]] = {"old": [], "new": []}
             firsts: dict[str, list[float]] = {"old": [], "new": []}
-            empty = {"old": 0, "new": 0}
+            failed: dict[str, list[dict]] = {"old": [], "new": []}
             for question in questions:
                 for name, src in (("old", old), ("new", new)):
-                    first, seconds, out = kin_tty(src, ["ask", "--data-dir", str(copies[name]), "--config",
-                                                        str(new_config if name == "new" else config), "--", question],
-                                                  env)
+                    first, seconds, out, code, stderr = kin_tty(
+                        src, ["ask", "--data-dir", str(copies[name]), "--config",
+                              str(new_config if name == "new" else config), "--", question], env)
+                    # A failed command or a search-results fallback is not an answer: it is
+                    # reported, not timed.
+                    if code != 0 or not out.strip() or any(m in out + stderr for m in FALLBACK_MARKERS):
+                        failed[name].append({"question": question, "exit": code, "stderr": stderr[-300:]})
+                        continue
                     times[name].append(seconds)
                     firsts[name].append(first)
-                    empty[name] += not out.strip()
             for name in ("old", "new"):
                 tokens = ledger_tokens(copies[name])
                 if name == "new":  # the digest's calls are reported on their own
                     tokens = {k: tokens[k] - digest_tokens[k] for k in tokens}
-                report["kin_ask"][name] = {"seconds": summary(times[name], 2),
-                                           "first_text_seconds": summary(firsts[name], 2),
-                                           "empty_answers": empty[name],
+                report["kin_ask"][name] = {"seconds": summary(times[name], 2) if times[name] else None,
+                                           "first_text_seconds": summary(firsts[name], 2) if firsts[name] else None,
+                                           "answered": len(times[name]), "failed": failed[name],
                                            "model": tokens,
                                            "per_question": {k: round(v / len(questions)) for k, v in tokens.items()}}
     text = json.dumps(report, indent=2)

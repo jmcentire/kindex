@@ -405,3 +405,106 @@ def test_a_question_gets_the_profiles_of_the_people_it_names(store):
     assert answer.question_profiles(store, "What did Melanie paint?") == []
     text = answer.assemble([], [], 2000, profiles=answer.question_profiles(store, "Is Caroline religious?")).text
     assert "## Profiles" in text and "Profile of Caroline:\nAbout Caroline." in text
+
+
+# ── Review fixes ──
+
+def test_a_named_message_keeps_its_role(store):
+    lines = conv._lines([{"role": "assistant", "name": "Bot", "content": "Hi"},
+                         {"role": "user", "name": "Caroline", "content": "Hello"},
+                         {"role": "user", "content": "Plain"}])
+    assert lines == ["assistant (Bot): Hi", "user (Caroline): Hello", "user: Plain"]
+    assert conv.user_messages("\n".join(lines)) == "user: Hello\nuser: Plain"
+
+
+def test_a_failed_replacement_keeps_the_stored_chunk_and_its_links(store, monkeypatch):
+    conv.ingest_conversation(store, "c1", MESSAGES, "2024-03-10")
+    first = conv.chunk_id("c1", 0)
+    store.add_node("Other note", node_id="other")
+    store.add_edge("other", first, edge_type="relates_to")
+
+    def broken(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "add_node", broken)
+    edited = [{"role": "user", "content": "I bought a blue kayak."}] + MESSAGES[1:]
+    with pytest.raises(OSError):
+        conv.ingest_conversation(store, "c1", edited, "2024-03-10")
+    monkeypatch.undo()
+    assert "red kayak" in store.get_node(first)["content"]
+    assert any(e["to_id"] == first for e in store.edges_from("other"))
+
+
+def test_an_undated_conversation_is_not_rewritten(store):
+    assert conv.ingest_conversation(store, "u1", MESSAGES[:1], None)
+    assert conv.ingest_conversation(store, "u1", MESSAGES[:1], None) == []
+
+
+def test_an_emptied_conversation_takes_its_derived_records_with_it(store, tmp_path, monkeypatch):
+    from kindex import llm
+
+    client, _ = _fake_client({"directives": ["Always give distances in kilometres."], "facts": [
+        {"date": "2024-03-09", "subject": "user", "text": "The user bought a red kayak."}]})
+    monkeypatch.setattr(llm, "get_client", lambda config, **kw: client)
+    conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10")
+    conv.backfill_digests(store, _cfg(tmp_path))
+    assert store.all_nodes(node_type="directive")
+    assert conv.ingest_conversation(store, "c1", [], "2024-03-10") == []
+    assert not [n for n in store.all_nodes(node_type="document", limit=1000)
+                if (n.get("extra") or {}).get("conversation_id") == "c1"]
+    assert store.all_nodes(node_type="directive") == []
+    assert "c1" not in json.loads(store.get_meta("conversation_digests") or "{}")
+
+
+def test_a_retried_digest_replaces_what_an_interrupted_one_wrote(store, tmp_path, monkeypatch):
+    from kindex import llm
+
+    conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10")
+    # An interrupted earlier run left a fact at a position the new digest also uses.
+    store.add_node("stale", content="A stale fact.", node_type="document",
+                   node_id="convfact-" + __import__("hashlib").sha256(b"c1|5").hexdigest()[:16],
+                   extra={"conversation_id": "c1", "kind": "conversation-fact"})
+    client, _ = _fake_client({"directives": [], "facts": [
+        {"date": "2024-03-09", "subject": "user", "text": f"Fact {i}."} for i in range(7)]})
+    monkeypatch.setattr(llm, "get_client", lambda config, **kw: client)
+    conv.backfill_digests(store, _cfg(tmp_path))
+    facts = sorted(n["content"] for n in store.all_nodes(node_type="document", limit=1000)
+                   if (n.get("extra") or {}).get("kind") == "conversation-fact")
+    assert facts == [f"Fact {i}." for i in range(7)]
+
+
+def test_an_edited_fact_rebuilds_the_profile(store, tmp_path, monkeypatch):
+    from kindex import llm
+
+    client, calls = _fake_client({"profile": "x"})
+    monkeypatch.setattr(llm, "get_client", lambda config, **kw: client)
+    _facts(store, "Caroline", 9)
+    assert conv.build_profiles(store, _cfg(tmp_path)) == 1
+    store.update_node("f-Caroline-c1-3", content="Caroline moved to Lisbon.")
+    assert conv.build_profiles(store, _cfg(tmp_path)) == 1
+
+
+def test_an_expiry_that_is_not_a_date_is_refused(store, tmp_path):
+    with pytest.raises(ValueError):
+        conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10", expires="never")
+    assert store.get_node(conv.chunk_id("c1", 0)) is None
+    d = tmp_path / "convs"
+    d.mkdir()
+    (d / "a.json").write_text(json.dumps([{"id": "a", "messages": MESSAGES[:1], "expires": "soon"},
+                                          {"id": "b", "messages": MESSAGES[:1], "expires": "2030-01-01"}]))
+    errors = []
+    assert conv.ingest_directory(store, d, errors=errors) == 1
+    assert len(errors) == 1 and "conversation a" in errors[0]
+
+
+def test_ingest_honours_limit_and_since(store, tmp_path):
+    from kindex.adapters.conversations import adapter
+
+    d = tmp_path / "convs"
+    d.mkdir()
+    (d / "a.jsonl").write_text("\n".join(json.dumps({"id": f"c{i}", "date": f"2024-0{i + 1}-01",
+                                                     "messages": MESSAGES[:1]}) for i in range(4)))
+    assert adapter.ingest(store, directory=str(d), limit=2).created == 2
+    assert store.get_node(conv.chunk_id("c2", 0)) is None
+    assert adapter.ingest(store, directory=str(d), limit=10, since="2024-04-01").created == 1
+    assert store.get_node(conv.chunk_id("c3", 0)) is not None and store.get_node(conv.chunk_id("c2", 0)) is None

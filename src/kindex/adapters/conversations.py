@@ -23,7 +23,10 @@ class ConversationsAdapter:
         directory = kwargs.get("directory")
         if not directory:
             return IngestResult(created=0, errors=["--directory is required"])
-        return IngestResult(created=ingest_directory(store, Path(directory).expanduser(), verbose=verbose))
+        errors: list[str] = []
+        created = ingest_directory(store, Path(directory).expanduser(), verbose=verbose, limit=limit,
+                                   since=since, errors=errors)
+        return IngestResult(created=created, errors=errors)
 
 
 adapter = ConversationsAdapter()

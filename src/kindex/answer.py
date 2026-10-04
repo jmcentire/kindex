@@ -695,7 +695,9 @@ def question_profiles(store: Store, question: str, limit: int = 2) -> list[dict]
     about: those it names, and the user's own when it speaks of "I" or "my"."""
     rows = store.conn.execute(
         "SELECT id FROM nodes WHERE json_extract(extra, '$.kind') = 'entity-profile'").fetchall()
-    profiles = [n for n in (store.get_node(r[0]) for r in rows) if n]
+    today = date.today().isoformat()
+    profiles = [n for n in (store.get_node(r[0]) for r in rows)
+                if n and n.get("status") not in ("archived", "superseded") and not node_expired(n, today=today)]
     words = {w.lower() for w in _WORD.findall(question.lower())}
     chosen = []
     for node in profiles:
@@ -725,8 +727,7 @@ _RELATIVE = re.compile(
     r"(last|this|next|past|coming) (week|weekend|month|year|summer|winter|spring|fall|autumn|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
     r"(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|a couple of|a few) "
-    r"(days?|weeks?|months?|years?) (ago|later|from now)|"
-    r"(the )?(day|week|month|year) (before|after))\b", re.I)
+    r"(days?|weeks?|months?|years?) (ago|from now))\b", re.I)
 
 
 def annotate_dates(text: str, when: datetime | None) -> str:
@@ -773,7 +774,8 @@ def annotate_dates(text: str, when: datetime | None) -> str:
                     return (when + timedelta(days=delta)).date().isoformat()
                 return None
             return None
-        m = re.match(r"(.+?) (day|week|month|year)s? (ago|later|from now)$", p)
+        # "Two days later" counts from an event, not from the conversation: not resolved.
+        m = re.match(r"(.+?) (day|week|month|year)s? (ago|from now)$", p)
         if m:
             count, unit, direction = m.groups()
             n = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -903,10 +905,16 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     # What did not fit is reported to the caller (AskResult.omitted, the CLI's
     # note) rather than to the model, which hedged its counts when told.
     user = answer_prompt(question, assembly.text, intent, as_of=as_of, readings=cfg.readings)
-    final = draft_answer(client, config, user, ledger, intent, complete, on_text=on_text)
+    shown = []
+
+    def show(text: str) -> None:
+        shown.append(text)
+        on_text(text)
+
+    final = draft_answer(client, config, user, ledger, intent, complete, on_text=show if on_text else None)
     if final is None:
         return None
-    return AskResult(answer=final, streamed=on_text is not None and cfg.samples <= 1, intent=intent,
+    return AskResult(answer=final, streamed=bool(shown), intent=intent,
                      queries=searches, context=assembly.text,
                      context_tokens=assembly.tokens, results=assembly.chosen, omitted=assembly.omitted,
                      truncated=assembly.truncated)

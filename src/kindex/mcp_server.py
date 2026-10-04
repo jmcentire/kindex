@@ -1475,8 +1475,13 @@ def _render_evidence_sources(stores, results, warnings, *, budget: int, client: 
             trusted_only=trusted_only, evaluation_time=evaluation_time)
         profiles = (question_profiles(stores[graph], question)
                     if question and not trusted_only and _get_config().ask.profiles else None)
-        assembly = assemble(by_graph[graph], directives, max(per_budget - _estimate_tokens(prefix), 250),
-                            label=label, profiles=profiles)
+        # The requested total is honoured: what the framing leaves is the evidence budget.
+        room = per_budget - _estimate_tokens(prefix)
+        if room <= 0:
+            omitted += len(by_graph[graph])
+            sections.append(prefix.rstrip())
+            continue
+        assembly = assemble(by_graph[graph], directives, room, label=label, profiles=profiles)
         omitted += assembly.omitted
         sections.append(prefix + assembly.text)
     return preamble + "\n\n".join(sections), omitted

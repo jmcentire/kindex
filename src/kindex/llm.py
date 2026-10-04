@@ -291,12 +291,29 @@ class _OpenAIResponsesMessages:
         )
 
 
-_SENTENCE_END = re.compile(r"[.!?:](?=\s)|\n")
+_SENTENCE_END = re.compile(r"[.!?](?=\s)|\n\s*\n")
+_OPEN_BLOCK = re.compile(r"-----BEGIN [^-\n]*-----")
+_CLOSE_BLOCK = re.compile(r"-----END [^-\n]*-----")
+
+
+def _releasable(buffer: str) -> int:
+    """How much of the streamed text can be shown now: up to the last sentence
+    or paragraph end, never inside an unclosed "-----BEGIN ...-----" block (a
+    private key spans lines and is redacted only whole), and never at a bare
+    line break or colon, where a header or key would be split from its value."""
+    ends = [m.end() for m in _SENTENCE_END.finditer(buffer)]
+    opened = [m.start() for m in _OPEN_BLOCK.finditer(buffer)]
+    if opened:
+        last_open = opened[-1]
+        if not _CLOSE_BLOCK.search(buffer, last_open):
+            ends = [e for e in ends if e <= last_open]
+    return ends[-1] if ends else 0
 
 
 def _read_stream(response, on_text) -> dict:
     """A streamed Responses API reply: each complete sentence of the answer
-    goes to `on_text` as it arrives; returns the final response document."""
+    goes to `on_text` as it arrives (see `_releasable`); returns the final
+    response document."""
     buffer, final = "", None
     for raw in response:
         line = raw.decode("utf-8", "replace").strip()
@@ -309,10 +326,10 @@ def _read_stream(response, on_text) -> dict:
         kind = event.get("type")
         if kind == "response.output_text.delta":
             buffer += event.get("delta") or ""
-            ends = [m.end() for m in _SENTENCE_END.finditer(buffer)]
-            if ends:
-                on_text(buffer[:ends[-1]])
-                buffer = buffer[ends[-1]:]
+            cut = _releasable(buffer)
+            if cut:
+                on_text(buffer[:cut])
+                buffer = buffer[cut:]
         elif kind == "response.completed":
             final = event.get("response") or {}
         elif kind in ("response.failed", "error", "response.incomplete"):

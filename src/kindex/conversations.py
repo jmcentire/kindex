@@ -34,13 +34,34 @@ NODE_CHARS = 4000
 
 
 def _lines(messages: list[dict]) -> list[str]:
+    """Each message as "role: text", or "role (name): text" for a named speaker,
+    so who spoke and in which role are both kept."""
     out = []
     for m in messages:
-        who = m.get("name") or m.get("role") or "user"
+        role = str(m.get("role") or "user").strip() or "user"
+        name = " ".join(str(m.get("name") or "").split())
+        who = f"{role} ({name})" if name and name.lower() != role.lower() else role
         text = str(m.get("content") or "").strip()
         if text:
             out.append(f"{who}: {text}")
     return out
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _check_expires(expires: str | None) -> str | None:
+    """An expiry is a calendar date, YYYY-MM-DD; anything else ("never", a
+    typo) would keep the data forever, so it is refused."""
+    if expires is None:
+        return None
+    value = str(expires).strip()
+    if not _ISO_DATE.match(value):
+        raise ValueError(f"expires must be a date as YYYY-MM-DD, not {value!r}")
+    from datetime import date as _date
+
+    _date.fromisoformat(value)  # rejects 2024-13-40
+    return value
 
 
 def pack(lines: list[str], limit: int = NODE_CHARS) -> list[str]:
@@ -75,20 +96,28 @@ def ingest_conversation(store: Store, conversation_id: str, messages: list[dict]
     removed, and every pair of consecutive chunks is linked. A conversation
     that grew inside its last chunk, or an ingest that stopped part-way, is
     therefore completed rather than skipped. Returns the ids added or replaced."""
+    expires = _check_expires(expires)
     chunks = pack(_lines(messages), node_chars)
+    if not chunks:
+        # Nothing left to store: the conversation and what was derived from it go.
+        if store.get_node(chunk_id(conversation_id, 0)):
+            retract_conversation(store, conversation_id)
+        return []
     ids = [chunk_id(conversation_id, i) for i in range(len(chunks))]
     changed: list[str] = []
     for i, (nid, text) in enumerate(zip(ids, chunks)):
-        extra = {"conversation_id": conversation_id, "position": i}
+        # The given date is kept as given: an undated conversation's chunks get
+        # the time of writing as their provenance, which is not a revision.
+        extra = {"conversation_id": conversation_id, "position": i, "date": when}
         if expires:
             extra["expires"] = expires
         node = store.get_node(nid)
         if node is not None:
-            same = (node.get("content") == text and node.get("prov_when") == when
-                    and (node.get("extra") or {}).get("expires") == extra.get("expires"))
-            if same:
+            old = node.get("extra") or {}
+            old_when = old["date"] if "date" in old else node.get("prov_when")
+            if node.get("content") == text and old_when == when and old.get("expires") == extra.get("expires"):
                 continue
-            store.delete_node(nid)
+        # One upsert: a write that fails leaves the earlier chunk and its links in place.
         store.add_node(
             node_id=nid,
             title=text[:60].strip() + ("..." if len(text) > 60 else ""),
@@ -192,21 +221,51 @@ def load_conversations(path: Path) -> list[dict]:
         return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-def ingest_directory(store: Store, directory: Path, verbose: bool = False) -> int:
+def _on_or_after(when, since) -> bool:
+    if not since:
+        return True
+    if not when:
+        return True  # an undated conversation cannot be placed before `since`
+    from dateutil import parser
+
+    try:
+        day = parser.parse(str(when), fuzzy=True).date()
+        start = since if hasattr(since, "year") else parser.parse(str(since)).date()
+        return day >= (start.date() if hasattr(start, "date") else start)
+    except (ValueError, OverflowError):
+        return True
+
+
+def ingest_directory(store: Store, directory: Path, verbose: bool = False, *, limit: int | None = None,
+                     since=None, errors: list[str] | None = None) -> int:
     """Ingests every conversation in the directory's JSON and JSONL files. A
-    conversation may carry `expires` (it stops surfacing after that date) or
-    `retracted: true` (it and everything derived from it are removed). The
-    file name is kept as provenance; the conversation's id is its identity."""
-    count = 0
+    conversation may carry `expires` (YYYY-MM-DD: it stops surfacing after that
+    date) or `retracted: true` (it and everything derived from it are
+    removed). The file name is kept as provenance; the conversation's id is its
+    identity. `since` skips conversations dated before it; `limit` stops after
+    that many conversations were written (unchanged ones do not count, so a
+    later run continues). A conversation that cannot be stored is reported in
+    `errors` and leaves the graph as it was. Returns the nodes written."""
+    count = written = 0
     for path in sorted(list(directory.rglob("*.json")) + list(directory.rglob("*.jsonl"))):
         for index, conv in enumerate(load_conversations(path)):
+            if limit is not None and written >= limit:
+                return count
             cid = str(conv.get("id") or f"{path.stem}#{index}")
             if conv.get("retracted"):
                 count += retract_conversation(store, cid)
                 continue
-            changed = ingest_conversation(store, cid, conv.get("messages") or [], conv.get("date"),
-                                          prov_source=str(path), expires=conv.get("expires"))
+            if not _on_or_after(conv.get("date"), since):
+                continue
+            try:
+                changed = ingest_conversation(store, cid, conv.get("messages") or [], conv.get("date"),
+                                              prov_source=str(path), expires=conv.get("expires"))
+            except ValueError as exc:
+                if errors is not None:
+                    errors.append(f"{path.name}: conversation {cid}: {exc}")
+                continue
             count += len(changed)
+            written += bool(changed)
             if verbose and changed:
                 print(f"  Conversation {cid}: {len(changed)} node(s)")
     return count
@@ -273,12 +332,13 @@ SUMMARY_FIELD = """- summary: 4 to 8 sentences on what the conversation covered:
 """
 
 
-_SPEAKER = re.compile(r"^(user|assistant|system): ", re.M)
+_SPEAKER = re.compile(r"^(user|assistant|system)(?: \([^)\n]*\))?: ", re.M)
 
 
 def user_messages(text: str) -> str:
-    """The user's messages from conversation text written as "role: message" lines
-    (the form ingest_conversation stores); empty when the text has no user role."""
+    """The user's messages from conversation text written as "role: message" or
+    "role (name): message" lines (the forms ingest_conversation stores); empty
+    when the text has no user role."""
     parts = _SPEAKER.split(text)
     # split() yields [before, role, body, role, body, ...]
     return "\n".join(f"user: {body.strip()}" for role, body in zip(parts[1::2], parts[2::2])
@@ -336,6 +396,9 @@ def digest_conversation(store: Store, conversation_id: str, text: str, when: str
     except Exception:
         out["status"] = DigestStatus.FAILED
         return out
+    # Whatever an earlier, interrupted run of this digest wrote is replaced as a
+    # whole, so its outputs are never mixed with these.
+    _remove_digest(store, conversation_id)
     derived_extra = {"expires": expires} if expires else {}
     existing = {_norm(n.get("title") or ""): n for n in store.all_nodes(node_type="directive", limit=100_000)}
     for d in digest.get("directives") or []:
@@ -508,7 +571,10 @@ def build_profiles(store: Store, config, ledger=None) -> int:
     for subject in ranked:
         facts = sorted(subjects[subject], key=lambda n: (str((n.get("extra") or {}).get("fact_date") or ""),
                                                           n.get("prov_when") or ""))
-        key = hashlib.sha256(json.dumps(sorted(n["id"] for n in facts)).encode()).hexdigest()[:24]
+        # The facts' revision, not only their ids: an edited fact keeps its id.
+        key = hashlib.sha256(json.dumps(sorted(
+            (n["id"], n.get("content") or "", (n.get("extra") or {}).get("fact_date") or "",
+             (n.get("extra") or {}).get("expires") or "") for n in facts)).encode()).hexdigest()[:24]
         old = existing.get(subject)
         if old and (old.get("extra") or {}).get("key") == key:
             continue

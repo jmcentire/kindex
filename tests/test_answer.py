@@ -424,7 +424,8 @@ def test_the_planner_runs_only_when_configured(store, tmp_path, monkeypatch):
     fake = FakeMessages()
     monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
     answer_mod.answer_question(store, "How many kayak trips did I take?", _config(tmp_path))
-    assert len(fake.calls) == 1 and "json_schema" not in fake.calls[0] or fake.calls[0].get("json_schema") is None
+    assert len(fake.calls) == 1  # the answer only: no planner call
+    assert fake.calls[0].get("json_schema") is None
 
 
 def test_excerpts_keep_the_matching_messages_and_their_neighbours():
@@ -657,3 +658,77 @@ def test_recalling_an_assistants_advice_gets_room():
     q = "How did you recommend I prepare for the appointment?"
     intent, needs_all = answer_mod.classify_question(q)
     assert intent == "assistant_recall" and answer_mod.needs_breadth(q, intent, needs_all)
+
+
+def test_streaming_never_splits_a_secret_from_its_redaction(monkeypatch):
+    from kindex import llm
+
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234567890abcdef\nZXhhbXBsZWtleWJvZHk=\n-----END RSA PRIVATE KEY-----"
+    text = f"Here it is. {pem} And a header. Authorization: Bearer abcdefghijklmnop0123456789. Done."
+    deltas = [text[i:i + 7] for i in range(0, len(text), 7)]  # splits inside lines and after the colon
+    shown = []
+    final = llm._read_stream(_sse([{"type": "response.output_text.delta", "delta": d} for d in deltas]
+                                  + [{"type": "response.completed", "response": {"output_text": text}}]),
+                             lambda t: shown.append(llm.redact_text(t)))
+    joined = "".join(shown)
+    assert "MIIEowIBAAKCAQEA1234567890abcdef" not in joined and "ZXhhbXBsZWtleWJvZHk=" not in joined
+    assert "abcdefghijklmnop0123456789" not in joined
+    assert joined.endswith("Done.") and final["output_text"] == text
+
+
+def _sse(events):
+    class Stream:
+        def __iter__(self):
+            for e in events:
+                yield f"data: {json.dumps(e)}\n".encode()
+    return Stream()
+
+
+def test_a_provider_that_does_not_stream_is_printed_whole(store, tmp_path, monkeypatch):
+    fake = FakeMessages()
+    monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="anthropic", model="m"))
+    result = answer_mod.answer_question(store, "kayak trips?", cfg, on_text=lambda t: None)
+    assert result.streamed is False and result.answer
+
+
+def test_expired_or_archived_profiles_stay_out(store):
+    store.add_node("Profile of Caroline", content="Old.", node_type="document", node_id="p-old",
+                   extra={"kind": "entity-profile", "entity": "Caroline", "expires": "2001-01-01"})
+    store.add_node("Profile of Melanie", content="Gone.", node_type="document", node_id="p-arch",
+                   status="archived", extra={"kind": "entity-profile", "entity": "Melanie"})
+    assert answer_mod.question_profiles(store, "Is Caroline or Melanie religious?") == []
+
+
+def test_dates_counted_from_an_event_are_left_alone():
+    from datetime import datetime
+
+    out = answer_mod.annotate_dates("Two days later we left; the day before was rainy.", datetime(2023, 9, 17))
+    assert "[=" not in out
+
+
+def test_a_failed_answer_falls_back_to_search_without_another_model_call(tmp_path, monkeypatch, capsys):
+    import kindex.answer as answer
+    import kindex.cli as cli
+
+    data = tmp_path / "data"
+    s = Store(Config(data_dir=str(data)))
+    s.add_node("kayak trip", content="user: kayak trip on the lake", node_id="k", node_type="document")
+    s.close()
+    config = tmp_path / "kin.yaml"
+    config.write_text(json.dumps({"llm": {"enabled": True, "provider": "openai", "model": "m",
+                                          "api_key_env": "KX_TEST_KEY"}}))
+    monkeypatch.setenv("KX_TEST_KEY", "placeholder")
+
+    def fail(*a, **kw):
+        raise RuntimeError("provider down")
+
+    def no_second_call(*a, **kw):
+        raise AssertionError("a second model call was made")
+
+    monkeypatch.setattr(answer, "answer_question", fail)
+    monkeypatch.setattr(cli, "_ask_llm", no_second_call)
+    args = cli.build_parser().parse_args(["ask", "--data-dir", str(data), "--config", str(config), "kayak", "trip"])
+    cli.cmd_ask(args)
+    out = capsys.readouterr()
+    assert "No answer drafted" in out.out and "Answer failed" in out.err
