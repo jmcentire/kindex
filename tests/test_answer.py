@@ -555,3 +555,11 @@ def test_facets_add_searches_for_wide_questions_only(store, tmp_path, monkeypatc
     assert len(searched[-1]) >= 3
     answer_mod.answer_question(store, "What did I do on the lake and the river?", _config(tmp_path))
     assert searched[-1] == ["What did I do on the lake and the river?"]
+
+
+def test_judgement_questions_get_room_for_every_clue():
+    for q in ["Would Caroline be considered religious?", "What kind of yoga might John benefit from?",
+              "Based on Tim's collections, what shop would he enjoy in New York?"]:
+        intent, needs_all = answer_mod.classify_question(q)
+        assert answer_mod.needs_breadth(q, intent, needs_all), q
+    assert not answer_mod.needs_breadth("What did Caroline research?", "fact", False)

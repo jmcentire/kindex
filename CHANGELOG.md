@@ -34,8 +34,8 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   answering rules sent and the answer's form; an LLM planner that writes the
   searches is optional (`ask.plan`). The model sees the matching nodes dated
   and oldest first, with today's date (`--as-of`) and the standing directives,
-  within 4,000 tokens for a single answer and 16,000 for counts, lists,
-  orderings and advice (summaries half again; the wide budget too when the
+  within 5,000 tokens for a single answer and 16,000 for counts, lists,
+  orderings, advice and judgements (summaries half again; the wide budget too when the
   graph holds no facts). Conversation excerpts show only the messages that
   share a word with the question, with one message either side. A question
   that points at a time ("10 days ago", "last month") brings that span

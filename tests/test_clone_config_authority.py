@@ -301,7 +301,7 @@ def test_repo_config_cannot_raise_ask_or_digest_spend(world):
                           "print(c.ask.samples, c.ask.top_k, c.ask.context_tokens, c.ask.effort, "
                           "c.ask.plan, c.conversations.facts, sorted(c._ignored_project_keys))")
     assert probe.returncode == 0, probe.stderr
-    assert probe.stdout.strip() == "1 60 4000 medium False True ['ask', 'conversations']"
+    assert probe.stdout.strip() == "1 60 5000 medium False True ['ask', 'conversations']"
 
 
 def test_ask_settings_are_bounded():

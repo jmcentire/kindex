@@ -564,6 +564,17 @@ def context_budget(cfg, complete: bool, digested: bool = True, summary: bool = F
 
 # Advice draws on the user's history, as a count draws on every instance.
 WIDE_INTENTS = ("preference",)
+# "Would she be considered religious?", "What yoga might he benefit from?":
+# a judgement weighs every clue about the person.
+_JUDGEMENT = re.compile(r"^\s*(would|could|might|is it likely)\b|\b(likely|might|would|could)\b(\s+\w+){0,2}\s+"
+                        r"(be|enjoy|like|prefer|benefit|want|consider|pursue|appreciate|find)\b|^\s*based on\b|"
+                        r"\bconsidered\b", re.I)
+
+
+def needs_breadth(question: str, intent: str, needs_all: bool) -> bool:
+    """Whether the answer rests on many items: every instance, the user's
+    history (advice), or every clue (a judgement)."""
+    return needs_all or intent in WIDE_INTENTS or bool(_JUDGEMENT.search(question))
 
 
 _NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -696,7 +707,10 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     cfg = config.ask
     intent, queries, needs_all = plan_question(question, config, client, ledger, as_of)
     complete = needs_all or intent in COMPLETENESS_INTENTS
-    if not cfg.plan and (complete or intent in WIDE_INTENTS):
+    # A count, advice or a judgement rests on many items: a wider budget, and
+    # a search for each thing the question names; a count also searches deeper.
+    wide = needs_breadth(question, intent, complete)
+    if not cfg.plan and wide:
         queries = queries + facet_searches(question)
     searches = [question] + [q for q in dict.fromkeys(queries) if q.lower() != question.lower()]
     stats: dict = {}
@@ -704,8 +718,8 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     if not results and not team:
         return AskResult(answer="No relevant knowledge found.", intent=intent, queries=searches)
     words = query_terms(*searches)
-    wide = complete or intent in WIDE_INTENTS
-    results = favour(results, date_window(question, as_of), facts_first=wide, summaries_first=intent == "summary")
+    # Facts first only for a count: a judgement wants the conversation's nuance.
+    results = favour(results, date_window(question, as_of), facts_first=complete, summaries_first=intent == "summary")
     budget = context_budget(cfg, wide, has_facts(results), summary=intent == "summary")
     assembly = assemble(results, standing_directives(store), budget, team, note_omitted=False,
                         terms=informative_terms(words, results) if cfg.excerpt else None)

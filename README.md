@@ -956,7 +956,7 @@ Retrieval pipeline:
 kin ask (answer.py), configured under `ask:`:
   classify   the question's kind, from its wording          (ask.plan: an LLM planner instead)
   retrieve   hybrid_search, one per named part, rank fusion (ask.top_k = 60)
-  assemble   dated, oldest first, excerpted + directives    (ask.context_tokens = 4000,
+  assemble   dated, oldest first, excerpted + directives    (ask.context_tokens = 5000,
                                                               ask.wide_context_tokens = 16000, ask.excerpt)
   answer     one call, the rules for that kind              (ask.effort = medium, ask.rules, ask.samples)
 

@@ -2059,8 +2059,8 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
         max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
             a single answer and wide for counts, lists, orderings and advice).
     """
-    from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, WIDE_INTENTS, answer_client, answer_prompt,
-                         context_budget, coverage_note, date_window, draft_answer, favour, fuse, has_facts,
+    from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, answer_client, answer_prompt, context_budget,
+                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, needs_breadth,
                          plan_question)
 
     q_lower = question.lower()
@@ -2102,12 +2102,12 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                 saturated = saturated or len(rows) >= depth
                 rankings.append(rows)
             results = favour(fuse(rankings, key=lambda row: (row["_graph_source"], row["id"])),
-                             date_window(question, now[:10]), facts_first=complete or intent in WIDE_INTENTS,
+                             date_window(question, now[:10]), facts_first=complete,
                              summaries_first=intent == "summary")
             if not results:
                 return f"[{qtype}] No relevant knowledge found for: {question}"
             budget = max_tokens if max_tokens > 0 else context_budget(
-                config.ask, complete or intent in WIDE_INTENTS, has_facts(results), summary=intent == "summary")
+                config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary")
             evidence, omitted = _render_evidence_sources(
                 stores, results, warnings, budget=budget, client=client, evaluation_time=now)
             header = f"[{qtype} question] Today's date: {now[:10]}"
