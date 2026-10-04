@@ -202,17 +202,25 @@ def gather(store: Store, queries: list[str], top_k: int, stats: dict | None = No
     so more may match than were seen."""
     from .retrieve import hybrid_search
 
-    scores: dict[str, float] = {}
-    nodes: dict[str, dict] = {}
+    rankings = []
     for q in queries:
         found = hybrid_search(store, q, top_k=top_k)
         if stats is not None and len(found) >= top_k:
             stats["saturated"] = True
+        rankings.append(found)
+    return fuse(rankings)
+
+
+def fuse(rankings: list[list[dict]], key=lambda node: node["id"]) -> list[dict]:
+    """Rankings merged by reciprocal rank fusion; `key` identifies a node."""
+    scores: dict = {}
+    nodes: dict = {}
+    for found in rankings:
         for rank, node in enumerate(found):
-            nid = node["id"]
-            nodes.setdefault(nid, node)
-            scores[nid] = scores.get(nid, 0.0) + 1.0 / (_RRF_K + rank + 1)
-    return [nodes[n] for n in sorted(scores, key=lambda n: -scores[n])]
+            k = key(node)
+            nodes.setdefault(k, node)
+            scores[k] = scores.get(k, 0.0) + 1.0 / (_RRF_K + rank + 1)
+    return [nodes[k] for k in sorted(scores, key=lambda k: -scores[k])]
 
 
 def standing_directives(store: Store) -> list[dict]:
@@ -220,6 +228,10 @@ def standing_directives(store: Store) -> list[dict]:
     out = []
     for node in store.all_nodes(node_type="directive", limit=200):
         if node.get("status") in ("archived", "superseded") or node_expired(node, today=today):
+            continue
+        # Kinbase evidence is shown with its governance note where it was
+        # retrieved, never as an instruction.
+        if isinstance(node.get("extra"), dict) and node["extra"].get("kinbase"):
             continue
         out.append(node)
     return out
@@ -258,13 +270,18 @@ class Assembly:
 
 
 def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
-             team: list[str] | None = None) -> Assembly:
+             team: list[str] | None = None, label=None) -> Assembly:
     """The context, within `budget_tokens` counting every section, header and note:
     standing directives first, then the team knowledge a caller supplied, then the
     retrieved nodes in rank order (facts listed by date, excerpts oldest first).
     What does not fit is left out and counted; the highest-ranked node is cut to
     fit rather than dropped when nothing else is in yet. Stored text is escaped so
-    it cannot open a heading or a tag and pose as one of the sections."""
+    it cannot open a heading or a tag and pose as one of the sections.
+
+    `label(node)`, when given, names each item ahead of its text (the MCP tools
+    pass the title and the ref a follow-up call can use). A node read from
+    Kinbase keeps its governance note (standing, projection, open Unknowns)."""
+    from .kinbase import evidence_note
     from .retrieve import graph_text
 
     sep = 1  # parts are joined by a blank line
@@ -295,12 +312,15 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         return (node.get("extra") or {}).get("kind") == "conversation-fact"
 
     def render(node: dict, text: str) -> str:
+        name = f"{label(node)}: " if label else ""
+        note = evidence_note(node)
+        note = f"\n({graph_text(note)})" if note else ""
         if is_fact(node):
             when = (node.get("extra") or {}).get("fact_date") or "undated"
-            return (f"- {graph_text(when, single_line=True)}: {text} "
-                    f"(conversation of {graph_text(node.get('prov_when') or 'unknown date', single_line=True)})")
+            return (f"- {graph_text(when, single_line=True)}: {name}{text} "
+                    f"(conversation of {graph_text(node.get('prov_when') or 'unknown date', single_line=True)}){note}")
         when = node.get("prov_when") or (node_date(node).date().isoformat() if node_date(node) else "undated")
-        return f"[{graph_text(when, single_line=True)}] {text}"
+        return f"[{graph_text(when, single_line=True)}] {name}{text}{note}"
 
     chosen: list[dict] = []
     lines: dict[str, str] = {}
@@ -344,43 +364,33 @@ COMPLETENESS_INTENTS = ("aggregation", "ordering", "summary")
 COMPLETE_TOP_K = 200
 
 
-def answer_question(store: Store, question: str, config: Config, ledger=None, *,
-                    as_of: str | date | datetime | None = None,
-                    team: list[str] | None = None) -> AskResult | None:
-    """Answers `question` from the graph, or returns None when no LLM is configured
-    or the budget runs out before an answer is drafted. `team` is shared knowledge
-    a caller supplies (Kinbase passes its signed facts)."""
-    if not config.llm.enabled or (ledger is not None and not ledger.can_spend()):
-        return None
-    client = get_client(config, timeout=config.ask.timeout_seconds, retries=3)
-    if client is None:
-        return None
-    cfg = config.ask
-    intent, queries, needs_all = plan_question(question, config, client, ledger, as_of)
-    searches = [question] + [q for q in queries if q.lower() != question.lower()]
-    complete = needs_all or intent in COMPLETENESS_INTENTS
-    stats: dict = {}
-    results = gather(store, searches, max(cfg.top_k, COMPLETE_TOP_K) if complete else cfg.top_k, stats)
-    if not results and not team:
-        return AskResult(answer="No relevant knowledge found.", intent=intent, queries=searches)
-    assembly = assemble(results, standing_directives(store), cfg.context_tokens, team)
+def answer_prompt(question: str, context: str, intent: str, *, as_of=None, readings: bool = False,
+                  coverage: str = "") -> str:
+    """The answer model's prompt: today's date, the context, the question and its style."""
+    return (f"Today's date: {_today(as_of)}\n\n{context}\n\nQuestion: {question}\n\n"
+            f"{STYLE.get(intent, DEFAULT_STYLE)}{READINGS if readings else ''}{coverage}")
+
+
+def coverage_note(complete: bool, omitted: int, saturated: bool) -> str:
+    """Tells the answer model when a completeness-sensitive answer may be missing items."""
     gaps = []
-    if assembly.omitted:
-        gaps.append(f"{assembly.omitted} more item(s) that matched the searches were left out for space")
-    if stats.get("saturated"):
+    if omitted:
+        gaps.append(f"{omitted} more item(s) that matched the searches were left out for space")
+    if saturated:
         gaps.append("a search returned as many items as it was allowed, so more may match")
-    coverage = COVERAGE_NOTE.format(why="; ".join(gaps)) if complete and gaps else ""
-    user = (f"Today's date: {_today(as_of)}\n\n{assembly.text}\n\nQuestion: {question}\n\n"
-            f"{STYLE.get(intent, DEFAULT_STYLE)}{READINGS if cfg.readings else ''}{coverage}")
+    return COVERAGE_NOTE.format(why="; ".join(gaps)) if complete and gaps else ""
 
-    def sample(i: int) -> str:
-        return _call(client, config, system=ANSWER_SYSTEM, user=user, effort=cfg.effort,
-                     max_tokens=cfg.max_output_tokens, ledger=ledger, purpose="ask", sample=i)
 
+def draft_answer(client, config: Config, user: str, ledger=None) -> str | None:
+    """`ask.samples` independent answers to `user`, adjudicated when there are
+    several. A spent budget stops sampling and keeps what was drafted; None
+    when nothing was."""
+    cfg = config.ask
     answers = []
     for i in range(max(1, cfg.samples)):
         try:
-            text = sample(i)
+            text = _call(client, config, system=ANSWER_SYSTEM, user=user, effort=cfg.effort,
+                         max_tokens=cfg.max_output_tokens, ledger=ledger, purpose="ask", sample=i)
         except BudgetExhausted:
             break  # keep what was drafted; no further calls
         except Exception:
@@ -404,6 +414,39 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
             final = picked or final
         except Exception:
             pass
+    return final
+
+
+def answer_client(config: Config, ledger=None):
+    """The client `kin ask` drafts with, or None without an LLM or budget."""
+    if not config.llm.enabled or (ledger is not None and not ledger.can_spend()):
+        return None
+    return get_client(config, timeout=config.ask.timeout_seconds, retries=3)
+
+
+def answer_question(store: Store, question: str, config: Config, ledger=None, *,
+                    as_of: str | date | datetime | None = None,
+                    team: list[str] | None = None) -> AskResult | None:
+    """Answers `question` from the graph, or returns None when no LLM is configured
+    or the budget runs out before an answer is drafted. `team` is shared knowledge
+    a caller supplies (Kinbase passes its signed facts)."""
+    client = answer_client(config, ledger)
+    if client is None:
+        return None
+    cfg = config.ask
+    intent, queries, needs_all = plan_question(question, config, client, ledger, as_of)
+    searches = [question] + [q for q in queries if q.lower() != question.lower()]
+    complete = needs_all or intent in COMPLETENESS_INTENTS
+    stats: dict = {}
+    results = gather(store, searches, max(cfg.top_k, COMPLETE_TOP_K) if complete else cfg.top_k, stats)
+    if not results and not team:
+        return AskResult(answer="No relevant knowledge found.", intent=intent, queries=searches)
+    assembly = assemble(results, standing_directives(store), cfg.context_tokens, team)
+    user = answer_prompt(question, assembly.text, intent, as_of=as_of, readings=cfg.readings,
+                         coverage=coverage_note(complete, assembly.omitted, bool(stats.get("saturated"))))
+    final = draft_answer(client, config, user, ledger)
+    if final is None:
+        return None
     return AskResult(answer=final, intent=intent, queries=searches, context=assembly.text,
                      context_tokens=assembly.tokens, results=assembly.chosen, omitted=assembly.omitted,
                      truncated=assembly.truncated)

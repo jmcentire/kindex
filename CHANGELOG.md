@@ -43,6 +43,15 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   cannot pose as a directive. The `ask:` and `conversations:` sections decide
   LLM spend, so a repository's `.kin/config` cannot set them, and `ask:`
   values are bounded.
+- The MCP `ask` tool returns what `kin ask` answers from: the matching nodes
+  in full, dated and oldest first, with today's date and the standing
+  directives, within 8,000 tokens (`max_tokens`), each named by its title and
+  ref. Counting, listing and ordering questions search deeper and say when the
+  evidence may be incomplete. It makes no model call unless `answer=true`,
+  which drafts the answer with `kin ask`'s pipeline. `context` gains
+  `level="evidence"` for the same form; its default tier is unchanged.
+  Directives read from Kinbase are not standing instructions, and Kinbase
+  evidence keeps its governance note in both.
 - The OpenAI provider passes system instructions, reasoning effort and JSON
   schemas. It retries rate limits and server errors only for callers that ask
   (`kin ask`, `kin digest`), within an optional overall deadline; hooks get no

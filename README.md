@@ -234,7 +234,7 @@ Nodes have types, weights, domains, and audiences. Edges carry provenance and de
 Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
 
 ### Answers from dated evidence
-`kin ask` plans its searches (one per kind of item for a counting question, the earlier state for a "still / now" question), merges them by rank fusion, and gives the model the matching nodes in full, dated and in chronological order within a token budget, with today's date and your standing directives. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search.
+`kin ask` plans its searches (one per kind of item for a counting question, the earlier state for a "still / now" question), merges them by rank fusion, and gives the model the matching nodes in full, dated and in chronological order within a token budget, with today's date and your standing directives. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
