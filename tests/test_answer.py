@@ -628,3 +628,31 @@ def test_a_streamed_answer_arrives_by_sentence_and_redacted(monkeypatch):
     assert all(secret not in s for s in shown) and any("REDACTED" in s or "[" in s for s in shown[1:])
     assert "".join(shown).endswith("Done")
     assert secret not in out.content[0].text and out.content[0].text.startswith("Melanie ran")
+
+
+def test_a_larger_memory_gets_a_larger_budget(tmp_path):
+    from kindex.config import AskConfig
+
+    s = Store(Config(data_dir=str(tmp_path)))
+    assert answer_mod.memory_scale(s) == 1.0
+    for i in range(2100):
+        s.add_node(f"note {i}", node_id=f"n{i}")
+    scale = answer_mod.memory_scale(s)
+    assert 2.0 < scale < 2.1
+    assert answer_mod.context_budget(AskConfig(context_tokens=5000), False, scale=scale) > 10000
+    assert answer_mod.context_budget(AskConfig(context_tokens=5000), True, scale=scale) == 16000
+    s.close()
+
+
+def test_the_latest_statement_of_something_comes_first():
+    nodes = [{"id": "old", "content": "user: My blood pressure goal is 125/75.", "prov_when": "2024-01-10"},
+             {"id": "other", "content": "user: I like tea.", "prov_when": "2024-12-01"},
+             {"id": "new", "content": "user: New blood pressure goal: 125/80.", "prov_when": "2024-09-25"}]
+    out = answer_mod.surface_latest(nodes, {"blood", "pressure", "goal"})
+    assert [n["id"] for n in out] == ["new", "old", "other"]
+
+
+def test_recalling_an_assistants_advice_gets_room():
+    q = "How did you recommend I prepare for the appointment?"
+    intent, needs_all = answer_mod.classify_question(q)
+    assert intent == "assistant_recall" and answer_mod.needs_breadth(q, intent, needs_all)

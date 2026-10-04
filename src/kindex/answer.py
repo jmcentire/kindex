@@ -577,7 +577,36 @@ COMPLETE_TOP_K = 200
 SUMMARY_SCALE = 1.5
 
 
-def context_budget(cfg, complete: bool, digested: bool = True, summary: bool = False) -> int:
+def memory_scale(store: Store) -> float:
+    """How much more evidence a question needs because the graph is large: a
+    graph of thousands of nodes holds more competing mentions of anything (an
+    earlier value, a near-duplicate) than one of a few hundred. 1 up to 1,000
+    nodes, then one more for each doubling, at most 3."""
+    import math
+
+    count = store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    return min(3.0, max(1.0, 1.0 + math.log2(max(count, 1) / 1000)))
+
+
+def surface_latest(results: list[dict], terms: set[str], window: int = 30) -> list[dict]:
+    """The most recent of the top results that share the question's words,
+    moved first, so the latest statement of something (an updated goal, a
+    revised figure) is in the evidence even when an older one ranks higher."""
+    if not terms:
+        return results
+    need = 2 if len(terms) >= 2 else 1
+    best, best_when = None, None
+    for i, node in enumerate(results[:window]):
+        words = {_stem(w) for w in _WORD.findall((node_text(node) or "").lower())}
+        when = node_date(node)
+        if len(terms & words) >= need and when and (best_when is None or when > best_when):
+            best, best_when = i, when
+    if best is None or best == 0:
+        return results
+    return [results[best]] + results[:best] + results[best + 1:]
+
+
+def context_budget(cfg, complete: bool, digested: bool = True, summary: bool = False, scale: float = 1.0) -> int:
     """The evidence budget: small for a single answer, wide for a question
     that needs every instance, and wide too when the graph holds no
     conversation facts (`kin digest` writes them): without them the answer has
@@ -585,11 +614,16 @@ def context_budget(cfg, complete: bool, digested: bool = True, summary: bool = F
     wide = max(cfg.context_tokens, cfg.wide_context_tokens)
     if summary:
         return min(400_000, int(wide * SUMMARY_SCALE))
-    return wide if complete or not digested else cfg.context_tokens
+    if complete or not digested:
+        return wide
+    # Only the small budget grows with the graph: the wide one already holds
+    # many items, and a single answer is what competing mentions crowd out.
+    return min(wide, int(cfg.context_tokens * scale))
 
 
-# Advice draws on the user's history, as a count draws on every instance.
-WIDE_INTENTS = ("preference",)
+# Advice draws on the user's history, as a count draws on every instance;
+# recalling an assistant's advice reproduces it point by point.
+WIDE_INTENTS = ("preference", "assistant_recall")
 # "Would she be considered religious?", "What yoga might he benefit from?":
 # a judgement weighs every clue about the person.
 _JUDGEMENT = re.compile(r"^\s*(would|could|might|is it likely)\b|\b(likely|might|would|could)\b(\s+\w+){0,2}\s+"
@@ -856,7 +890,9 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     words = query_terms(*searches)
     # Facts first only for a count: a judgement wants the conversation's nuance.
     results = favour(results, date_window(question, as_of), facts_first=complete, summaries_first=intent == "summary")
-    budget = context_budget(cfg, wide, has_facts(results), summary=intent == "summary")
+    if intent in ("fact", "knowledge_update"):
+        results = surface_latest(results, informative_terms(words, results))
+    budget = context_budget(cfg, wide, has_facts(results), summary=intent == "summary", scale=memory_scale(store))
     assembly = assemble(results, standing_directives(store), budget, team, note_omitted=False,
                         profiles=question_profiles(store, question) if cfg.profiles and wants_profile(question, intent)
                         else None,

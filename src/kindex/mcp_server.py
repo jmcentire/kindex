@@ -2064,8 +2064,8 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
             a single answer and wide for counts, lists, orderings and advice).
     """
     from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, answer_client, answer_prompt, context_budget,
-                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, needs_breadth,
-                         plan_question)
+                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, memory_scale,
+                         needs_breadth, plan_question)
 
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
@@ -2111,7 +2111,8 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
             if not results:
                 return f"[{qtype}] No relevant knowledge found for: {question}"
             budget = max_tokens if max_tokens > 0 else context_budget(
-                config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary")
+                config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary",
+                scale=max(memory_scale(store) for store in stores.values()))
             evidence, omitted = _render_evidence_sources(
                 stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
             header = f"[{qtype} question] Today's date: {now[:10]}"
