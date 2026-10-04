@@ -80,7 +80,7 @@ def test_answer_question_without_llm_returns_none(store, tmp_path):
 def test_answer_question_plans_searches_and_dates_evidence(store, tmp_path, monkeypatch):
     fake = FakeMessages()
     monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
-    result = answer_mod.answer_question(store, "How many kayak trips did I take?", _config(tmp_path),
+    result = answer_mod.answer_question(store, "How many kayak trips did I take?", _config(tmp_path, plan=True),
                                         as_of="2024-03-15")
     assert result.answer == "answer 2"
     assert result.intent == "aggregation"
@@ -91,8 +91,8 @@ def test_answer_question_plans_searches_and_dates_evidence(store, tmp_path, monk
     assert "[2024/01/05 (Fri) 18:30] user: My first kayak trip" in user
     assert user.index("2024/01/05") < user.index("2024/03/10")
     assert "- Always answer in metric units" in user
-    assert final["system"] == answer_mod.ANSWER_SYSTEM
-    assert final["reasoning_effort"] == "high"
+    assert final["system"] == answer_mod.answer_system("aggregation")
+    assert final["reasoning_effort"] == _config(tmp_path).ask.effort
 
 
 def test_samples_are_adjudicated(store, tmp_path, monkeypatch):
@@ -192,7 +192,7 @@ class Ledger:
 def test_budget_exhausted_after_planning_makes_no_further_call(store, tmp_path, monkeypatch):
     fake = FakeMessages()
     monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
-    result = answer_mod.answer_question(store, "How many kayak trips?", _config(tmp_path), Ledger(1))
+    result = answer_mod.answer_question(store, "How many kayak trips?", _config(tmp_path, plan=True), Ledger(1))
     assert result is None
     assert len(fake.calls) == 1 and fake.calls[0]["json_schema"]["name"] == "query_plan"
 
@@ -271,7 +271,7 @@ def test_counting_questions_search_past_top_k(trips, tmp_path, monkeypatch):
                                         _config(tmp_path, top_k=3, context_tokens=100000))
     assert len(result.results) == 12  # every trip, though top_k is 3
     assert result.omitted == 0
-    assert "may be incomplete" not in fake.calls[-1]["messages"][0]["content"]
+    assert "left out for space" not in fake.calls[-1]["messages"][0]["content"]
 
 
 def test_fact_questions_keep_top_k(trips, tmp_path, monkeypatch):
@@ -286,20 +286,20 @@ def test_counts_that_do_not_fit_are_disclosed_as_incomplete(trips, tmp_path, mon
     fake = FakeMessages(plan={"intent": "aggregation", "queries": ["kayak trip"], "needs_all_instances": True})
     monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
     result = answer_mod.answer_question(trips, "How many kayak trips did I take?",
-                                        _config(tmp_path, top_k=3, context_tokens=1000))
+                                        _config(tmp_path, top_k=3, context_tokens=1000, wide_context_tokens=1000))
     user = fake.calls[-1]["messages"][0]["content"]
-    assert result.omitted > 0
-    assert f"{result.omitted} more item(s) that matched the searches were left out" in user
-    assert "lower bound" in user
+    assert result.omitted > 0  # reported to the caller
+    assert "left out for space" not in user and "lower bound" not in user  # the answer commits to the count
 
 
-def test_counts_past_the_search_depth_are_disclosed(trips, tmp_path, monkeypatch):
+def test_a_full_search_alone_adds_no_note(trips, tmp_path, monkeypatch):
+    # In a large graph every search returns all it is allowed; that says nothing.
     fake = FakeMessages(plan={"intent": "aggregation", "queries": ["kayak trip"], "needs_all_instances": True})
     monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
     monkeypatch.setattr(answer_mod, "COMPLETE_TOP_K", 5)
     answer_mod.answer_question(trips, "How many kayak trips did I take?",
                                _config(tmp_path, top_k=3, context_tokens=100000))
-    assert "so more may match" in fake.calls[-1]["messages"][0]["content"]
+    assert "left out for space" not in fake.calls[-1]["messages"][0]["content"]
 
 
 def test_ask_client_retries_within_its_own_calls(store, tmp_path, monkeypatch):
@@ -396,3 +396,162 @@ def test_the_openai_client_does_not_retry_unless_asked(monkeypatch):
         llm.get_client(_openai_config()).messages.create(
             model="m", max_tokens=1, messages=[{"role": "user", "content": "hi"}])
     assert len(timeouts) == 1 and clock.sleeps == []
+
+
+def test_the_wording_decides_the_intent_without_a_model_call():
+    cases = {
+        "When did Melanie run a charity race?": "temporal",
+        "How many days passed between the concert and the trip?": "temporal",
+        "How many kayak trips did I take this year?": "aggregation",
+        "What books has Melanie read?": "aggregation",
+        "Which pet did Jolene adopt more recently - Susie or Seraphim?": "ordering",
+        "How did my discussions about caching evolve throughout our conversations?": "ordering",
+        "Can you summarize what we decided about the API?": "summary",
+        "Where do I currently live?": "knowledge_update",
+        "Can you recommend a restaurant for my anniversary?": "preference",
+        "What did you recommend for my back pain?": "assistant_recall",
+        "Write a short bio for my website.": "task",
+        "What did Caroline research?": "fact",
+        "What did Melanie suggest Caroline try?": "fact",
+    }
+    for question, intent in cases.items():
+        assert answer_mod.classify_question(question)[0] == intent, question
+    assert answer_mod.classify_question("How many kayak trips did I take?")[1] is True
+    assert answer_mod.classify_question("What did Caroline research?")[1] is False
+
+
+def test_the_planner_runs_only_when_configured(store, tmp_path, monkeypatch):
+    fake = FakeMessages()
+    monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
+    answer_mod.answer_question(store, "How many kayak trips did I take?", _config(tmp_path))
+    assert len(fake.calls) == 1 and "json_schema" not in fake.calls[0] or fake.calls[0].get("json_schema") is None
+
+
+def test_excerpts_keep_the_matching_messages_and_their_neighbours():
+    text = "\n".join([
+        "Caroline: Hey Mel, how have you been?",
+        "Melanie: Busy with the kids, Caroline.",
+        "Caroline: I went to a support group yesterday.",
+        "Melanie: That sounds powerful.",
+        "Caroline: I'm researching adoption agencies now.",
+        "Melanie: That's wonderful, Caroline!",
+        "Caroline: Anyway, off to paint.",
+        "Melanie: Have fun!",
+    ])
+    out = answer_mod.excerpt(text, {"research"})
+    assert "researching adoption agencies" in out
+    assert "That sounds powerful." in out and "That's wonderful" in out  # one message either side
+    assert "how have you been" not in out and "off to paint" not in out
+    assert out.startswith("[...]") and out.endswith("[...]")
+    assert answer_mod.excerpt(text, {"kayak"}) == text  # nothing matches: kept whole
+    head = answer_mod.excerpt(text, {"kayak"}, unmatched="head")
+    assert "how have you been" in head and "off to paint" not in head
+
+
+def test_speaker_names_do_not_choose_the_excerpt():
+    results = [{"id": str(i), "content": f"Caroline: day {i}\nMelanie: hi Caroline"} for i in range(5)]
+    assert answer_mod.informative_terms({"caroline", "research"}, results) == {"research"}
+    # A word every result shares is still a candidate: it may hold the answer.
+    kayak = [{"id": "a", "content": "user: My kayak costs $450.\nassistant: Nice.\nuser: Hi.\nassistant: Hi.\n"
+                                    "user: Grocery budget is $20.", "extra": {"conversation_id": "c"}},
+             {"id": "b", "content": "user: My kayak is blue.", "extra": {"conversation_id": "c"}}]
+    terms = answer_mod.informative_terms({"kayak", "budget"}, kayak)
+    assert terms == {"kayak", "budget"}
+    assert "$450" in answer_mod.assemble(kayak, [], 4000, terms=terms).text
+
+
+def test_review_cases_for_the_wording_rules():
+    c = answer_mod.classify_question
+    assert c("List all trips I took when I lived in Paris.") == ("aggregation", True)
+    assert c("List all books you recommended to me.")[1] is True
+    assert c("List my medications.") == ("aggregation", True)
+    assert c("How much did I spend on restaurants last month?") == ("aggregation", True)
+    assert c("What status does my application have?") == ("fact", False)
+    assert c("Who has my passport?") == ("fact", False)
+    assert c("Write a checklist in order to deploy the API.")[0] == "task"
+    assert "Counting, totals and lists" in answer_mod.answer_system("assistant_recall", needs_all=True)
+
+
+def test_continuation_lines_stay_with_their_message():
+    text = "user: What is the API port?\nassistant: Configuration:\n\n8080\nuser: Thanks\nassistant: ok\nuser: bye"
+    assert "8080" in answer_mod.excerpt(text, {"api", "port"})
+
+
+def test_nothing_cut_means_no_marker():
+    text = "user: kayak\nassistant: kayak\nuser: kayak\nassistant: kayak"
+    assert answer_mod.excerpt(text, {"kayak"}) == text
+
+
+def test_only_conversation_text_is_excerpted():
+    doc = {"id": "doc", "content": "API settings\nConnection details\nPort: 8080\nOwner: Alice\nComment: production"}
+    assert "8080" in answer_mod.assemble([doc], [], 4000, terms={"api", "port"}).text
+
+
+def test_a_long_message_is_excerpted_by_sentence():
+    long = "assistant: " + " ".join(f"Point {i} is about gardening." for i in range(40)) + " The kayak costs $450."
+    out = answer_mod.excerpt("user: hi\n" + long + "\nuser: thanks", {"kayak"})
+    assert "The kayak costs $450." in out and "Point 3 is" not in out
+    assert "assistant: ... " in out
+
+
+def test_single_answer_questions_get_the_smaller_budget():
+    from kindex.config import AskConfig
+
+    cfg = AskConfig(context_tokens=4000, wide_context_tokens=16000)
+    assert answer_mod.context_budget(cfg, False) == 4000
+    assert answer_mod.context_budget(cfg, True) == 16000
+    assert answer_mod.context_budget(cfg, False, digested=False) == 16000  # raw text needs more room
+    assert answer_mod.context_budget(cfg, True, summary=True) == 24000
+
+
+def test_only_the_rules_a_question_needs_are_sent():
+    counting = answer_mod.answer_system("aggregation")
+    advice = answer_mod.answer_system("preference")
+    assert "Counting, totals and lists" in counting and "Counting, totals and lists" not in advice
+    assert "Recommendations and advice" in advice
+    assert len(advice) < len(answer_mod.ANSWER_SYSTEM)
+    assert answer_mod.ANSWER_SYSTEM == answer_mod.answer_system(None)
+
+
+def test_a_relative_date_brings_that_day_forward():
+    window = answer_mod.date_window("What kitchen appliance did I buy 10 days ago?", "2023/03/25 (Sat) 10:00")
+    assert window[0].date().isoformat() == "2023-03-14" and window[1].date().isoformat() == "2023-03-16"
+    nodes = [{"id": "a", "prov_when": "2023/03/01", "content": "x"},
+             {"id": "b", "prov_when": "2023/03/15 (Wed) 23:00", "content": "I bought a smoker"},
+             {"id": "f", "prov_when": "2023/03/02", "content": "fact", "extra": {"kind": "conversation-fact"}}]
+    assert [n["id"] for n in answer_mod.favour(nodes, window, False)] == ["b", "a", "f"]
+    assert [n["id"] for n in answer_mod.favour(nodes, None, True)] == ["f", "a", "b"]  # facts first for counts
+    assert answer_mod.date_window("What did Caroline research?", "2023/05/30") is None
+    last_month = answer_mod.date_window("How many plants did I get in the last month?", "2023/05/30")
+    assert last_month[0].date().isoformat() == "2023-04-20"
+
+
+def test_a_question_naming_several_things_searches_for_each():
+    facets = answer_mod.facet_searches(
+        "How did my choices about festivals, transportation, and accommodations affect my budget?")
+    assert any("festivals" in f for f in facets) and "transportation" in facets
+    assert any("accommodations" in f for f in facets)
+    assert answer_mod.facet_searches("What did Caroline research?") == []
+
+
+def test_how_things_evolved_is_a_summary_across_conversations():
+    assert answer_mod.classify_question(
+        "How have my household budget and relationship reflections evolved together?") == ("summary", True)
+    assert answer_mod.classify_question(
+        "How did my discussions about caching evolve throughout our conversations?")[0] == "ordering"
+
+
+def test_facets_add_searches_for_wide_questions_only(store, tmp_path, monkeypatch):
+    searched = []
+    real = answer_mod.gather
+
+    def gather(store, queries, top_k, stats=None):
+        searched.append(list(queries))
+        return real(store, queries, top_k, stats)
+
+    monkeypatch.setattr(answer_mod, "gather", gather)
+    monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=FakeMessages()))
+    answer_mod.answer_question(store, "How many kayak trips and lake swims did I take?", _config(tmp_path))
+    assert len(searched[-1]) >= 3
+    answer_mod.answer_question(store, "What did I do on the lake and the river?", _config(tmp_path))
+    assert searched[-1] == ["What did I do on the lake and the river?"]

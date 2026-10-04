@@ -266,7 +266,7 @@ Nodes have types, weights, domains, and audiences. Edges carry provenance and de
 Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
 
 ### Answers from dated evidence
-`kin ask` plans its searches (one per kind of item for a counting question, the earlier state for a "still / now" question), merges them by rank fusion, and gives the model the matching nodes in full, dated and in chronological order within a token budget, with today's date and your standing directives. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
+`kin ask` answers in one model call from dated evidence: the matching nodes in chronological order with today's date and your standing directives, trimmed to the messages that bear on the question, within a small budget for a single fact and a wider one for counts, lists, orderings, summaries and advice. Conversation facts written by `kin digest` let it answer from a few thousand tokens. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
@@ -954,10 +954,11 @@ Retrieval pipeline:
       voyage-context-4 (contextual chunks) | openai | gemini | local
 
 kin ask (answer.py), configured under `ask:`:
-  plan       one cheap call: intent + 1-5 searches        (ask.plan, ask.plan_effort)
-  retrieve   hybrid_search per search, rank fusion          (ask.top_k = 60)
-  assemble   full nodes, dated, oldest first + directives   (ask.context_tokens = 24000)
-  answer     answering rules, reasoning effort              (ask.effort, ask.samples, ask.readings)
+  classify   the question's kind, from its wording          (ask.plan: an LLM planner instead)
+  retrieve   hybrid_search, one per named part, rank fusion (ask.top_k = 60)
+  assemble   dated, oldest first, excerpted + directives    (ask.context_tokens = 4000,
+                                                              ask.wide_context_tokens = 16000, ask.excerpt)
+  answer     one call, the rules for that kind              (ask.effort = medium, ask.rules, ask.samples)
 
 Reminders:
   reminders table (SQLite)    <- separate from knowledge graph

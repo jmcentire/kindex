@@ -321,12 +321,15 @@ class AskConfig(BaseModel):
     """`kin ask`: how a question is searched for and answered (see answer.py).
     These settings decide LLM spend, so only user config may set them (see
     _PROJECT_LAYER_UNTRUSTED_KEYS), and each is bounded."""
-    plan: bool = True                # an LLM planner writes the searches and classifies the question
+    plan: bool = False               # an LLM planner writes the searches (one more call); else the wording decides
     top_k: int = Field(default=60, ge=1, le=200)               # nodes retrieved per search
-    context_tokens: int = Field(default=24000, ge=1000, le=400000)  # budget for the whole context
+    context_tokens: int = Field(default=4000, ge=1000, le=400000)  # evidence budget for a single-answer question
+    wide_context_tokens: int = Field(default=16000, ge=1000, le=400000)  # counts, lists, orderings, summaries, advice
+    excerpt: bool = True             # show only the messages of an excerpt that bear on the question
+    rules: Literal["intent", "all"] = "intent"  # answering rules: those for the kind of question, or all
     samples: int = Field(default=1, ge=1, le=9)  # independent answers; with more than one, an adjudication pass picks
     readings: bool = False           # answer each plausible reading when the answer depends on it
-    effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "high"  # reasoning effort, for providers that take one
+    effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"  # reasoning effort, for providers that take one
     plan_effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "low"
     max_output_tokens: int = Field(default=16000, ge=256, le=128000)  # includes a reasoning model's reasoning
     timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
@@ -334,7 +337,7 @@ class AskConfig(BaseModel):
 
 class ConversationsConfig(BaseModel):
     """Conversation digests (conversations.py). User config only."""
-    facts: bool = False              # also record each conversation's facts as dated nodes
+    facts: bool = True               # also record each conversation's facts as dated nodes (keeps `kin ask` small)
 
 
 class BudgetConfig(BaseModel):

@@ -93,9 +93,12 @@ def test_digest_records_directives_once_and_a_linked_summary(store, tmp_path, mo
 def test_short_conversations_get_directives_but_no_summary(store, tmp_path, monkeypatch):
     from kindex import llm
 
+    from kindex.config import ConversationsConfig
+
     client, calls = _fake_client({"directives": [], "summary": "should not be stored"})
     monkeypatch.setattr(llm, "get_client", lambda config, **kw: client)
-    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"),
+                 conversations=ConversationsConfig(facts=False))
     conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10")
     assert conv.backfill_digests(store, cfg) == 1
     assert calls[0]["json_schema"]["schema"]["required"] == ["directives"]
@@ -125,15 +128,20 @@ def test_facts_become_dated_nodes_when_enabled(store, tmp_path, monkeypatch):
     assert len(facts) == 1 and facts[0]["extra"]["fact_date"] == "2024-03-09"
 
 
-def test_facts_are_off_by_default(store, tmp_path, monkeypatch):
+def test_facts_are_on_by_default_and_can_be_turned_off(store, tmp_path, monkeypatch):
     from kindex import llm
+    from kindex.config import ConversationsConfig
 
-    client, calls = _fake_client({"directives": []})
+    client, calls = _fake_client({"directives": [], "facts": []})
     monkeypatch.setattr(llm, "get_client", lambda config, **kw: client)
-    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
     conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10")
-    conv.backfill_digests(store, cfg)
-    assert "- facts:" not in calls[0]["messages"][0]["content"]
+    conv.backfill_digests(store, Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai",
+                                                                             model="m")))
+    assert "- facts:" in calls[0]["messages"][0]["content"]
+    conv.ingest_conversation(store, "c2", MESSAGES[2:], "2024-03-11")
+    conv.backfill_digests(store, Config(data_dir=str(tmp_path), conversations=ConversationsConfig(facts=False),
+                                        llm=LLMConfig(enabled=True, provider="openai", model="m")))
+    assert "- facts:" not in calls[-1]["messages"][0]["content"]
 
 
 # ── Re-ingest reconciles a conversation with what was stored before ──
@@ -285,7 +293,7 @@ def test_turning_on_facts_digests_again(store, tmp_path, monkeypatch):
     client, calls = _fake_client({"directives": [], "facts": []})
     monkeypatch.setattr(llm, "get_client", lambda config, **kw: client)
     conv.ingest_conversation(store, "c1", MESSAGES[:1], "2024-03-10")
-    assert conv.backfill_digests(store, _cfg(tmp_path)) == 1
+    assert conv.backfill_digests(store, _cfg(tmp_path, facts=False)) == 1
     assert conv.backfill_digests(store, _cfg(tmp_path, facts=True)) == 1
     assert "- facts:" in calls[-1]["messages"][0]["content"]
 

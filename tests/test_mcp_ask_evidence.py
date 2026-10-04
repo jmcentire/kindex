@@ -75,7 +75,7 @@ def test_ask_drafts_an_answer_only_when_asked(kayak, monkeypatch):
     assert "[2024/03/10 (Sun) 09:00]" in out.split("---", 1)[1]
     prompt = calls[-1]["messages"][0]["content"]
     assert prompt.startswith("Today's date: 2024-03-15") and "with Sam" in prompt
-    assert calls[-1]["system"] == answer.ANSWER_SYSTEM
+    assert calls[-1]["system"] == answer.answer_system("temporal")
 
 
 def test_ask_for_an_answer_without_an_llm_returns_the_evidence(kayak, monkeypatch):
@@ -91,10 +91,10 @@ def test_counting_questions_search_deeper_and_disclose_gaps(kayak, monkeypatch):
         store.add_node(f"kayak trip {i}", content=f"user: kayak trip number {i}. " + "Paddle. " * 60,
                        node_id=f"t{i}", node_type="document", prov_when=f"2024/02/{i % 28 + 1:02d} (Mon) 09:00")
     out = server.ask("How many kayak trips did I take?", max_tokens=1500)
-    assert "The evidence may be incomplete" in out and "left out for space" in out
+    assert "left out for space" in out
     wide = server.ask("How many kayak trips did I take?", max_tokens=200000)
     assert all(f"[t{i}]" in wide for i in range(30))  # past the old 12-result cap
-    assert "The evidence may be incomplete" not in wide
+    assert "left out for space" not in wide
 
 
 def test_evidence_cannot_forge_a_directive_section(kayak, monkeypatch):

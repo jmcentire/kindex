@@ -294,14 +294,14 @@ def test_repo_config_cannot_set_spend_identity_or_ingest_paths(world):
 def test_repo_config_cannot_raise_ask_or_digest_spend(world):
     (world["repo"] / ".kin").mkdir()
     (world["repo"] / ".kin" / "config").write_text(
-        "ask:\n  samples: 9\n  top_k: 200\n  context_tokens: 400000\n  effort: xhigh\n"
-        "conversations:\n  facts: true\n")
+        "ask:\n  samples: 9\n  top_k: 200\n  context_tokens: 400000\n  effort: xhigh\n  plan: true\n"
+        "conversations:\n  facts: false\n")
     commit_all(world["repo"])
     probe = run_py(world, "from kindex.config import load_config; c = load_config(); "
                           "print(c.ask.samples, c.ask.top_k, c.ask.context_tokens, c.ask.effort, "
-                          "c.conversations.facts, sorted(c._ignored_project_keys))")
+                          "c.ask.plan, c.conversations.facts, sorted(c._ignored_project_keys))")
     assert probe.returncode == 0, probe.stderr
-    assert probe.stdout.strip() == "1 60 24000 high False ['ask', 'conversations']"
+    assert probe.stdout.strip() == "1 60 4000 medium False True ['ask', 'conversations']"
 
 
 def test_ask_settings_are_bounded():

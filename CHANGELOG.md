@@ -13,12 +13,13 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   conversations of 6,000 tokens or more; short conversations are read from the
   user's side only, and task setups ("respond only with OK until ...") are not
   directives.
-- `conversations.facts: true` makes the digest pass also write down each
-  conversation's facts as dated nodes: self-contained statements with names,
-  numbers and the date they happened (relative dates resolved against the
-  conversation date), including what the assistant recommended. `kin ask` lists
-  retrieved facts by date above the conversation excerpts. Off by default: it
-  reads every conversation in full once.
+- The digest pass also writes down each conversation's facts as dated nodes
+  (`conversations.facts`, on by default): self-contained statements with
+  names, numbers and the date they happened (relative dates resolved against
+  the conversation date), including what the assistant recommended. `kin ask`
+  lists retrieved facts by date above the conversation excerpts. A fact is a
+  sentence where an excerpt is a page, so they let `kin ask` answer from a
+  small context; the pass reads each conversation in full once.
 - A conversation file entry may carry `"expires": "YYYY-MM-DD"` (its nodes and
   everything derived from them stop surfacing after that date) or
   `"retracted": true` (it, its summary and facts, and directives no other
@@ -27,25 +28,30 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   a changed conversation is digested again.
 
 ### Changed
-- `kin ask` answers from planned searches over dated evidence
-  (`kindex.answer`). A planner call writes up to five searches; their rankings
-  are merged by reciprocal rank fusion; the model sees the matching nodes in
-  full, oldest first, within a 24k-token budget, with today's date (`--as-of`)
-  and the standing directives; the answer rules cover updated values, counts,
-  relative and absolute dates, comparisons, missing specifics and judgement
-  questions. Previously it saw five results truncated to 500 characters, with
-  no dates, and answered in at most 500 tokens. Settings live under `ask:`
-  (`plan`, `top_k`, `context_tokens`, `samples`, `effort`, `readings`).
-  Without an LLM it still prints search results. The budget is checked before
-  every model call; the context budget covers every section, and what did not
-  fit is reported. Counting, ordering and summary questions search deeper and
-  say when coverage may be incomplete. Stored text is escaped so evidence
-  cannot pose as a directive. The `ask:` and `conversations:` sections decide
-  LLM spend, so a repository's `.kin/config` cannot set them, and `ask:`
-  values are bounded.
+- `kin ask` answers from dated evidence in one model call (`kindex.answer`).
+  The question's wording sets its kind (a single fact, a count or list, a
+  date, an ordering, a summary, advice), which picks the evidence budget, the
+  answering rules sent and the answer's form; an LLM planner that writes the
+  searches is optional (`ask.plan`). The model sees the matching nodes dated
+  and oldest first, with today's date (`--as-of`) and the standing directives,
+  within 4,000 tokens for a single answer and 16,000 for counts, lists,
+  orderings and advice (summaries half again; the wide budget too when the
+  graph holds no facts). Conversation excerpts show only the messages that
+  share a word with the question, with one message either side. A question
+  that points at a time ("10 days ago", "last month") brings that span
+  forward; a count lists facts ahead of excerpts; a question naming several
+  things searches for each. Previously it saw five results truncated to 500
+  characters, with no dates. Settings live under `ask:` (`plan`, `top_k`,
+  `context_tokens`, `wide_context_tokens`, `excerpt`, `rules`, `samples`,
+  `effort`, `readings`). Without an LLM it still prints search results. The
+  LLM budget is checked before every model call; the context budget covers
+  every section, and what did not fit is reported to the caller. Stored text
+  is escaped so evidence cannot pose as a directive. The `ask:` and
+  `conversations:` sections decide LLM spend, so a repository's `.kin/config`
+  cannot set them, and `ask:` values are bounded.
 - The MCP `ask` tool returns what `kin ask` answers from: the matching nodes
-  in full, dated and oldest first, with today's date and the standing
-  directives, within 8,000 tokens (`max_tokens`), each named by its title and
+  dated and oldest first, with today's date and the standing directives,
+  within `kin ask`'s budgets (or `max_tokens`), each named by its title and
   ref. Counting, listing and ordering questions search deeper and say when the
   evidence may be incomplete. It makes no model call unless `answer=true`,
   which drafts the answer with `kin ask`'s pipeline. `context` gains

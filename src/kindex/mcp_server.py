@@ -1418,8 +1418,7 @@ def _render_context_sources(stores, results, warnings, *, topic: str, level: str
     return preamble + "\n\n".join(sections)
 
 
-# The evidence `ask` returns: what `kin ask` shows its answer model.
-MCP_ASK_TOKENS = 8000
+# `context(level="evidence")` without max_tokens; `ask` uses `kin ask`'s budgets.
 MCP_EVIDENCE_TOKENS = 4000
 _COMPLETENESS = re.compile(r"\b(how many|how much|how often|list|all|every|each|total|count|order|"
                            r"sequence|first|last|summar\w*)\b", re.I)
@@ -2047,9 +2046,9 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
 
     Returns the evidence `kin ask` answers from: the matching nodes in full,
     dated and oldest first, with today's date and the standing directives, in
-    graph-local sections whose refs show and edit accept. Counting, listing
-    and ordering questions search deeper and say when the evidence may be
-    incomplete. With answer=True and an LLM configured, it also drafts the
+    graph-local sections whose refs show and edit accept, within `kin ask`'s
+    budget. Counting, listing and ordering questions search deeper and say
+    when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
     answer the way `kin ask` does (planned searches, answering rules), within
     the LLM budget; otherwise it makes no model call.
 
@@ -2057,10 +2056,12 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
         question: Natural language question.
         graph: Read scope: auto, project, or global.
         answer: Also draft an answer with the configured LLM (spends budget).
-        max_tokens: Token budget for the evidence (default 8,000).
+        max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
+            a single answer and wide for counts, lists, orderings and advice).
     """
-    from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, answer_client,
-                         answer_prompt, coverage_note, draft_answer, fuse, plan_question)
+    from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, WIDE_INTENTS, answer_client, answer_prompt,
+                         context_budget, coverage_note, date_window, draft_answer, favour, fuse, has_facts,
+                         plan_question)
 
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
@@ -2079,8 +2080,10 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
             config = _get_config()
             now = operation_now()
             client = _mcp_client()
-            intent, searches = "fact", [question]
-            complete = bool(_COMPLETENESS.search(question))
+            from .answer import classify_question
+            intent, complete = classify_question(question)
+            searches = [question]
+            complete = complete or bool(_COMPLETENESS.search(question))
             llm = ledger = None
             if answer:
                 from .budget import BudgetLedger
@@ -2098,12 +2101,15 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                 warnings = warnings or found_warnings  # the question's own verdicts
                 saturated = saturated or len(rows) >= depth
                 rankings.append(rows)
-            results = fuse(rankings, key=lambda row: (row["_graph_source"], row["id"]))
+            results = favour(fuse(rankings, key=lambda row: (row["_graph_source"], row["id"])),
+                             date_window(question, now[:10]), facts_first=complete or intent in WIDE_INTENTS,
+                             summaries_first=intent == "summary")
             if not results:
                 return f"[{qtype}] No relevant knowledge found for: {question}"
+            budget = max_tokens if max_tokens > 0 else context_budget(
+                config.ask, complete or intent in WIDE_INTENTS, has_facts(results), summary=intent == "summary")
             evidence, omitted = _render_evidence_sources(
-                stores, results, warnings, budget=max_tokens if max_tokens > 0 else MCP_ASK_TOKENS,
-                client=client, evaluation_time=now)
+                stores, results, warnings, budget=budget, client=client, evaluation_time=now)
             header = f"[{qtype} question] Today's date: {now[:10]}"
             coverage = coverage_note(complete, omitted, saturated)
             if llm is None:
@@ -2112,7 +2118,7 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                 return f"{header}{skipped}\n\n{evidence}{coverage}"
             drafted = draft_answer(llm, config, answer_prompt(
                 question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
-                coverage=coverage), ledger)
+                coverage=coverage), ledger, intent, complete)
             if drafted is None:
                 return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
             return f"{drafted}\n\n---\n{header}\n\n{evidence}"

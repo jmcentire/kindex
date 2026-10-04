@@ -4,7 +4,9 @@ Kindex source trees on one LoCoMo conversation.
 
 The conversation's sessions are written as conversation files and stored with
 the new tree's `kin ingest conversations` (main has no equivalent); each tree
-then works on its own copy of that store. MCP `ask` is timed in-process with no
+then works on its own copy of that store, and the new tree's copy is digested
+first (`kin digest`, with its default settings), as it would be after a user
+runs it once. MCP `ask` is timed in-process with no
 model call (the new tool makes none unless answer=True). `kin ask` runs as a
 command per question with the configured model, as a user would run it, so
 its time includes interpreter start-up and the provider's latency. Search is
@@ -125,6 +127,7 @@ def main() -> None:
     ap.add_argument("--model", default="gpt-6-luna")
     ap.add_argument("--key-env", default="OPENAI_API_KEY", help="environment variable holding the OpenAI key")
     ap.add_argument("--no-llm", action="store_true", help="skip `kin ask` and `kin digest`")
+    ap.add_argument("--ask", default="{}", help="`ask:` settings for the new tree, as JSON (default: its defaults)")
     ap.add_argument("--out", type=Path)
     a = ap.parse_args()
     old, new = a.old_src.resolve(), a.new_src.resolve()
@@ -143,6 +146,13 @@ def main() -> None:
                               "questions": len(questions),
                               "questions_sha256": hashlib.sha256(json.dumps(questions).encode()).hexdigest()}
         config = root / "kin.yaml"
+        new_config = root / "kin-new.yaml"
+        new_config.write_text(json.dumps({
+            "llm": {"enabled": not a.no_llm, "provider": "openai", "model": a.model, "api_key_env": a.key_env},
+            "budget": {"daily": 10000, "weekly": 10000, "monthly": 10000},
+            "ask": json.loads(a.ask),
+        }))
+        report["ask_settings_new"] = json.loads(a.ask)
         config.write_text(json.dumps({
             "llm": {"enabled": not a.no_llm, "provider": "openai", "model": a.model, "api_key_env": a.key_env},
             # Kindex costs a model it has no price for at the highest known rate;
@@ -163,6 +173,13 @@ def main() -> None:
         for name in ("old", "new"):
             copies[name] = root / f"store-{name}"
             shutil.copytree(store, copies[name])
+        if not a.no_llm:
+            seconds, done = kin(new, ["digest", "--data-dir", str(copies["new"]), "--config", str(new_config)], env)
+            if done.returncode:
+                raise SystemExit(f"digest failed: {done.stderr[-2000:]}")
+            report["digest_new"] = {"seconds": round(seconds, 2), "output": done.stdout.strip()[-200:],
+                                    "model": ledger_tokens(copies["new"])}
+            digest_tokens = report["digest_new"]["model"]
 
         report["mcp_ask"] = {}
         for name, src in (("old", old), ("new", new)):
@@ -181,15 +198,17 @@ def main() -> None:
             empty = {"old": 0, "new": 0}
             for question in questions:
                 for name, src in (("old", old), ("new", new)):
-                    seconds, done = kin(src, ["ask", "--data-dir", str(copies[name]), "--config", str(config),
-                                              "--", question], env)
+                    seconds, done = kin(src, ["ask", "--data-dir", str(copies[name]), "--config",
+                                              str(new_config if name == "new" else config), "--", question], env)
                     times[name].append(seconds)
                     empty[name] += not done.stdout.strip()
             for name in ("old", "new"):
+                tokens = ledger_tokens(copies[name])
+                if name == "new":  # the digest's calls are reported on their own
+                    tokens = {k: tokens[k] - digest_tokens[k] for k in tokens}
                 report["kin_ask"][name] = {"seconds": summary(times[name], 2), "empty_answers": empty[name],
-                                           "model": ledger_tokens(copies[name])}
-            seconds, done = kin(new, ["digest", "--data-dir", str(copies["new"]), "--config", str(config)], env)
-            report["digest_new"] = {"seconds": round(seconds, 2), "output": done.stdout.strip()[-200:]}
+                                           "model": tokens,
+                                           "per_question": {k: round(v / len(questions)) for k, v in tokens.items()}}
     text = json.dumps(report, indent=2)
     print(text)
     if a.out:
