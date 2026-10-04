@@ -1425,17 +1425,19 @@ _COMPLETENESS = re.compile(r"\b(how many|how much|how often|list|all|every|each|
 
 
 def _render_evidence_sources(stores, results, warnings, *, budget: int, client: str | None,
-                             evaluation_time: str, trusted_only: bool = False) -> tuple[str, int]:
+                             evaluation_time: str, trusted_only: bool = False,
+                             question: str = "") -> tuple[str, int]:
     """Graph-local sections in `kin ask`'s form: each graph's standing directives,
     then its matching nodes in full, dated and oldest first, each named by its
     title and the ref show and edit accept. One total budget is split across
     the graphs that contribute. Returns the text and how many nodes did not fit."""
-    from .answer import assemble, standing_directives
+    from .answer import assemble, question_profiles, standing_directives
     from .retrieve import GRAPH_DATA_NOTE, _estimate_tokens, _trusted_context_nodes, build_trust_note, graph_text
 
     by_graph = {graph: [] for graph in stores}
     for row in results:
-        by_graph[row["_graph_source"]].append(row)
+        if (row.get("extra") or {}).get("kind") != "entity-profile":
+            by_graph[row["_graph_source"]].append(row)
     contributing = [graph for graph in stores if by_graph[graph]]
     if not contributing:
         return "", 0
@@ -1471,8 +1473,10 @@ def _render_evidence_sources(stores, results, warnings, *, budget: int, client: 
         directives = _trusted_context_nodes(
             stores[graph], _scope_results(standing_directives(stores[graph]), client),
             trusted_only=trusted_only, evaluation_time=evaluation_time)
+        profiles = (question_profiles(stores[graph], question)
+                    if question and not trusted_only and _get_config().ask.profiles else None)
         assembly = assemble(by_graph[graph], directives, max(per_budget - _estimate_tokens(prefix), 250),
-                            label=label)
+                            label=label, profiles=profiles)
         omitted += assembly.omitted
         sections.append(prefix + assembly.text)
     return preamble + "\n\n".join(sections), omitted
@@ -2109,7 +2113,7 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
             budget = max_tokens if max_tokens > 0 else context_budget(
                 config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary")
             evidence, omitted = _render_evidence_sources(
-                stores, results, warnings, budget=budget, client=client, evaluation_time=now)
+                stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
             header = f"[{qtype} question] Today's date: {now[:10]}"
             coverage = coverage_note(complete, omitted, saturated)
             if llm is None:

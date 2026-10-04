@@ -19,7 +19,12 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   the conversation date), including what the assistant recommended. `kin ask`
   lists retrieved facts by date above the conversation excerpts. A fact is a
   sentence where an excerpt is a page, so they let `kin ask` answer from a
-  small context; the pass reads each conversation in full once.
+  small context; the pass reads each conversation in full once. From the facts
+  it also writes a profile of each person they are mostly about (what was
+  recorded, then conclusions marked likely), rebuilt when those facts change
+  and removed with a retracted conversation; `kin ask` shows the profiles of
+  the people a question names, except for dates, counts, orderings and
+  summaries, where the dated evidence is the better source.
 - A conversation file entry may carry `"expires": "YYYY-MM-DD"` (its nodes and
   everything derived from them stop surfacing after that date) or
   `"retracted": true` (it, its summary and facts, and directives no other
@@ -37,7 +42,9 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   within 5,000 tokens for a single answer and 16,000 for counts, lists,
   orderings, advice and judgements (summaries half again; the wide budget too when the
   graph holds no facts). Conversation excerpts show only the messages that
-  share a word with the question, with one message either side. A question
+  share a word with the question, with one message either side, and relative
+  dates in them carry the date they mean ("next month [= October 2023]"). In
+  a terminal the answer is shown sentence by sentence as it is written. A question
   that points at a time ("10 days ago", "last month") brings that span
   forward; a count lists facts ahead of excerpts; a question naming several
   things searches for each. Previously it saw five results truncated to 500

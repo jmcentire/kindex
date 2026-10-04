@@ -170,6 +170,12 @@ def retract_conversation(store: Store, conversation_id: str) -> int:
     for node in nodes:
         store.delete_node(node["id"])
     removed = len(nodes) + _release_directives(store, conversation_id)
+    for row in store.conn.execute(
+            "SELECT id FROM nodes WHERE json_extract(extra, '$.kind') = 'entity-profile'").fetchall():
+        profile = store.get_node(row[0])
+        if profile and conversation_id in ((profile.get("extra") or {}).get("conversations") or []):
+            store.delete_node(profile["id"])  # rebuilt from what remains by the next digest
+            removed += 1
     done = _digest_record(store)
     if conversation_id in done:
         del done[conversation_id]
@@ -437,4 +443,105 @@ def backfill_digests(store: Store, config, ledger=None, *, max_chars: int = 400_
         done[cid] = key
         store.set_meta("conversation_digests", json.dumps(done, sort_keys=True))
         count += 1
+    if getattr(getattr(config, "conversations", None), "facts", False):
+        build_profiles(store, config, ledger)
     return count
+
+
+PROFILE_MIN_FACTS = 8
+PROFILE_MAX_SUBJECTS = 6
+PROFILE_MAX_CHARS = 160_000
+
+PROFILE_PROMPT = """Below are dated facts recorded from conversations about {subject}{who}. Write a profile of {subject} that lets someone answer questions about them later without the conversations.
+
+First, what was recorded, as short bullets with dates, under these headings where there is anything to say: Identity and background; Relationships (partner and relationship status, family, friends, pets); Work and education; Home and places (where they live, places they have been); Interests and activities; Preferences and dislikes; Values, beliefs and personality; Health and habits; Plans and goals; Possessions. When something changed, give the latest state and the earlier one with dates.
+
+Then "Likely inferences": conclusions a careful reader would draw that the facts do not state outright (for example "likely single: said adoption would be hard as a single parent (2023-05-25)", "lives in Connecticut: adopted from a shelter in Stamford"), each marked likely and with its clue.
+
+Use only these facts. At most 450 words.
+
+Facts:
+{facts}"""
+
+
+def _profile_subjects(store: Store) -> dict[str, list[dict]]:
+    rows = store.conn.execute(
+        "SELECT id FROM nodes WHERE json_extract(extra, '$.kind') = 'conversation-fact'").fetchall()
+    from .store import node_expired
+
+    by: dict[str, list[dict]] = {}
+    for node in (store.get_node(r[0]) for r in rows):
+        if not node or node_expired(node):
+            continue
+        subject = " ".join(str((node.get("extra") or {}).get("subject") or "").split())
+        if subject and subject.lower() not in ("assistant", "unknown", "none", "n/a"):
+            by.setdefault(subject.lower(), []).append(node)
+    return by
+
+
+def build_profiles(store: Store, config, ledger=None) -> int:
+    """A profile of each person the conversation facts are mostly about (the
+    user, or the people in a conversation between friends), written once from
+    their facts and kept until those facts change. `kin ask` shows the profiles
+    of the people a question names, which answers a judgement ("would she be
+    considered religious?") or a request for advice from a few hundred tokens
+    instead of every excerpt. Returns the number written."""
+    from .answer import BudgetExhausted, _call
+    from .llm import get_client
+
+    if not config.llm.enabled or (ledger is not None and not ledger.can_spend()):
+        return 0
+    subjects = _profile_subjects(store)
+    ranked = sorted((k for k, v in subjects.items() if len(v) >= PROFILE_MIN_FACTS),
+                    key=lambda k: -len(subjects[k]))[:PROFILE_MAX_SUBJECTS]
+    existing = {
+        str((n.get("extra") or {}).get("entity") or "").lower(): n
+        for n in (store.get_node(r[0]) for r in store.conn.execute(
+            "SELECT id FROM nodes WHERE json_extract(extra, '$.kind') = 'entity-profile'").fetchall())
+        if n
+    }
+    for name, node in existing.items():
+        if name not in ranked:
+            store.delete_node(node["id"])
+    client = None
+    written = 0
+    for subject in ranked:
+        facts = sorted(subjects[subject], key=lambda n: (str((n.get("extra") or {}).get("fact_date") or ""),
+                                                          n.get("prov_when") or ""))
+        key = hashlib.sha256(json.dumps(sorted(n["id"] for n in facts)).encode()).hexdigest()[:24]
+        old = existing.get(subject)
+        if old and (old.get("extra") or {}).get("key") == key:
+            continue
+        if client is None:
+            client = get_client(config, timeout=config.ask.timeout_seconds, retries=3)
+            if client is None:
+                return written
+        display = next((str((n.get("extra") or {}).get("subject")) for n in facts), subject)
+        lines = [f"- {(n.get('extra') or {}).get('fact_date') or n.get('prov_when') or 'undated'}: "
+                 f"{n.get('content') or n.get('title') or ''}" for n in facts]
+        text = "\n".join(lines)[-PROFILE_MAX_CHARS:]
+        who = " (the user)" if subject == "user" else ""
+        try:
+            profile = _call(client, config, system=None, ledger=ledger, purpose="conversation-profile",
+                            user=PROFILE_PROMPT.format(subject=display, who=who, facts=text),
+                            effort="low", max_tokens=8000)
+        except BudgetExhausted:
+            return written
+        except Exception:
+            continue
+        if not profile.strip():
+            continue
+        expiries = [(n.get("extra") or {}).get("expires") for n in facts if (n.get("extra") or {}).get("expires")]
+        extra = {"kind": "entity-profile", "entity": display, "key": key,
+                 "conversations": sorted({str((n.get("extra") or {}).get("conversation_id") or n.get("prov_source"))
+                                          for n in facts})}
+        if expiries:
+            extra["expires"] = min(expiries)  # rebuilt without the expired facts by the next digest
+        nid = "convprofile-" + hashlib.sha256(subject.encode()).hexdigest()[:16]
+        if store.get_node(nid):
+            store.delete_node(nid)
+        store.add_node(node_id=nid, title=f"Profile of {display}", content=profile.strip(), node_type="document",
+                       prov_source="conversation-profile", prov_activity="conversation-digest",
+                       prov_when=max((n.get("prov_when") or "" for n in facts), default=None) or None, extra=extra)
+        written += 1
+    return written

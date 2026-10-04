@@ -326,6 +326,7 @@ class AskConfig(BaseModel):
     context_tokens: int = Field(default=5000, ge=1000, le=400000)  # evidence budget for a single-answer question
     wide_context_tokens: int = Field(default=16000, ge=1000, le=400000)  # counts, lists, orderings, summaries, advice
     excerpt: bool = True             # show only the messages of an excerpt that bear on the question
+    profiles: bool = True            # show the profiles of the people a question is about (`kin digest` writes them)
     rules: Literal["intent", "all"] = "intent"  # answering rules: those for the kind of question, or all
     samples: int = Field(default=1, ge=1, le=9)  # independent answers; with more than one, an adjudication pass picks
     readings: bool = False           # answer each plausible reading when the answer depends on it

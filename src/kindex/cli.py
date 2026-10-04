@@ -3763,12 +3763,15 @@ def cmd_ask(args):
         team = None
         if getattr(args, "context_file", None):
             team = Path(args.context_file).read_text().splitlines()
-        result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None), team=team)
+        # In a terminal the answer is shown sentence by sentence as it is written.
+        stream = (lambda text: print(text, end="", flush=True)) if sys.stdout.isatty() else None
+        result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None), team=team,
+                                 on_text=stream)
     except Exception as exc:
         print(f"Answer failed ({safe_error(exc)}); showing search results.", file=sys.stderr)
         result = None
     if result is not None:
-        print(result.answer)
+        print("" if result.streamed else result.answer)
         if result.omitted or result.truncated:
             print(f"Note: {result.omitted} retrieved item(s) did not fit in the context"
                   f"{f' and {result.truncated} were shortened' if result.truncated else ''} "

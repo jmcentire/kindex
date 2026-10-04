@@ -563,3 +563,68 @@ def test_judgement_questions_get_room_for_every_clue():
         intent, needs_all = answer_mod.classify_question(q)
         assert answer_mod.needs_breadth(q, intent, needs_all), q
     assert not answer_mod.needs_breadth("What did Caroline research?", "fact", False)
+
+
+def test_relative_dates_in_excerpts_are_resolved_against_the_conversation_date():
+    from datetime import datetime
+
+    when = datetime(2023, 9, 17, 14, 0)  # a Sunday
+    out = answer_mod.annotate_dates("Let's surf next month. I read it last year. We met yesterday, "
+                                    "two weeks ago and a couple of days ago. This summer was fun.", when)
+    assert "next month [= October 2023]" in out and "last year [= 2022]" in out
+    assert "yesterday [= 2023-09-16]" in out and "two weeks ago [= around 2023-09-03]" in out
+    assert "a couple of days ago [= 2023-09-15]" in out
+    assert "This summer was fun." in out  # vague: left alone
+    node = {"id": "c", "content": "user: we went yesterday", "prov_when": "2023-09-17",
+            "extra": {"conversation_id": "x"}}
+    assert "yesterday [= 2023-09-16]" in answer_mod.assemble([node], [], 1000).text
+
+
+def test_profiles_go_with_questions_about_what_a_person_is_like():
+    assert answer_mod.wants_profile("Would Caroline be considered religious?", "fact")
+    assert answer_mod.wants_profile("Can you recommend a restaurant?", "preference")
+    assert answer_mod.wants_profile("What does Caroline do for work?", "fact")
+    assert not answer_mod.wants_profile("How many days ago did I meet Emma?", "temporal")
+    assert not answer_mod.wants_profile("How many plants did I buy?", "aggregation")
+
+
+def test_a_streamed_answer_arrives_by_sentence_and_redacted(monkeypatch):
+    from kindex import llm
+
+    secret = "ghp_" + "z" * 36
+    deltas = ["Melanie ran ", "the race on 20 May 2023. ", f"Her token was {secret}. ", "Done"]
+    events = [{"type": "response.created"}] + [{"type": "response.output_text.delta", "delta": d} for d in deltas]
+    events.append({"type": "response.completed", "response": {
+        "output_text": "".join(deltas), "usage": {"input_tokens": 3, "output_tokens": 2}}})
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            for e in events:
+                yield f"event: {e['type']}\n".encode()
+                yield f"data: {json.dumps(e)}\n".encode()
+                yield b"\n"
+
+    sent = {}
+
+    def urlopen(request, timeout=None):
+        sent.update(json.loads(request.data))
+        return Stream()
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("KX_TEST_KEY", "placeholder")
+    client = llm.get_client(Config(llm=LLMConfig(enabled=True, provider="openai", model="m",
+                                                 api_key_env="KX_TEST_KEY")))
+    shown = []
+    out = client.messages.create(model="m", max_tokens=100, messages=[{"role": "user", "content": "hi"}],
+                                 on_text=shown.append)
+    assert sent["stream"] is True
+    assert shown[0] == "Melanie ran the race on 20 May 2023."
+    assert all(secret not in s for s in shown) and any("REDACTED" in s or "[" in s for s in shown[1:])
+    assert "".join(shown).endswith("Done")
+    assert secret not in out.content[0].text and out.content[0].text.startswith("Melanie ran")

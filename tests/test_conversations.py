@@ -355,3 +355,53 @@ def test_expiry_reaches_chunks_and_everything_derived(store, tmp_path, monkeypat
     conv.backfill_digests(store, _cfg(tmp_path))
     directive = store.all_nodes(node_type="directive")[0]
     assert not node_expired(directive, today="2025-01-01")
+
+
+# ── Profiles: written once from the facts, shown for the people a question names ──
+
+def _facts(store, subject, n, cid="c1", start=1):
+    for i in range(start, start + n):
+        store.add_node(f"{subject} fact {i}", content=f"{subject} did thing {i}.", node_type="document",
+                       node_id=f"f-{subject}-{cid}-{i}", prov_activity="conversation-digest", prov_when="2024-03-10",
+                       extra={"kind": "conversation-fact", "subject": subject, "fact_date": f"2024-03-{i:02d}",
+                              "conversation_id": cid})
+
+
+def test_profiles_are_written_from_facts_and_kept_until_they_change(store, tmp_path, monkeypatch):
+    from kindex import llm
+
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        usage = SimpleNamespace(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0,
+                                cache_read_input_tokens=0)
+        return SimpleNamespace(content=[SimpleNamespace(text="- Likely single.")], usage=usage)
+
+    monkeypatch.setattr(llm, "get_client", lambda config, **kw: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    _facts(store, "Caroline", 9)
+    _facts(store, "Sam", 3)  # too few facts for a profile
+    cfg = _cfg(tmp_path)
+    assert conv.build_profiles(store, cfg) == 1
+    profile = store.get_node("convprofile-" + __import__("hashlib").sha256(b"caroline").hexdigest()[:16])
+    assert profile["extra"]["entity"] == "Caroline" and "Likely single" in profile["content"]
+    assert "Caroline did thing 9." in calls[0]["messages"][0]["content"]
+    assert conv.build_profiles(store, cfg) == 0 and len(calls) == 1  # unchanged facts: no call
+    _facts(store, "Caroline", 1, start=10)
+    assert conv.build_profiles(store, cfg) == 1  # a new fact: rebuilt
+    conv.retract_conversation(store, "c1")
+    assert not [n for n in store.all_nodes(node_type="document")
+                if (n.get("extra") or {}).get("kind") == "entity-profile"]
+
+
+def test_a_question_gets_the_profiles_of_the_people_it_names(store):
+    from kindex import answer
+
+    for entity in ("Caroline", "user"):
+        store.add_node(f"Profile of {entity}", content=f"About {entity}.", node_type="document",
+                       node_id=f"p-{entity}", extra={"kind": "entity-profile", "entity": entity})
+    assert [p["id"] for p in answer.question_profiles(store, "Would Caroline be considered religious?")] == ["p-Caroline"]
+    assert [p["id"] for p in answer.question_profiles(store, "What should I cook for my partner?")] == ["p-user"]
+    assert answer.question_profiles(store, "What did Melanie paint?") == []
+    text = answer.assemble([], [], 2000, profiles=answer.question_profiles(store, "Is Caroline religious?")).text
+    assert "## Profiles" in text and "Profile of Caroline:\nAbout Caroline." in text

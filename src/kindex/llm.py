@@ -48,7 +48,12 @@ class _PrivateMessages:
     def create(self, **kwargs):
         if isinstance(kwargs.get("max_tokens"), int):
             kwargs["max_tokens"] = max_tokens_for(kwargs.get("model", ""), kwargs["max_tokens"])
-        response = self._messages.create(**redact(kwargs))
+        on_text = kwargs.pop("on_text", None)
+        kwargs = redact(kwargs)
+        if on_text is not None:
+            # Streamed text is redacted a sentence at a time, as the whole reply is below.
+            kwargs["on_text"] = lambda text: on_text(redact_text(text))
+        response = self._messages.create(**kwargs)
         blocks = getattr(response, "content", None)
         if isinstance(blocks, list):
             cleaned = []
@@ -197,6 +202,8 @@ class _OpenAIResponsesMessages:
         reasoning_effort: str | None = None,
         json_schema: dict | None = None,
         sample: int = 0,
+        cache_key: str | None = None,
+        on_text=None,
     ) -> SimpleNamespace:
         """``system`` becomes the request's instructions; ``reasoning_effort``
         sets a reasoning model's effort; ``json_schema`` asks for structured
@@ -223,6 +230,12 @@ class _OpenAIResponsesMessages:
         if json_schema:
             payload["text"] = {"format": {"type": "json_schema", "name": json_schema["name"],
                                           "schema": json_schema["schema"], "strict": True}}
+        if on_text is not None:
+            payload["stream"] = True
+        if cache_key:
+            # Requests sharing a prefix and this key are routed to the same
+            # prompt cache, so the shared prefix is read, not processed again.
+            payload["prompt_cache_key"] = cache_key
         request = urllib.request.Request(
             "https://api.openai.com/v1/responses",
             data=json.dumps(payload).encode("utf-8"),
@@ -243,7 +256,10 @@ class _OpenAIResponsesMessages:
                     raise RuntimeError("OpenAI API deadline exceeded")
             try:
                 with urllib.request.urlopen(request, timeout=wait) as response:
-                    data = json.loads(response.read().decode("utf-8"))
+                    if on_text is None:
+                        data = json.loads(response.read().decode("utf-8"))
+                    else:
+                        data = _read_stream(response, on_text)
                 break
             except urllib.error.HTTPError as exc:
                 pause = 5 * (attempt + 1)
@@ -273,6 +289,39 @@ class _OpenAIResponsesMessages:
             content=[SimpleNamespace(text=redact_text(_extract_openai_text(data)))],
             usage=usage_obj,
         )
+
+
+_SENTENCE_END = re.compile(r"[.!?:](?=\s)|\n")
+
+
+def _read_stream(response, on_text) -> dict:
+    """A streamed Responses API reply: each complete sentence of the answer
+    goes to `on_text` as it arrives; returns the final response document."""
+    buffer, final = "", None
+    for raw in response:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            event = json.loads(line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        kind = event.get("type")
+        if kind == "response.output_text.delta":
+            buffer += event.get("delta") or ""
+            ends = [m.end() for m in _SENTENCE_END.finditer(buffer)]
+            if ends:
+                on_text(buffer[:ends[-1]])
+                buffer = buffer[ends[-1]:]
+        elif kind == "response.completed":
+            final = event.get("response") or {}
+        elif kind in ("response.failed", "error", "response.incomplete"):
+            raise RuntimeError("OpenAI API stream ended without a response")
+    if buffer:
+        on_text(buffer)
+    if final is None:
+        raise RuntimeError("OpenAI API stream ended without a response")
+    return final
 
 
 class _OpenAIResponsesClient:

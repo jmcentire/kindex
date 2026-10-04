@@ -8,8 +8,9 @@ then works on its own copy of that store, and the new tree's copy is digested
 first (`kin digest`, with its default settings), as it would be after a user
 runs it once. MCP `ask` is timed in-process with no
 model call (the new tool makes none unless answer=True). `kin ask` runs as a
-command per question with the configured model, as a user would run it, so
-its time includes interpreter start-up and the provider's latency. Search is
+command per question in a pseudo-terminal, as a user would run it, so its time
+includes interpreter start-up and the provider's latency; the time to the
+first printed text is reported too (a tree that streams shows it sooner). Search is
 full-text only (no embedding provider is configured), the same for both.
 
   git worktree add ../kindex-main origin/main
@@ -91,6 +92,40 @@ def kin(src: Path, args: list[str], env: dict) -> tuple[float, subprocess.Comple
     t0 = time.perf_counter()
     done = subprocess.run([sys.executable, "-m", "kindex.cli", *args], env=env, capture_output=True, text=True)
     return time.perf_counter() - t0, done
+
+
+def kin_tty(src: Path, args: list[str], env: dict) -> tuple[float, float, str]:
+    """`kin` run in a pseudo-terminal, as a person runs it: (seconds to the first
+    printed text, seconds to the end, output). A tree that streams its answer
+    shows text before it finishes."""
+    import os as _os
+    import pty
+    import select
+
+    master, slave = pty.openpty()
+    t0 = time.perf_counter()
+    proc = subprocess.Popen([sys.executable, "-m", "kindex.cli", *args], env={**env, "PYTHONPATH": str(src)},
+                            stdin=subprocess.DEVNULL, stdout=slave, stderr=subprocess.DEVNULL)
+    _os.close(slave)
+    first, chunks = None, []
+    while True:
+        ready, _, _ = select.select([master], [], [], 0.05)
+        if ready:
+            try:
+                data = _os.read(master, 4096)
+            except OSError:
+                data = b""
+            if not data:
+                break
+            chunks.append(data)
+            if first is None and data.strip():
+                first = time.perf_counter() - t0
+        elif proc.poll() is not None:
+            break
+    proc.wait()
+    _os.close(master)
+    total = time.perf_counter() - t0
+    return (first if first is not None else total), total, b"".join(chunks).decode("utf-8", "replace")
 
 
 def ledger_tokens(data_dir: Path) -> dict:
@@ -195,18 +230,23 @@ def main() -> None:
             report["kin_ask"] = {}
             # Alternate the trees per question so provider drift hits both alike.
             times: dict[str, list[float]] = {"old": [], "new": []}
+            firsts: dict[str, list[float]] = {"old": [], "new": []}
             empty = {"old": 0, "new": 0}
             for question in questions:
                 for name, src in (("old", old), ("new", new)):
-                    seconds, done = kin(src, ["ask", "--data-dir", str(copies[name]), "--config",
-                                              str(new_config if name == "new" else config), "--", question], env)
+                    first, seconds, out = kin_tty(src, ["ask", "--data-dir", str(copies[name]), "--config",
+                                                        str(new_config if name == "new" else config), "--", question],
+                                                  env)
                     times[name].append(seconds)
-                    empty[name] += not done.stdout.strip()
+                    firsts[name].append(first)
+                    empty[name] += not out.strip()
             for name in ("old", "new"):
                 tokens = ledger_tokens(copies[name])
                 if name == "new":  # the digest's calls are reported on their own
                     tokens = {k: tokens[k] - digest_tokens[k] for k in tokens}
-                report["kin_ask"][name] = {"seconds": summary(times[name], 2), "empty_answers": empty[name],
+                report["kin_ask"][name] = {"seconds": summary(times[name], 2),
+                                           "first_text_seconds": summary(firsts[name], 2),
+                                           "empty_answers": empty[name],
                                            "model": tokens,
                                            "per_question": {k: round(v / len(questions)) for k, v in tokens.items()}}
     text = json.dumps(report, indent=2)
