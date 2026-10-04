@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from .config import Config
-from .llm import calculate_cost, get_client
+from .llm import calculate_cost, get_client, response_text
 from .store import Store, node_expired
 
 _RRF_K = 60
@@ -168,7 +168,7 @@ def _call(client, config: Config, *, system: str | None, user: str, effort: str,
     if ledger is not None:
         ledger.record(**calculate_cost(config.llm.model, response.usage), model=config.llm.model,
                       purpose=purpose)
-    return (response.content[0].text or "").strip()
+    return response_text(response).strip()
 
 
 def _parse_json(text: str) -> dict:

@@ -145,7 +145,9 @@ def main() -> None:
         config = root / "kin.yaml"
         config.write_text(json.dumps({
             "llm": {"enabled": not a.no_llm, "provider": "openai", "model": a.model, "api_key_env": a.key_env},
-            "budget": {"daily": 20, "weekly": 20, "monthly": 20},
+            # Kindex costs a model it has no price for at the highest known rate;
+            # the cap must not cut the measurement short.
+            "budget": {"daily": 10000, "weekly": 10000, "monthly": 10000},
         }))
         env = {k: v for k, v in os.environ.items() if not k.startswith("KIN")}
         env["HOME"] = str(root / "home")
