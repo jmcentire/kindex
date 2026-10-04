@@ -787,7 +787,10 @@ def annotate_dates(text: str, when: datetime | None) -> str:
         return None
 
     def sub(match):
-        resolved = resolve(match.group(0))
+        try:
+            resolved = resolve(match.group(0))
+        except (ValueError, OverflowError):  # "7,000 years ago" names no calendar date
+            resolved = None
         return f"{match.group(0)} [= {resolved}]" if resolved else match.group(0)
 
     return _RELATIVE.sub(sub, text)

@@ -575,6 +575,7 @@ def test_relative_dates_in_excerpts_are_resolved_against_the_conversation_date()
     assert "yesterday [= 2023-09-16]" in out and "two weeks ago [= around 2023-09-03]" in out
     assert "a couple of days ago [= 2023-09-15]" in out
     assert "This summer was fun." in out  # vague: left alone
+    assert answer_mod.annotate_dates("Pottery began 7000 years ago.", when) == "Pottery began 7000 years ago."
     node = {"id": "c", "content": "user: we went yesterday", "prov_when": "2023-09-17",
             "extra": {"conversation_id": "x"}}
     assert "yesterday [= 2023-09-16]" in answer_mod.assemble([node], [], 1000).text
