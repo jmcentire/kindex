@@ -14,4 +14,4 @@ Load relevant context from the knowledge graph at the start of a session.
 3. Review any active constraints or watches that may be relevant
 4. Present a brief orientation to the user: what Kindex knows about this project, key connections, and any operational nodes that apply
 
-Keep the orientation concise (3-5 lines). The user wants to know what's relevant, not a full dump.
+Keep the orientation concise: the user wants to know what's relevant, not a full dump.

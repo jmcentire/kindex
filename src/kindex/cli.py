@@ -3669,8 +3669,9 @@ def cmd_embed(args):
                       f"active nodes, {result['embedding_count']} embedded")
                 print(f"Calibrated at: {result['calibrated_at']}")
                 enforce = store.config.grounding.enforce
-                print(f"Enforcement: {'ON' if enforce else 'SHADOW MODE '
-                      '(verdict reported, no rows dropped)'}")
+                mode = ("ON" if enforce
+                        else "SHADOW MODE (verdict reported, no rows dropped)")
+                print(f"Enforcement: {mode}")
         elif action == "plan":
             print(f"Nodes: {result['nodes']}")
             print(f"Chunks: {result['chunks']}")
@@ -3860,7 +3861,7 @@ def _ask_llm(question: str, results: list[dict], config, ledger,
 
 def _ask_llm_flat(question, results, config, ledger, client, qtype):
     """Original flat message format (no caching)."""
-    from .llm import calculate_cost
+    from .llm import calculate_cost, response_text
 
     context_parts = []
     for r in results[:5]:
@@ -3887,14 +3888,14 @@ If the context doesn't contain enough information, say so honestly."""}],
         )
         cost_info = calculate_cost(config.llm.model, response.usage)
         ledger.record(**cost_info, model=config.llm.model, purpose="ask")
-        return response.content[0].text
+        return response_text(response)
     except Exception:
         return None
 
 
 def _ask_llm_cached(question, results, config, ledger, client, store, qtype):
     """Three-tier cached message format with cache_control breakpoints."""
-    from .llm import calculate_cost
+    from .llm import calculate_cost, response_text
     from .retrieve import (build_codebook_index, format_tier2,
                            generate_codebook, predict_tier2)
 
@@ -3925,9 +3926,8 @@ def _ask_llm_cached(question, results, config, ledger, client, store, qtype):
 
     style = _STYLE_HINTS.get(qtype, _STYLE_HINTS["exploratory"])
 
-    # Min cacheable tokens: 1024 for Haiku, 2048 for larger models
-    model_lower = config.llm.model.lower()
-    min_cache = 1024 if "haiku" in model_lower else 2048
+    from .llm import min_cacheable_tokens
+    min_cache = min_cacheable_tokens(config.llm.model)
 
     # Build system blocks with cache_control breakpoints
     tier1_content = _SYSTEM_PREAMBLE + codebook_text
@@ -3972,7 +3972,7 @@ def _ask_llm_cached(question, results, config, ledger, client, store, qtype):
         )
         cost_info = calculate_cost(config.llm.model, response.usage)
         ledger.record(**cost_info, model=config.llm.model, purpose="ask")
-        return response.content[0].text
+        return response_text(response)
     except Exception:
         return None
 
@@ -4087,7 +4087,7 @@ def cmd_import_graph(args):
         filepath = Path(args.filepath)
         text = filepath.read_text()
         if filepath.suffix == ".jsonl" or args.format == "jsonl":
-            items = [json.loads(line) for line in text.splitlines() if line.strip()]
+            items = [json.loads(line) for line in text.split("\n") if line.strip()]
         else:
             data = json.loads(text)
             items = data if isinstance(data, list) else [data]
@@ -6448,7 +6448,7 @@ def cmd_setup_claude_md(args):
         claude_md = Path.home() / ".claude" / "CLAUDE.md"
         if claude_md.exists():
             existing = claude_md.read_text()
-            if "Kindex (REQUIRED" in existing or "kindex MCP tools" in existing:
+            if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print("Kindex directives already present in CLAUDE.md")
                 return
             with open(claude_md, "a") as f:
@@ -6476,7 +6476,7 @@ def cmd_setup_agents_md(args):
         agents_md = cfg.codex_path / "AGENTS.md" if getattr(args, "global_install", False) else Path.cwd() / "AGENTS.md"
         if agents_md.exists():
             existing = agents_md.read_text()
-            if "Kindex (REQUIRED" in existing or "kindex MCP tools" in existing:
+            if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {agents_md}")
                 return
             with open(agents_md, "a") as f:
@@ -6519,7 +6519,7 @@ def cmd_setup_gemini_md(args):
         gemini_md = cfg.gemini_path / "GEMINI.md"
         if gemini_md.exists():
             existing = gemini_md.read_text()
-            if "Kindex (REQUIRED" in existing or "kindex MCP tools" in existing:
+            if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {gemini_md}")
                 return
             with open(gemini_md, "a") as f:
@@ -6670,22 +6670,25 @@ def cmd_setup_merge(args):
         )
 
 
+# Headings an installed block may carry (current and earlier), so a re-install
+# never appends a second copy.
+_KINDEX_BLOCK_MARKERS = ("## Kindex memory", "Kindex (REQUIRED", "kindex MCP tools")
+
+
 def _kindex_claude_md_block() -> str:
     """Generate the recommended CLAUDE.md block for kindex integration."""
     return """\
-## Kindex (REQUIRED -- follow these in every session)
+## Kindex memory
 
-Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
-`show`, `link`, `list_nodes`, `status`, `ask`, `suggest`, `learn`, `graph_stats`, \
-`changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `remind_create`, \
-`remind_exec`) are always available. Use them.
+Kindex is a persistent knowledge graph the user relies on as memory across \
+sessions. Its tools come from the `kindex` MCP server; use them as described below.
 
 ### Session lifecycle (do this every session)
 1. **Start**: call `tag_start` with a name and focus for the current task, OR \
 `tag_resume` if continuing previous work
 2. **Policy**: if the repo has `.kin/config`, treat it as tracked project context. \
 Run `kin policy check --event agent-start` when shell access is available.
-3. **During**: follow the capture rules below -- this is the whole point of kindex
+3. **During**: capture as described below
 4. **Segment**: when switching topics, call `tag_update` with your tag's `name` and `action=segment`, \
 summarizing what was done
 5. **End**: call `tag_update` with your tag's `name`, `action=end`, and a summary before the session closes
@@ -6737,13 +6740,10 @@ multiple concepts at once
 def _kindex_agents_md_block() -> str:
     """Generate the recommended AGENTS.md block for Codex/kindex integration."""
     return """\
-## Kindex (REQUIRED -- follow these in every session)
+## Kindex memory
 
-Kindex is a persistent knowledge graph. MCP tools (`search`, `add`, `context`, \
-`show`, `link`, `list_nodes`, `status`, `ask`, `suggest`, `learn`, `graph_stats`, \
-`changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_add`, \
-`task_done`, `task_list`, `remind_create`, `remind_exec`) are available through \
-the `kindex` MCP server. Use them proactively.
+Kindex is a persistent knowledge graph the user relies on as memory across \
+sessions. Use the tools of the `kindex` MCP server proactively, as described below.
 
 ### Startup environment
 - At the start of each session, source `~/.profile` into the shell environment before running project commands when feasible.
@@ -7675,7 +7675,7 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument("--max-attempts", type=int, default=16, help="At most 1-16 deliveries within a 20 second budget")
     reconcile_parser.set_defaults(func=cmd_integration_reconcile)
 
-    s = sub.add_parser("repo-memory", help="Publish/import selected shareable evidence in .kin/knowledge.json")
+    s = sub.add_parser("repo-memory", help="Publish/import selected shareable evidence in .kin/knowledge.jsonl (or existing .json)")
     rs = s.add_subparsers(dest="repo_memory_action", required=True)
     for action in ("publish", "import"):
         repo_parser = rs.add_parser(action)

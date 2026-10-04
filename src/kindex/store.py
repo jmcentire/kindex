@@ -414,12 +414,46 @@ class Store:
             try:
                 self._init_schema()
                 self._check_profile_stamp()
+                self._ensure_graph_identity(required=False)
             except BaseException:
                 conn, self._conn = self._conn, None
                 if conn is not None:
                     conn.close()
                 raise
         return self._conn
+
+    def _ensure_graph_identity(self, required: bool = True) -> str | None:
+        """Stamp a stable UUID on a writable graph; concurrent first opens agree.
+
+        Opening a graph that predates identities must not wait on another
+        process's write lock (hook stores have a sub-second budget), so an
+        open that finds the graph busy leaves it unstamped and a later open,
+        or a caller that needs the identity (``required``), stamps it.
+        """
+        row = self._conn.execute("SELECT value FROM meta WHERE key='graph_id'").fetchone()
+        if row:
+            return row["value"]
+        try:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES ('graph_id', ?)",
+                (str(uuid.uuid4()),))
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            self._conn.rollback()
+            if required:
+                raise
+            return None
+        return self.get_meta("graph_id")
+
+    def ensure_graph_identity(self) -> str:
+        """Return this writable graph's identity, stamping it now if needed."""
+        self.conn  # opening may already stamp it
+        return self._ensure_graph_identity(required=True) or ""
+
+    @property
+    def graph_id(self) -> str | None:
+        """Return persisted identity; reading never stamps a read-only graph."""
+        return self.get_meta("graph_id")
 
     def _check_profile_stamp(self) -> None:
         """Enforce the per-database profile stamp (meta key 'kin_profile').

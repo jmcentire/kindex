@@ -438,7 +438,7 @@ class AttentionConfig(BaseModel):
 
 
 class AdvocateConfig(BaseModel):
-    """Opt-in deep escalation to ~/Code/advocate (multi-persona adversarial review,
+    """Opt-in deep escalation to the Advocate CLI (multi-persona adversarial review,
     including the Helland architectural seat).
 
     OFF by default — the light path is a recommendation folded into Sim's note.
@@ -450,7 +450,7 @@ class AdvocateConfig(BaseModel):
     """
     enabled: bool = False
     # Shell command that runs Advocate: the review brief arrives on stdin and the
-    # Advocate JSON is expected on stdout. The real ~/Code/advocate writes JSON to
+    # Advocate JSON is expected on stdout. The real Advocate CLI writes JSON to
     # a FILE (-o), not stdout, so the verified wrapper (persona ids checked against
     # advocate v0.1.5 — the Helland seat is `helland`) is:
     #   sh -c 'f=$(mktemp); advocate review --stdin --no-color \
@@ -522,12 +522,24 @@ class SimConfig(BaseModel):
     # the prompt on stdin and writes the response on stdout to wire in the real
     # Jeremy-simulacrum, e.g. "~/.claude/skills/simulacrum/run.py".
     command: str = ""
+    # Env-var NAMES (never values), in preference order, that may hold the
+    # Anthropic key a simulacrum `command` uses. Only presence is checked before
+    # launch. Default is the vendor-standard name; set your own order in
+    # ~/.config/kindex/kin.yaml, e.g. [MY_ORG_ANTHROPIC_API_KEY, ANTHROPIC_API_KEY].
+    api_key_env: list[str] = Field(default_factory=lambda: ["ANTHROPIC_API_KEY"])
+
+    @field_validator("api_key_env", mode="before")
+    @classmethod
+    def _split_api_key_env(cls, value):
+        if isinstance(value, str):
+            return [n.strip() for n in value.split(",") if n.strip()]
+        return value
     command_timeout: int = 60
     # Tier 0 triage: skip enqueuing a review for confident banter/small-talk so the
     # machinery never spends on light back-and-forth. Rounds UP when unsure — only a
     # confidently-trivial window is skipped. Disable to review every gated tick.
     triage_banter: bool = True
-    # Deep escalation to ~/Code/advocate (with the Helland seat). Off by default.
+    # Deep escalation to Advocate (with the Helland seat). Off by default.
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
 
 
@@ -714,7 +726,9 @@ class Config(BaseModel):
 
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
-    project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
+    # Directories `kin ingest projects` scans. Empty by default: set your own
+    # roots in ~/.config/kindex/kin.yaml (see kin.sample.yaml).
+    project_dirs: list[str] = Field(default_factory=list)
     claude_dir: str = "~/.claude"
     codex_dir: str = "~/.codex"
     gemini_dir: str = "~/.gemini"

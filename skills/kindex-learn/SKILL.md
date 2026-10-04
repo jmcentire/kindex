@@ -9,7 +9,7 @@ Extract knowledge from the current conversation and add it to the graph.
 
 ## Instructions
 
-1. Summarize the key discoveries, decisions, and concepts from this session in 2-3 paragraphs
+1. Summarize the key discoveries, decisions, and concepts from this session; keep it under about 4,000 characters, because LLM extraction reads only the first 4,000
 2. Call the `learn` MCP tool with this summary text
 3. If specific decisions were made, call `add` for each one with `node_type: "decision"`
 4. If new connections between existing concepts were discovered, call `link` to create edges

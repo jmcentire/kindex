@@ -760,3 +760,36 @@ def test_command_output_is_bounded():
         "head -c 300000 /dev/zero | tr '\\0' x", shell=True, timeout=30, max_bytes=1000)
     assert code == 0
     assert len(stdout) == 1000 and set(stdout) == {"x"}
+
+
+# ── simulacrum command: which key env-var names count ──────────────────
+
+
+def _sim_command_config(tmp_path, **sim):
+    script = tmp_path / "simulacrum"
+    script.write_text("#!/bin/sh\ncat\n")
+    script.chmod(0o755)
+    return Config(data_dir=str(tmp_path / "data"), sim=SimConfig(command=str(script), **sim))
+
+
+def test_simulacrum_command_checks_standard_key_name_by_default(tmp_path, monkeypatch):
+    from kindex.supervisor import preflight
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ORG_ANTHROPIC_API_KEY", "org-key")
+    cfg = _sim_command_config(tmp_path)
+
+    assert cfg.sim.api_key_env == ["ANTHROPIC_API_KEY"]
+    assert preflight(cfg, "conv") == ("unavailable", "credential_unavailable")
+
+
+def test_simulacrum_command_honors_configured_key_names(tmp_path, monkeypatch):
+    from kindex.supervisor import preflight
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ORG_ANTHROPIC_API_KEY", "org-key")
+    cfg = _sim_command_config(
+        tmp_path, api_key_env="ORG_ANTHROPIC_API_KEY, ANTHROPIC_API_KEY")
+
+    assert cfg.sim.api_key_env == ["ORG_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"]
+    assert preflight(cfg, "conv") != ("unavailable", "credential_unavailable")

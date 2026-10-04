@@ -11,7 +11,7 @@ from typing import Any
 
 from .budget import BudgetLedger
 from .config import Config
-from .llm import _estimate_cost
+from .llm import _estimate_cost, response_text
 from .privacy import redact, redact_text
 from .privacy import redacting_print as print
 
@@ -20,7 +20,7 @@ def _get_client(config: Config, timeout: float | None = None):
     # Key resolution has ONE authority: llm.resolve_api_key. This used to do a
     # bare os.environ.get(config.llm.api_key_env), which silently broke every
     # install using the comma-separated fallback syntax that llm.py has always
-    # supported — a config of "JMC_OPENAI_API_KEY,OPENAI_API_KEY" looked up an
+    # supported — a config of "ORG_OPENAI_API_KEY,OPENAI_API_KEY" looked up an
     # env var of that literal name, found nothing, and fell back to keyword
     # extraction forever. Two resolvers for one fact is how that happened.
     from .llm import get_client, resolve_api_key
@@ -120,7 +120,7 @@ def llm_extract(
                       tokens_in=response.usage.input_tokens,
                       tokens_out=response.usage.output_tokens)
 
-        text_out = response.content[0].text
+        text_out = response_text(response)
         # Extract JSON from response
         if "```json" in text_out:
             text_out = text_out.split("```json")[1].split("```")[0]
@@ -398,7 +398,9 @@ def extract(
 
 # ── Session summarization ─────────────────────────────────────────────
 
-SESSION_SUMMARIZE_PROMPT = """Summarize this Claude Code session concisely in 2-3 sentences.
+SESSION_SUMMARIZE_PROMPT = """Summarize this Claude Code session in one short paragraph. The summary
+becomes the content of the session's node in a knowledge graph, where later sessions read
+it to recall what this one was about.
 
 SESSION TEXT:
 {text}
@@ -409,13 +411,13 @@ Address these questions in your summary:
 - What decisions were made?
 - What open questions remain?
 
-Return ONLY the summary text, no formatting or labels."""
+Return only the summary text, with no formatting or labels."""
 
 
 def llm_summarize_session(text: str, config: Config, ledger: BudgetLedger) -> str | None:
     """Use LLM to generate a concise summary of a session.
 
-    Returns a 2-3 sentence summary, or None if LLM unavailable.
+    Returns a short summary, or None if LLM unavailable.
     """
     if not ledger.can_spend():
         return None
@@ -442,6 +444,6 @@ def llm_summarize_session(text: str, config: Config, ledger: BudgetLedger) -> st
                       tokens_in=response.usage.input_tokens,
                       tokens_out=response.usage.output_tokens)
 
-        return redact_text(response.content[0].text.strip())
+        return redact_text(response_text(response).strip())
     except Exception:
         return None

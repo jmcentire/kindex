@@ -25,13 +25,14 @@ meaningless. The prompt pins Sim to a default-silent, high-bar supervisor whose
 common answer is "nothing to flag" and who only speaks when something would
 MATERIALLY change the direction of the work.
 
-The review weighs four lenses — DIRECTION (is the work itself sound), ALIGNMENT
+The review weighs three lenses — DIRECTION (is the work itself sound), ALIGNMENT
 (does it still serve what the USER actually asked, spirit over letter, a newer
 input can supersede an older one but an aside shouldn't redirect the whole plan),
-TRAJECTORY (if this continues, does it reach the goal or diverge; what are the
-side-effects; should the STRATEGY update), and ARCHITECTURE (judged against Pat
-Helland's doctrine — one authority per fact — with a calibration guardrail so it
-doesn't over-fire on mere layering).
+and TRAJECTORY (if this continues, does it reach the goal or diverge; what are the
+side-effects; should the STRATEGY update) — plus a DILIGENCE check that the plan
+was actually validated. Architecture is not judged here: an expensive-to-reverse
+decision trips ESCALATE, and the Advocate panel's Pat Helland seat (one authority
+per fact) renders that verdict.
 
 Effort is GRADUATED and self-calibrated by reading the window (Jeremy's
 incident-response rule: match spend to confirmed stakes, round up when unsure):
@@ -44,7 +45,7 @@ incident-response rule: match spend to confirmed stakes, round up when unsure):
   Tier 2  high-impact moves  -> the review self-rates `stakes` and sets `escalate`;
     (money, big workflow,       by default the note carries a light RECOMMENDATION
      irreversible/architecture) to run a deeper review. Only when sim.advocate is
-                                enabled does it actually invoke ~/Code/advocate (the
+                                enabled does it actually invoke Advocate (the
                                 multi-persona engine incl. the Helland seat), verify
                                 the findings against the window (drop hallucinations),
                                 and fold the survivors in — gated + cooldown-capped.
@@ -562,7 +563,7 @@ def call_sim(
         if not shutil.which(first):
             return None, {"status": "command_unavailable"}
         if "simulacrum" in first and not any(os.environ.get(name) for name in
-                ("ANTHROPIC_API_KEY", "WANDER_ANTHROPIC_API_KEY", "JMC_ANTHROPIC_API_KEY")):
+                sc.api_key_env):
             return None, {"status": "credential_unavailable"}
         # Opaque subprocesses cannot report reliable token usage. Reserve the
         # configured per-call allowance before launch, including failed calls.
@@ -611,7 +612,7 @@ def call_sim(
             max_tokens=sc.max_output_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        from .llm import calculate_cost
+        from .llm import calculate_cost, response_text
 
         cost = calculate_cost(model, response.usage)
         ledger.record(
@@ -621,7 +622,7 @@ def call_sim(
             cache_read_tokens=cost.get("cache_read_tokens", 0),
             conversation_id=conversation_id, estimate=est,
         )
-        parsed = _parse_sim(response.content[0].text)
+        parsed = _parse_sim(response_text(response))
     except Exception as exc:
         return None, {"status": "llm_error", "error": safe_error(exc)}
 
@@ -899,7 +900,7 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
 #
 # The default path is LIGHT: a high-stakes review sets `escalate` and the note
 # carries a recommendation. Only when sim.advocate.enabled is turned on does a
-# high-stakes escalation actually invoke ~/Code/advocate (the multi-persona
+# high-stakes escalation actually invoke Advocate (the multi-persona
 # adversarial engine, including the Helland seat). Because Advocate is multi-call,
 # its findings are run through an adversarial verify pass before surfacing — the
 # 2026-06-09 head-to-head experiment showed an unverified multi-call path smuggles
@@ -975,7 +976,7 @@ _ADVOCATE_DROP_SEVERITIES = {"low", "info"}  # keep only what could change direc
 def _parse_advocate_findings(text: str) -> list[str]:
     """Pull short finding strings out of Advocate's JSON output.
 
-    Matches the REAL ~/Code/advocate schema (verified 2026-09-02): `advocate
+    Matches the REAL Advocate CLI schema (verified 2026-09-02): `advocate
     review -o <file>` writes a full Review model dump — findings are NESTED under
     `persona_reports[].findings[]`, each {persona, severity, dimension, title,
     detail, evidence, recommendation}. Low/info findings are dropped (they don't
@@ -1109,7 +1110,7 @@ def _verify_findings(
             max_tokens=sc.max_output_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        from .llm import calculate_cost
+        from .llm import calculate_cost, response_text
 
         cost = calculate_cost(model, response.usage)
         ledger.record(
@@ -1119,7 +1120,7 @@ def _verify_findings(
             cache_read_tokens=cost.get("cache_read_tokens", 0),
             conversation_id=conversation_id, estimate=0.0,
         )
-        parsed = _parse_sim(response.content[0].text)
+        parsed = _parse_sim(response_text(response))
     except Exception:
         return []
     keep = parsed.get("keep")
