@@ -10,6 +10,7 @@ import copy
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -47,7 +48,12 @@ class _PrivateMessages:
     def create(self, **kwargs):
         if isinstance(kwargs.get("max_tokens"), int):
             kwargs["max_tokens"] = max_tokens_for(kwargs.get("model", ""), kwargs["max_tokens"])
-        response = self._messages.create(**redact(kwargs))
+        on_text = kwargs.pop("on_text", None)
+        kwargs = redact(kwargs)
+        if on_text is not None:
+            # Streamed text is redacted a sentence at a time, as the whole reply is below.
+            kwargs["on_text"] = lambda text: on_text(redact_text(text))
+        response = self._messages.create(**kwargs)
         blocks = getattr(response, "content", None)
         if isinstance(blocks, list):
             cleaned = []
@@ -179,11 +185,32 @@ def is_configured(config: Config) -> bool:
 class _OpenAIResponsesMessages:
     """Small adapter that exposes the Anthropic-like messages.create shape."""
 
-    def __init__(self, api_key: str, timeout: float = 30):
+    def __init__(self, api_key: str, timeout: float = 30, retries: int = 0,
+                 deadline: float | None = None):
         self.api_key = api_key
         self.timeout = timeout
+        self.retries = retries
+        self.deadline = deadline
 
-    def create(self, *, model: str, max_tokens: int, messages: list[dict]) -> SimpleNamespace:
+    def create(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None = None,
+        reasoning_effort: str | None = None,
+        json_schema: dict | None = None,
+        sample: int = 0,
+        cache_key: str | None = None,
+        on_text=None,
+    ) -> SimpleNamespace:
+        """``system`` becomes the request's instructions; ``reasoning_effort``
+        sets a reasoning model's effort; ``json_schema`` asks for structured
+        output ({"name": ..., "schema": ...}). ``sample`` numbers independent
+        samples of the same request: the provider samples each call
+        independently, so it is not sent, but callers that cache responses
+        key on it."""
         messages = redact(messages)
         payload = {
             "model": model,
@@ -196,6 +223,19 @@ class _OpenAIResponsesMessages:
             ],
             "max_output_tokens": max_tokens,
         }
+        if system:
+            payload["instructions"] = redact_text(system)
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if json_schema:
+            payload["text"] = {"format": {"type": "json_schema", "name": json_schema["name"],
+                                          "schema": json_schema["schema"], "strict": True}}
+        if on_text is not None:
+            payload["stream"] = True
+        if cache_key:
+            # Requests sharing a prefix and this key are routed to the same
+            # prompt cache, so the shared prefix is read, not processed again.
+            payload["prompt_cache_key"] = cache_key
         request = urllib.request.Request(
             "https://api.openai.com/v1/responses",
             data=json.dumps(payload).encode("utf-8"),
@@ -205,13 +245,31 @@ class _OpenAIResponsesMessages:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            # Provider response bodies can echo prompts or authorization data.
-            # Status is sufficient for this adapter's fallback behavior.
-            raise RuntimeError(f"OpenAI API error {exc.code}") from None
+        # Rate limits and server errors are transient: a caller that asked for
+        # retries gets them with backoff, all inside its deadline when it set one.
+        stop = None if self.deadline is None else time.monotonic() + self.deadline
+        for attempt in range(self.retries + 1):
+            wait = self.timeout
+            if stop is not None:
+                wait = min(wait, stop - time.monotonic())
+                if wait <= 0:
+                    raise RuntimeError("OpenAI API deadline exceeded")
+            try:
+                with urllib.request.urlopen(request, timeout=wait) as response:
+                    if on_text is None:
+                        data = json.loads(response.read().decode("utf-8"))
+                    else:
+                        data = _read_stream(response, on_text)
+                break
+            except urllib.error.HTTPError as exc:
+                pause = 5 * (attempt + 1)
+                if ((exc.code == 429 or exc.code >= 500) and attempt < self.retries
+                        and (stop is None or time.monotonic() + pause < stop)):
+                    time.sleep(pause)
+                    continue
+                # Provider response bodies can echo prompts or authorization data.
+                # Status is sufficient for this adapter's fallback behavior.
+                raise RuntimeError(f"OpenAI API error {exc.code}") from None
 
         usage = data.get("usage") or {}
         cached = _nested_usage_value(
@@ -233,9 +291,60 @@ class _OpenAIResponsesMessages:
         )
 
 
+_SENTENCE_END = re.compile(r"[.!?](?=\s)|\n\s*\n")
+_OPEN_BLOCK = re.compile(r"-----BEGIN [^-\n]*-----")
+_CLOSE_BLOCK = re.compile(r"-----END [^-\n]*-----")
+
+
+def _releasable(buffer: str) -> int:
+    """How much of the streamed text can be shown now: up to the last sentence
+    or paragraph end, never inside an unclosed "-----BEGIN ...-----" block (a
+    private key spans lines and is redacted only whole), and never at a bare
+    line break or colon, where a header or key would be split from its value."""
+    ends = [m.end() for m in _SENTENCE_END.finditer(buffer)]
+    opened = [m.start() for m in _OPEN_BLOCK.finditer(buffer)]
+    if opened:
+        last_open = opened[-1]
+        if not _CLOSE_BLOCK.search(buffer, last_open):
+            ends = [e for e in ends if e <= last_open]
+    return ends[-1] if ends else 0
+
+
+def _read_stream(response, on_text) -> dict:
+    """A streamed Responses API reply: each complete sentence of the answer
+    goes to `on_text` as it arrives (see `_releasable`); returns the final
+    response document."""
+    buffer, final = "", None
+    for raw in response:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            event = json.loads(line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        kind = event.get("type")
+        if kind == "response.output_text.delta":
+            buffer += event.get("delta") or ""
+            cut = _releasable(buffer)
+            if cut:
+                on_text(buffer[:cut])
+                buffer = buffer[cut:]
+        elif kind == "response.completed":
+            final = event.get("response") or {}
+        elif kind in ("response.failed", "error", "response.incomplete"):
+            raise RuntimeError("OpenAI API stream ended without a response")
+    if buffer:
+        on_text(buffer)
+    if final is None:
+        raise RuntimeError("OpenAI API stream ended without a response")
+    return final
+
+
 class _OpenAIResponsesClient:
-    def __init__(self, api_key: str, timeout: float = 30):
-        self.messages = _OpenAIResponsesMessages(api_key, timeout)
+    def __init__(self, api_key: str, timeout: float = 30, retries: int = 0,
+                 deadline: float | None = None):
+        self.messages = _OpenAIResponsesMessages(api_key, timeout, retries, deadline)
 
 
 def _extract_openai_text(data: dict) -> str:
@@ -320,8 +429,13 @@ def response_text(response) -> str:
 DEFAULT_LLM_TIMEOUT_SECONDS = 60.0
 
 
-def get_client(config: Config, timeout: float | None = None):
-    """Get configured LLM client, or None if not available."""
+def get_client(config: Config, timeout: float | None = None, retries: int | None = None,
+               deadline: float | None = None):
+    """Get configured LLM client, or None if not available. ``timeout`` bounds
+    each request. ``retries`` is how many times a rate-limited or failed
+    request is retried; a caller that passes a timeout (a hook) gets none
+    unless it asks, and the OpenAI client retries only when asked. ``deadline`` bounds one call, retries and backoff
+    included; it defaults to the timeout when there are no retries."""
     if not config.llm.enabled:
         return None
     api_key, key_env = resolve_api_key(config)
@@ -335,8 +449,12 @@ def get_client(config: Config, timeout: float | None = None):
 
     provider = config.llm.provider.lower()
     if provider == "openai":
+        retries = retries or 0
         return _PrivateClient(_OpenAIResponsesClient(
-            api_key, timeout if timeout is not None else 30))
+            api_key, timeout if timeout is not None else 30, retries,
+            deadline if deadline is not None else (timeout if not retries else None)))
+    if retries is None:
+        retries = 0 if timeout is not None else 2
 
     if provider != "anthropic":
         print(
@@ -351,7 +469,7 @@ def get_client(config: Config, timeout: float | None = None):
         return _PrivateClient(anthropic.Anthropic(
             api_key=api_key,
             timeout=timeout if timeout is not None else DEFAULT_LLM_TIMEOUT_SECONDS,
-            max_retries=0 if timeout is not None else 2,
+            max_retries=retries,
         ))
     except ImportError:
         print("Warning: LLM enabled but 'anthropic' package not installed. "

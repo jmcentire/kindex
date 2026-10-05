@@ -265,8 +265,8 @@ Nodes have types, weights, domains, and audiences. Edges carry provenance and de
 ### Operational guardrails
 Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
 
-### Cache-optimized LLM retrieval
-Three-tier prompt architecture with Anthropic prompt caching. Stable knowledge (codebook) is cached at 10% cost. Query-relevant context is predicted via graph expansion and cached per-topic. Only the question pays full price. Transparent — `kin ask` just works better and cheaper.
+### Answers from dated evidence
+`kin ask` answers in one model call from dated evidence: the matching nodes in chronological order with today's date and your standing directives, trimmed to the messages that bear on the question, within a small budget for a single fact and a wider one for counts, lists, orderings, summaries and advice. Conversation facts and per-person profiles written by `kin digest` let it answer from a few thousand tokens, and relative dates in the evidence arrive already resolved. In a terminal the answer streams as it is written. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
@@ -953,10 +953,12 @@ Retrieval pipeline:
   Embedding providers (configurable):
       voyage-context-4 (contextual chunks) | openai | gemini | local
 
-LLM cache tiers (kin ask):
-  Tier 1: codebook (stable node index)     <- cached @ 10% cost
-  Tier 2: query-relevant context           <- cached per-topic @ 10% cost
-  Tier 3: user question                    <- full price, tiny
+kin ask (answer.py), configured under `ask:`:
+  classify   the question's kind, from its wording          (ask.plan: an LLM planner instead)
+  retrieve   hybrid_search, one per named part, rank fusion (ask.top_k = 60)
+  assemble   dated, oldest first, excerpted + directives    (ask.context_tokens = 5000,
+                                                              ask.wide_context_tokens = 16000, ask.excerpt)
+  answer     one call, the rules for that kind              (ask.effort = medium, ask.rules, ask.samples)
 
 Reminders:
   reminders table (SQLite)    <- separate from knowledge graph
@@ -1011,7 +1013,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin add <text>` | Quick capture with auto-extraction and linking (--tags, --type) |
 | `kin show <id>` | Full node details with edges, provenance, and state |
 | `kin list` | List nodes (--type, --status, --tags, --audience, --mine, --limit) |
-| `kin ask <question>` | Question classification + LLM or context answer |
+| `kin ask <question>` | Planned searches + an answer from dated evidence (`--as-of` sets today's date); search results without an LLM |
 
 ### Knowledge Management
 | Command | Description |
