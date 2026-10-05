@@ -707,6 +707,27 @@ def test_dates_counted_from_an_event_are_left_alone():
     assert "[=" not in out
 
 
+def test_a_question_can_come_from_standard_input(tmp_path, monkeypatch):
+    import io
+
+    import kindex.answer as answer
+    import kindex.cli as cli
+
+    data = tmp_path / "data"
+    Store(Config(data_dir=str(data))).close()
+    asked = []
+
+    def record(store, question, *a, **kw):
+        asked.append(question)
+        return answer.AskResult(answer="ok")
+
+    monkeypatch.setattr(answer, "answer_question", record)
+    monkeypatch.setattr("sys.stdin", io.StringIO("Where did I go kayaking?\n"))
+    args = cli.build_parser().parse_args(["ask", "--data-dir", str(data), "--", "-"])
+    cli.cmd_ask(args)
+    assert asked == ["Where did I go kayaking?"]
+
+
 def test_a_failed_answer_falls_back_to_search_without_another_model_call(tmp_path, monkeypatch, capsys):
     import kindex.answer as answer
     import kindex.cli as cli

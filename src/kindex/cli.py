@@ -3754,6 +3754,10 @@ def cmd_ask(args):
     """
     store = _store(args)
     question = " ".join(args.question)
+    if args.question == ["-"]:
+        # Read from standard input, so a private question never appears in
+        # the process list.
+        question = sys.stdin.read().strip()
 
     # The answer pipeline (answer.py): planned searches, dated evidence in a
     # token budget, today's date, and answering rules. None without an LLM.
@@ -7645,7 +7649,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ask
     s = sub.add_parser("ask", help="Query the knowledge graph")
-    s.add_argument("question", nargs="+")
+    s.add_argument("question", nargs="+", help="The question; - reads it from standard input")
     s.add_argument("--as-of", dest="as_of", default=None,
                    help="Today's date for the answer (resolves 'now', 'ago'); defaults to the current date")
     s.add_argument("--context-file", dest="context_file", default=None,
