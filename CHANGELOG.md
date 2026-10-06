@@ -4,6 +4,8 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-06
+
 ### Added
 - `kindex-lite --repo PATH` starts an MCP endpoint bound to one repository's
   local graph, with no global/profile fallback, a fixed tool allowlist, and
