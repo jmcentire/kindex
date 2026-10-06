@@ -54,8 +54,8 @@ def test_public_command_counts_match_registered_surfaces():
     docs = (ROOT / "docs/index.html").read_text()
     mcp_source = (ROOT / "src/kindex/mcp_server.py").read_text()
     mcp_tree = ast.parse(mcp_source)
-    tool_count = sum(
-        1
+    tool_names = [
+        node.name
         for node in ast.walk(mcp_tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(
@@ -64,7 +64,12 @@ def test_public_command_counts_match_registered_surfaces():
             and decorator.func.id == "_tool"
             for decorator in node.decorator_list
         )
+    ]
+    tool_count = len(tool_names)
+    card = json.loads(
+        (ROOT / "docs/.well-known/mcp/server-card.json").read_text()
     )
+    card_tools = card["capabilities"]["tools"]
     choices = next(
         action.choices
         for action in build_parser()._actions
@@ -73,6 +78,8 @@ def test_public_command_counts_match_registered_surfaces():
 
     assert f"{tool_count} MCP Tools" in docs
     assert tool_count == 70
+    assert len(card_tools) == len(set(card_tools)), "Server card lists duplicate MCP tools"
+    assert set(card_tools) == set(tool_names)
     assert len(choices) >= 80
     assert "80+ CLI Commands" in docs
 

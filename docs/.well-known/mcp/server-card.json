@@ -121,7 +121,11 @@
       "task_execute",
       "task_get",
       "task_update",
-      "kinbase_sync"
+      "kinbase_sync",
+      "kinbase_status",
+      "kinbase_explain",
+      "kinbase_submit",
+      "candidate_create"
     ],
     "resources": [],
     "prompts": []
