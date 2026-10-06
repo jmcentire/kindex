@@ -5,6 +5,13 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 ## [Unreleased]
 
 ### Added
+- `kindex-lite --repo PATH` starts an MCP endpoint bound to one repository's
+  local graph, with no global/profile fallback, a fixed tool allowlist, and
+  repository-bound Kinbase operations. Local memory, tasks, sessions, and
+  coordination remain available without host-history ingestion or executable
+  reminders. `kinbase_submit` / `kin kinbase submit` submit explicit agent
+  evidence through Kinbase's native intake, retaining its derivation/admission
+  receipt without requesting authority ratification.
 - MCP reads in a repository-local session can consult both the selected project
   graph and configured user graph, with explicit per-call `auto`, `project`, and
   `global` scopes on retrieval, listings, and diagnostics. Session-qualified

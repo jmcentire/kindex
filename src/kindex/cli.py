@@ -145,6 +145,25 @@ def cmd_kinbase_sync(args):
         store.close()
 
 
+def cmd_kinbase_submit(args):
+    """Submit explicit agent evidence through Kinbase's native intake."""
+    from .kinbase import submit_observation
+    try:
+        result = submit_observation(args.repo, args.text, args.node_type,
+                                    binary=args.binary)
+    except (ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+        result = {"ok": False, "error": {"code": "kinbase_submit_refused",
+                                         "message": safe_error(exc)}}
+    if args.json:
+        print(_dumps(result, indent=2))
+    elif result.get("ok"):
+        print("Submitted repository evidence to Kinbase; its receipt reports derived facts. No authority ratification was requested.")
+    else:
+        print(_dumps(result, indent=2), file=sys.stderr)
+    if not result.get("ok"):
+        raise SystemExit(1)
+
+
 def cmd_search(args):
     """Hybrid search: FTS5 + graph traversal, merged via RRF."""
     store = _store(args)
@@ -7111,7 +7130,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="store_true")
     sub = p.add_subparsers(dest="command")
 
-    k = sub.add_parser("kinbase", help="Read signed Kinbase evidence")
+    k = sub.add_parser("kinbase", help="Read Kinbase evidence or submit repository observations")
     ks = k.add_subparsers(dest="kinbase_action", required=True)
     s = ks.add_parser("sync", help="Refresh evidence from a Kinbase repository")
     s.add_argument("--repo", required=True)
@@ -7119,6 +7138,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--binary", default="kinbase")
     _common(s)
     s.set_defaults(func=cmd_kinbase_sync)
+
+    s = ks.add_parser("submit", help="Submit agent evidence to Kinbase intake, without ratifying it")
+    s.add_argument("text", help="Explicit repository observation to submit")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--type", dest="node_type",
+                   choices=("concept", "decision", "constraint", "question"), default="concept")
+    s.add_argument("--binary", default="kinbase")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_kinbase_submit)
 
     # search
     s = sub.add_parser("search", help="Hybrid search (FTS + graph)")

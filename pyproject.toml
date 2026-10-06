@@ -54,6 +54,7 @@ Issues = "https://github.com/wandercom/kindex/issues"
 [project.scripts]
 kin = "kindex.cli:main"
 kin-mcp = "kindex.mcp_server:main"
+kindex-lite = "kindex.mcp_lite:main"
 
 [project.entry-points."kindex.adapters"]
 github = "kindex.adapters.github:adapter"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 from contextlib import contextmanager
+from contextvars import ContextVar
 import functools
 import json
 import os
@@ -128,6 +129,9 @@ mcp = FastMCP(
 _store = None
 _config = None
 _global_write_stores = {}
+# Explicit servers supply request-local dependencies without changing the full
+# server's lazy singleton or another server's active graph.
+_request_scope: ContextVar[Any | None] = ContextVar("kindex_mcp_scope", default=None)
 
 
 def _reset_singletons():
@@ -241,7 +245,8 @@ def _tool(*dargs, **dkwargs):
                 # that SQLite would otherwise defer past open).
                 try:
                     from .config import record_degraded
-                    record_degraded("mcp", e, config=_config)
+                    if _request_scope.get() is None:
+                        record_degraded("mcp", e, config=_config)
                 except Exception:
                     pass
                 return f"Error: memory unavailable ({type(e).__name__})"
@@ -250,7 +255,8 @@ def _tool(*dargs, **dkwargs):
                 # Health failure must not replace the requested tool result.
                 try:
                     from .supervisor_health import record_mcp
-                    record_mcp(fn.__name__, health_outcome)
+                    if _request_scope.get() is None:
+                        record_mcp(fn.__name__, health_outcome)
                 except Exception as health_error:
                     print(f"Kindex health recording unavailable ({type(health_error).__name__})", file=sys.stderr)
         return mcp.tool(*dargs, **dkwargs)(_safe_output(guarded))
@@ -265,6 +271,9 @@ def _get_store():
     singleton stays unset so a later call may recover.
     """
     global _store, _config
+    scoped = _request_scope.get()
+    if scoped is not None:
+        return scoped.store, scoped.config
     if _store is None:
         from .config import load_config, record_degraded
         from .store import Store
@@ -299,6 +308,8 @@ def _global_store(store, config, *, write=False):
     Reads are SQLite read-only; writes require an explicit global target.
     Explicit profile selection retains its single-graph boundary.
     """
+    if _request_scope.get() is not None:
+        return None
     from .project_store import is_project_store
     from .store import Store
 
@@ -407,6 +418,10 @@ def _graph_aware_session() -> bool:
 
     Formatting must not open the secondary database just to choose an ID.
     """
+    # A lite server also qualifies IDs, binding source_refs and follow-on
+    # writes to its fixed repository and stable server lifetime.
+    if _request_scope.get() is not None:
+        return True
     from .project_store import is_project_store
 
     store, config = _get_store()
@@ -628,6 +643,9 @@ def _mcp_project_path() -> str:
     """The project this server speaks for: KIN_PROJECT_PATH, then KIN_PROJECT,
     then the process directory. Tools derived it four ways (cwd, $PWD, the
     health scope's variable, an explicit argument)."""
+    scoped = _request_scope.get()
+    if scoped is not None:
+        return str(scoped.repo)
     return (os.environ.get("KIN_PROJECT_PATH") or os.environ.get("KIN_PROJECT")
             or os.getcwd())
 
@@ -857,6 +875,27 @@ def kinbase_explain(repo: str, logical_key: str, decision: str) -> str:
 
 
 @_tool()
+def kinbase_submit(repo: str, text: str, node_type: str = "concept") -> str:
+    """Submit explicit text as AI-generated repository evidence to native Kinbase.
+
+    This stages one observation through `kinbase ingest kindex`. It does not
+    run separate bulk corpus admission, ratify authority, or submit a question
+    to a human queue. Native ingestion may derive and admit facts; the native
+    receipt reports that outcome. A question node is AI evidence, not a native
+    `questions ask`.
+    Text is limited to 16 KiB; recognized credentials are refused. Identical
+    retries reuse the source artifact. A timeout may have submitted successfully
+    and is reported as unknown, not as evidence of no change.
+    """
+    from .kinbase import submit_observation
+    try:
+        return json.dumps(submit_observation(repo, text, node_type), indent=2)
+    except (ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+        return json.dumps({"ok": False, "stage": "refused", "error": {
+            "code": "kinbase_submit_refused", "message": safe_error(exc)}}, indent=2)
+
+
+@_tool()
 def search(query: str, top_k: int = 10, tags: str = "",
            include_archived: bool = False,
            trusted_only: bool = False, graph: str = "auto") -> str:
@@ -898,7 +937,8 @@ def search(query: str, top_k: int = 10, tags: str = "",
                     selected, query, top_k=fetch_k,
                     include_archived=include_archived, fence_stats=fence_stats,
                     trusted_only=trusted_only, evaluation_time=evaluation_time,
-                    grounding=grounding)
+                    grounding=grounding,
+                    **({"use_vectors": False} if _request_scope.get() is not None else {}))
             if home is not None:
                 home_fence: dict = {}
                 home_results = hybrid_search(
@@ -1248,6 +1288,7 @@ def _context_hits(stores, topic: str, top_k: int, client: str | None,
                 store, topic, top_k=top_k, trusted_only=trusted_only,
                 evaluation_time=evaluation_time, fence_stats=fence,
                 grounding=grounding,
+                **({"use_vectors": False} if _request_scope.get() is not None else {}),
             )
         else:
             recent = store.recent_nodes(n=top_k)

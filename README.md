@@ -118,10 +118,16 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Or add `.mcp.json` to any repo for project-scope access:
+Or add `.mcp.json` to any repo to register the server for that project:
 ```json
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
 ```
+
+Registration scope does not restrict graph access. For an agent that should use
+only one repository's memory, run `kindex-lite --repo /absolute/path/to/repo`
+instead. It binds the MCP server to that repository's `.kin` graph and Kinbase
+operations, without global-graph fallback. See [repository-bound MCP](docs/mcp-lite.md)
+for configuration and the isolation boundary.
 
 The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `stale_check`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
 
