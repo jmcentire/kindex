@@ -162,3 +162,14 @@ def test_a_small_explicit_budget_is_honoured(kayak, monkeypatch):
     out = server.ask("When did I go kayaking?", max_tokens=120)
     evidence = out.split("\n\n", 1)[1]
     assert _estimate_tokens(evidence) <= 120
+
+
+def test_round5_options_do_not_make_evidence_only_ask_call_a_model(kayak, monkeypatch):
+    server, _, cfg = kayak
+    _no_llm(monkeypatch)
+    cfg.ask.plan = True
+    for option in ("count_inventory", "plan_route", "effort_route", "recall_relation", "archive_clock"):
+        setattr(cfg.ask, option, True)
+    out = server.ask("How many kayak trips did I take?", max_tokens=600)
+    assert "Today's date: 2024-03-15" in out and "lake with Sam" in out
+    assert "instance_inventory" not in out

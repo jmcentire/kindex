@@ -332,8 +332,62 @@ class AskConfig(BaseModel):
     readings: bool = False           # answer each plausible reading when the answer depends on it
     effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"  # reasoning effort, for providers that take one
     plan_effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "low"
+    hard_effort: Literal["", "medium", "high", "xhigh"] = ""  # effort for counts, dates, orderings, updates, summaries ("" = effort)
+    denials: bool = True             # "have I ever ...": also search for the user saying they never did it
+    timeline: bool = True            # an ordering question reads conversation summaries first, as a summary does
+    reread: bool = False             # a draft that says the evidence lacks the answer is redrafted from whole excerpts
+    reread_tokens: int = Field(default=12000, ge=1000, le=400000)  # evidence budget of that second reading
+    vote: bool = False               # with several samples, keep the answer most agree on instead of adjudicating
+    all_facts_tokens: int = Field(default=0, ge=0, le=100000)  # show every fact when they fit in this many tokens (0: off)
+    interleave: bool = False         # a count reads two facts, then one original source, instead of every fact first
+    dialogue_focus: bool = False    # prefer the matching exchange and keep named speakers distinct
+    episode_scope: bool = False     # resolve the episode before selecting values or date endpoints
+    timeline_facets: bool = False   # order distinct requests, decisions and solutions rather than status snapshots
+    history_coverage: bool = False  # give retrieved sessions a first turn before repeating one session
+    recall_only: bool = False       # missing recalled details stop at the missing field, without suggested substitutes
+    inference_candidates: bool = False  # answer inference questions with concrete, qualified candidates
+    date_anchors: bool = False      # preserve ambiguous week phrases; handle compound day expressions first
+    directive_check: bool = False  # check required response fields without inventing missing metrics
+    count_scope: bool = False       # counting rules: exchanges, kept possessions, own totals; "just done" dates
+    count_readings: bool = False    # a count with uncertain items gives the certain count and the count with them
+    predicate_counts: bool = False  # count the requested action and unit; match repeated event identities
+    quantity_readings: bool = False  # compute supported numeric alternatives when scope or dates are ambiguous
+    window_readings: bool = False   # distinguish rolling and calendar readings of an unspecified last month
+    relative_focus: bool = False    # select a relative recall's mention/event anchor before similar episodes
+    event_reference: bool = False   # "ago when X" ends at X, rather than at today's date
+    subject_scope: bool = False     # require matching entities and user-attributed operands for recalled facts
+    approximate_state: bool = False  # a later approximate current value can update an earlier exact value
+    exchange_context: bool = False  # keep a short user turn preceding a matched assistant passage
+    window_search: bool = False     # a question pointing at a span of time also searches deep inside that span
+    window_tokens: int = Field(default=10000, ge=1000, le=400000)  # evidence budget for one recalled episode in such a span
+    fact_tiers: int = Field(default=0, ge=0, le=1000)  # a count's N best-matching facts listed ahead of the rest (0: one list)
+    user_turns: bool = False        # a chat excerpt keeps the user's own messages whole; only replies are cut
+    timeline_facts: bool = False    # an ordering reads dated facts right after the summaries, before conversation text
+    list_position: bool = False     # a question after the Nth item of a list reads conversation text whole, not excerpted
+    # A memory of conversations between named people (not a user and an assistant)
+    # reads more inference into casual talk: its own effort and the planner.
+    dialogue_effort: Literal["", "medium", "high", "xhigh"] = ""  # effort for every answer there ("" = effort/hard_effort)
+    dialogue_plan: bool = False     # the planner there only
+    dialogue_context_tokens: int = Field(default=0, ge=0, le=400000)  # single-answer evidence budget there (0: context_tokens)
+    count_inventory: bool = False   # one quoted inventory; count distinct accepted rows locally (samples=1, no verify)
+    plan_route: bool = False        # when plan is on, plan single dialogue recalls and inference/advice, not enumeration
+    effort_route: bool = False      # effort for dialogue/large graphs; hard_effort (or high) for compact personal logs
+    recall_relation: bool = False   # in named dialogues, answer the requested relation/category before related history
+    archive_clock: bool = False     # absent as_of, a named dialogue uses the latest live imported source date
+    component_updates: bool = False  # recurring schedules and since-start counts reconcile updates within their scope
+    remainder_quantities: bool = False  # gaps and tenure differences read both operands, then subtract
+    recall_candidates: bool = False  # relative mention recalls retain plausible alternatives when the episode is ambiguous
+    archival_time: bool = False     # unanchored named-dialogue durations and relative recalls use archive/report clocks
+    disposition_inference: bool = False  # third-person traits, choices and prior feelings use relevant supporting clues
+    max_input_tokens: int = Field(default=0, ge=0, le=400000)  # cap on estimated input over all calls for one answer (0: none)
+    details: bool = False            # a question asking for particulars is answered only from particulars stated
+    verify: bool = False             # one cited draft, then a check against original source chunks
+    verify_input_tokens: int = Field(default=20000, ge=4000, le=400000)  # total estimated input over all calls
+    verify_draft_tokens: int = Field(default=6000, ge=1000, le=400000)  # first reading's evidence budget
+    verify_source_tokens: int = Field(default=11000, ge=1000, le=400000)  # source reading, within the total limit
     max_output_tokens: int = Field(default=16000, ge=256, le=128000)  # includes a reasoning model's reasoning
     timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    seed: int = Field(default=0, ge=0, le=1000)  # numbers the samples drawn, so a rerun can draw fresh ones
 
 
 class ConversationsConfig(BaseModel):
