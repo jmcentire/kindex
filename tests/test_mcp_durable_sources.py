@@ -386,3 +386,28 @@ def test_stamped_graph_reopen_reads_during_active_writer(tmp_path):
         reader.close()
         original.conn.rollback()
         original.close()
+
+
+def test_unstamped_graph_opens_during_active_writer_and_stamps_later(tmp_path):
+    # Graphs from before identities have no graph_id; opening one while another
+    # process holds the write lock must not fail (hooks open with a short timeout).
+    cfg = Config(data_dir=str(tmp_path / 'cache'))
+    original = Store(cfg)
+    nid = original.add_node('Committed evidence')
+    original.conn.execute("DELETE FROM meta WHERE key='graph_id'")
+    original.conn.commit()
+    original.conn.execute('BEGIN IMMEDIATE')
+    reader = Store(cfg)
+    reader._sqlite_timeout = 0.05
+    try:
+        assert reader.peek_node(nid)['title'] == 'Committed evidence'
+        assert reader.graph_id is None
+    finally:
+        original.conn.rollback()
+    try:
+        stamped = reader.ensure_graph_identity()
+        assert stamped and reader.graph_id == stamped
+        assert Store(cfg).graph_id == stamped
+    finally:
+        reader.close()
+        original.close()

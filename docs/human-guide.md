@@ -77,19 +77,18 @@ visible. The instruction files are what make agents use Kindex proactively:
 start/resume a tag, search before adding, capture durable decisions, and end
 the tag with a summary.
 
-## Existing knowledge migration
+## Existing knowledge preservation
 
-Ask your agent to ensure that **all existing knowledge in `kindex.db` is
-represented losslessly in canonical JSONLs**, including relationships,
-metadata, and provenance. SQLite is a disposable cache; the agent maintains
-canonical sources continuously. Best-effort cleanup is encouraged, but recovery
-cannot depend on workspace teardown. Prompting alone does not guarantee recovery;
-report missing canonical knowledge and runtime reconstruction limits.
-Use the [migration prompt and coverage checklist](canonical-knowledge-migration.md).
-Re-run the instruction-file setup for your client to install the updated guidance.
-Intentional migration omissions are acceptable when explicitly described in
-release notes; the agent must report them separately from accidental ongoing
-loss. This is agent workflow guidance, not an automatic database migration.
+Keep your Kindex databases: they may hold durable records and source bindings
+that current exports cannot reconstruct. Updating the package or reinstalling
+client instructions does not migrate those databases. Ask your agent to inventory
+the selected graph, preserve private/local state, commit project configuration
+and indexes, and publish only explicitly selected shareable evidence through
+`kin repo-memory publish`. Report incomplete coverage and unresolved bindings.
+
+See the [preservation checklist and planned migration architecture](canonical-knowledge-migration.md).
+Re-run instruction-file setup to receive the corrected guidance. Complete
+canonical JSONL serialization and reconstruction remain future work.
 
 ## Review Automatic Capture Before Promotion
 

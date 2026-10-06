@@ -436,8 +436,10 @@ def test_unsigned_repo_publication_preserves_kinbase_provenance_or_refuses(store
         publish(store,target,[node["id"]])
     except (ValueError,RuntimeError):
         assert not (target/".kin/knowledge.json").exists()
+        assert not (target/".kin/knowledge.jsonl").exists()
         return
-    published=(target/".kin/knowledge.json").read_text()
+    from kindex.repo_memory import _path
+    published=_path(target).read_text()
     for expected in ["ratified",PUBLIC,doc["signature"],"kinbase", "human"]:
         assert expected in published, "Unsigned transport dropped Kinbase source provenance: "+expected
 

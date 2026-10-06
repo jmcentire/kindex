@@ -48,7 +48,7 @@ mcp = FastMCP(
     "kindex",
     instructions=(
         "Kindex is a persistent knowledge graph that remembers across sessions. "
-        "You MUST use these tools proactively — the user depends on this graph as external memory.\n\n"
+        "Use these tools proactively: the user depends on this graph as external memory.\n\n"
 
         "## Session lifecycle\n"
         "1. START: `tag_start` or `tag_resume` to name this session\n"
@@ -69,7 +69,7 @@ mcp = FastMCP(
         "- checkpoint: pre-flight checklists — things to verify before an event\n\n"
 
         "## When to use each tool\n"
-        "- `search`: ALWAYS before adding — if a matching node already exists, "
+        "- `search`: before adding — if a matching node already exists, "
         "prefer `edit`/`supersede` over `add` (edit, don't re-add)\n"
         "- Retain either `project:<session>:<id>` or `global:<session>:<id>` "
         "when returned; pass the full reference to follow-on reads and writes\n"
@@ -92,7 +92,7 @@ mcp = FastMCP(
         "- `link`: when you notice two concepts relate — specify the relationship type "
         "(relates_to, depends_on, implements, contradicts, blocks, context_of)\n"
         "- `learn`: after reading long files/outputs — bulk-extracts multiple concepts at once\n"
-        "- `task_add`: for work items — ALWAYS link to relevant concepts via link_to parameter\n"
+        "- `task_add`: for work items — link them to relevant concepts with the link_to parameter\n"
         "- `task_claim`/`task_release`: coordinate shared work with expiring task claims\n"
         "- `task_done`/`task_list`: manage tasks — they surface contextually via graph proximity\n"
         "- `coord_start`/`coord_post`/`coord_read`/`coord_end`: short-lived agent coordination "
@@ -116,8 +116,8 @@ mcp = FastMCP(
         "- `ask`: query the graph conversationally\n\n"
 
         "## Linking strategy\n"
-        "The graph's value is in connections. When you add a node, think: what does this relate to? "
-        "Use `link` aggressively. Edge types: relates_to (general), depends_on (prerequisite), "
+        "The graph's value is in connections: when you add a node, `link` it to the nodes it "
+        "relates to. Edge types: relates_to (general), depends_on (prerequisite), "
         "implements (realization), contradicts (tension), blocks (impediment), "
         "context_of (background), answers (resolves a question), supersedes (replaces)."
     ),
@@ -551,13 +551,17 @@ def _durable_source_refs(source_refs: str) -> list[dict]:
             if evidence.peek_node(node_id) is None:
                 raise ValueError(f"Source node {ref} is unavailable")
             graph_id = evidence.graph_id
+            if not graph_id and evidence is primary:
+                # The session's own writable graph; its open skipped stamping
+                # only because another writer held the lock at that moment.
+                graph_id = primary.ensure_graph_identity()
             if not graph_id and role == "global":
                 # This is the existing configured global write boundary, never
                 # a write to an arbitrary saved locator or a secondary read.
                 writable = _global_store(primary, config, write=True)
                 if writable is None:
                     raise ValueError("Source graph has no persistent identity")
-                graph_id = writable.graph_id
+                graph_id = writable.ensure_graph_identity()
             if not graph_id:
                 raise ValueError("Source graph has no persistent identity; open it writable first")
             records.append(DurableSourceRef(
@@ -1104,7 +1108,8 @@ def add(
     graph: str = "",
     source_refs: str = "",
 ) -> str:
-    """Add a knowledge node to the graph. ALWAYS `search` first to avoid duplicates.
+    """Add a knowledge node to the graph. `search` first: when a matching node
+    already exists, change it with `edit` or `supersede` instead of adding a duplicate.
 
     Choose the right node_type — it determines how the node behaves:
     - concept: facts, patterns, key files, domain terms (default, most common)
@@ -1413,6 +1418,75 @@ def _render_context_sources(stores, results, warnings, *, topic: str, level: str
     return preamble + "\n\n".join(sections)
 
 
+# `context(level="evidence")` without max_tokens; `ask` uses `kin ask`'s budgets.
+MCP_EVIDENCE_TOKENS = 4000
+_COMPLETENESS = re.compile(r"\b(how many|how much|how often|list|all|every|each|total|count|order|"
+                           r"sequence|first|last|summar\w*)\b", re.I)
+
+
+def _render_evidence_sources(stores, results, warnings, *, budget: int, client: str | None,
+                             evaluation_time: str, trusted_only: bool = False,
+                             question: str = "") -> tuple[str, int]:
+    """Graph-local sections in `kin ask`'s form: each graph's standing directives,
+    then its matching nodes in full, dated and oldest first, each named by its
+    title and the ref show and edit accept. One total budget is split across
+    the graphs that contribute. Returns the text and how many nodes did not fit."""
+    from .answer import assemble, question_profiles, standing_directives
+    from .retrieve import GRAPH_DATA_NOTE, _estimate_tokens, _trusted_context_nodes, build_trust_note, graph_text
+
+    by_graph = {graph: [] for graph in stores}
+    for row in results:
+        if (row.get("extra") or {}).get("kind") != "entity-profile":
+            by_graph[row["_graph_source"]].append(row)
+    contributing = [graph for graph in stores if by_graph[graph]]
+    if not contributing:
+        return "", 0
+    aware = _graph_aware_session()
+    headings = len(contributing) > 1 or aware or "global" in contributing
+    denied = []
+    if trusted_only:
+        for graph in stores:
+            omissions = warnings[graph][1] or {}
+            if graph not in contributing and any(omissions.values()):
+                denied.append(f"{graph.title()} graph: {build_trust_note(omissions)}")
+    preamble = "\n".join(denied) + ("\n\n" if denied else "")
+    per_budget = max(1, (budget - _estimate_tokens(preamble)) // len(contributing))
+    sections, omitted = [], 0
+    for graph in contributing:
+        grounding, omissions = warnings[graph]
+        verdict = (grounding or {}).get("verdict")
+        try:
+            note = verdict.note() if verdict is not None else ""
+        except Exception:
+            note = ""
+        prefix = (f"## {graph.title()} graph\n\n" if headings else "") + (f"{note}\n\n" if note else "")
+        if trusted_only and omissions is not None:
+            prefix += build_trust_note(omissions) + "\n\n"
+        prefix += GRAPH_DATA_NOTE + "\n\n"
+
+        def label(node, graph=graph):
+            ref = _display_ref(graph, node["id"]) if aware or graph == "global" else node["id"]
+            title = graph_text(node.get("title") or node["id"], 120, single_line=True)
+            return f"{title} [{graph_text(ref, single_line=True)}]"
+
+        # Directives obey the same client scope and trust admission as hits.
+        directives = _trusted_context_nodes(
+            stores[graph], _scope_results(standing_directives(stores[graph]), client),
+            trusted_only=trusted_only, evaluation_time=evaluation_time)
+        profiles = (question_profiles(stores[graph], question)
+                    if question and not trusted_only and _get_config().ask.profiles else None)
+        # The requested total is honoured: what the framing leaves is the evidence budget.
+        room = per_budget - _estimate_tokens(prefix)
+        if room <= 0:
+            omitted += len(by_graph[graph])
+            sections.append(prefix.rstrip())
+            continue
+        assembly = assemble(by_graph[graph], directives, room, label=label, profiles=profiles)
+        omitted += assembly.omitted
+        sections.append(prefix + assembly.text)
+    return preamble + "\n\n".join(sections), omitted
+
+
 @_tool()
 def context(
     topic: str = "",
@@ -1425,8 +1499,11 @@ def context(
 
     Args:
         topic: Topic to search for (auto-detects from cwd if empty).
-        level: Context tier (full, abridged, summarized, executive, index).
-        max_tokens: Token budget (overrides level with auto-selection if set).
+        level: Context tier (full, abridged, summarized, executive, index), or
+            evidence: the matching nodes in full, dated and oldest first, with
+            the standing directives (what `ask` returns; default 4,000 tokens).
+        max_tokens: Token budget (overrides level with auto-selection if set;
+            with level=evidence, the evidence budget).
         trusted_only: Admit only current, explicitly verified,
             non-contradicted knowledge. False preserves ordinary recall.
         graph: Read scope: auto, project, or global.
@@ -1438,14 +1515,20 @@ def context(
                       (("project", selected), ("global", outer)) if source is not None}
             now = operation_now()
             client = _mcp_client()
+            evidence = level == "evidence"
             results, warnings = _context_hits(
-                stores, topic, 15, client, trusted_only=trusted_only,
-                evaluation_time=now)
+                stores, topic, _get_config().ask.top_k if evidence else 15, client,
+                trusted_only=trusted_only, evaluation_time=now)
             if not results:
                 notes = ("\n" + "\n".join(
                     f"{name}: {build_trust_note(warnings[name][1])}" for name in stores)
                          if trusted_only else "")
                 return "No relevant knowledge found." + notes
+            if evidence:
+                text, _ = _render_evidence_sources(
+                    stores, results, warnings, budget=max_tokens if max_tokens > 0 else MCP_EVIDENCE_TOKENS,
+                    client=client, evaluation_time=now, trusted_only=trusted_only)
+                return text
             return _render_context_sources(
                 stores, results, warnings, topic=topic, level=level,
                 client=client, evaluation_time=now, trusted_only=trusted_only,
@@ -1516,8 +1599,13 @@ def candidate_list(status: str = "", limit: int = 20) -> Any:
 def candidate_show(candidate_id: str) -> Any:
     """Show the exact untrusted candidate payload plus its freshness token.
 
-    The returned token proves snapshot freshness only. It is not caller
-    authentication, authorization, or proof of reviewer identity.
+    Read this before `candidate_accept`, which needs the returned
+    `review_token`. The token proves snapshot freshness only: it goes stale
+    when the candidate or the graph state it was checked against changes. It is
+    not caller authentication, authorization, or proof of reviewer identity.
+
+    Args:
+        candidate_id: Exact capture-candidate ID (from `candidate_list`).
     """
     store, _ = _get_store()
     candidate = store.get_capture_candidate(candidate_id)
@@ -1537,7 +1625,25 @@ def candidate_accept(
     valid_at: str = "",
     invalid_at: str = "",
 ) -> Any:
-    """Accept a fresh candidate with asserted reviewer and verification method."""
+    """Accept a fresh candidate with asserted reviewer and verification method.
+
+    Promotes the candidate to a durable node. Refused when the token is stale,
+    the candidate is expired or already accepted/rejected, its payload carries
+    credentials, a durable node already has its title, or a proposed
+    `contradicts` edge conflicts with verified knowledge. Use this only after
+    reviewing the payload from `candidate_show`.
+
+    Args:
+        candidate_id: Exact capture-candidate ID.
+        review_token: The `review_token` from a current `candidate_show`.
+        reviewed_by: Asserted reviewer identifier (audit text, not
+            authenticated; at most 128 characters).
+        prov_method: How the content was verified, as short audit text
+            (at most 128 characters).
+        valid_at: Optional RFC 3339 start of the half-open valid interval.
+        invalid_at: Optional RFC 3339 exclusive end; must be later than
+            valid_at.
+    """
     store, _ = _get_store()
     operation_instant = operation_now()
     try:
@@ -1593,7 +1699,15 @@ def candidate_prune() -> Any:
 
 @_tool()
 def candidate_erase(candidate_id: str) -> Any:
-    """Erase a candidate or minimized review receipt by exact ID."""
+    """Erase a candidate or minimized review receipt by exact ID.
+
+    Deletes the row outright, whatever its status; the activity log keeps only
+    the ID and prior status. A promoted node is not affected. Returns
+    `erased: false` when no such ID exists.
+
+    Args:
+        candidate_id: Exact capture-candidate ID.
+    """
     store, _ = _get_store()
     return {"id": candidate_id, "erased": store.erase_capture_candidate(candidate_id)}
 
@@ -1609,8 +1723,19 @@ def verify(
 ) -> Any:
     """Assert node verification and an optional half-open valid interval.
 
-    Reviewer identity is asserted audit text within the local trust boundary;
-    this tool does not authenticate it.
+    Verified, current, non-contradicted nodes are what `trusted_only=True`
+    search and context admit. Reviewer identity is asserted audit text within
+    the local trust boundary; this tool does not authenticate it.
+
+    Args:
+        node_id: Node ID, graph-qualified reference, or exact title.
+        verified_by: Asserted verifier identifier (at most 128 characters).
+        prov_method: How the node was verified, as short audit text
+            (at most 128 characters).
+        verified_at: Optional RFC 3339 verification time (default: now).
+        valid_at: Optional RFC 3339 start of the half-open valid interval.
+        invalid_at: Optional RFC 3339 exclusive end; must be later than
+            valid_at.
     """
     try:
         store, _, raw_id, graph = _routed_ref(node_id, write=True)
@@ -1733,7 +1858,7 @@ def link(
     weight: float = 0.5,
     reason: str = "",
 ) -> str:
-    """Create an edge between two nodes. Links are the graph's primary value — use liberally.
+    """Create an edge between two nodes. Links are the graph's primary value.
 
     Choose the right relationship type:
     - relates_to: general connection (default)
@@ -1925,17 +2050,28 @@ def status(graph: str = "auto") -> str:
 
 
 @_tool()
-def ask(question: str, graph: str = "auto") -> str:
+def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: int = 0) -> str:
     """Ask a question of the knowledge graph.
 
-    Classifies the question type (factual, procedural, decision, exploratory),
-    searches for relevant knowledge, and returns a formatted answer.
+    Returns the evidence `kin ask` answers from: the matching nodes in full,
+    dated and oldest first, with today's date and the standing directives, in
+    graph-local sections whose refs show and edit accept, within `kin ask`'s
+    budget. Counting, listing and ordering questions search deeper and say
+    when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
+    answer the way `kin ask` does (planned searches, answering rules), within
+    the LLM budget; otherwise it makes no model call.
 
     Args:
         question: Natural language question.
         graph: Read scope: auto, project, or global.
+        answer: Also draft an answer with the configured LLM (spends budget).
+        max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
+            a single answer and wide for counts, lists, orderings and advice).
     """
-    # Simple question classification
+    from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, answer_client, answer_prompt, context_budget,
+                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, memory_scale,
+                         needs_breadth, plan_question)
+
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
         qtype = "procedural"
@@ -1946,23 +2082,56 @@ def ask(question: str, graph: str = "auto") -> str:
     else:
         qtype = "exploratory"
 
-    top_k = {"factual": 5, "procedural": 8, "decision": 10, "exploratory": 12}.get(qtype, 10)
     try:
         with _selected_read_stores(graph) as (selected, outer):
             stores = {name: source for name, source in
                       (("project", selected), ("global", outer)) if source is not None}
+            config = _get_config()
             now = operation_now()
             client = _mcp_client()
-            results, warnings = _context_hits(
-                stores, question, top_k, client, trusted_only=False,
-                evaluation_time=now)
+            from .answer import classify_question
+            intent, complete = classify_question(question)
+            searches = [question]
+            complete = complete or bool(_COMPLETENESS.search(question))
+            llm = ledger = None
+            if answer:
+                from .budget import BudgetLedger
+                ledger = BudgetLedger(config.ledger_path, config.budget)
+                llm = answer_client(config, ledger)
+                if llm is not None:
+                    intent, queries, needs_all = plan_question(question, config, llm, ledger, now[:10])
+                    searches += [q for q in queries if q.lower() != question.lower()]
+                    complete = complete or needs_all or intent in COMPLETENESS_INTENTS
+            depth = max(config.ask.top_k, COMPLETE_TOP_K) if complete else config.ask.top_k
+            rankings, warnings, saturated = [], None, False
+            for search in searches:
+                rows, found_warnings = _context_hits(stores, search, depth, client, trusted_only=False,
+                                                     evaluation_time=now)
+                warnings = warnings or found_warnings  # the question's own verdicts
+                saturated = saturated or len(rows) >= depth
+                rankings.append(rows)
+            results = favour(fuse(rankings, key=lambda row: (row["_graph_source"], row["id"])),
+                             date_window(question, now[:10]), facts_first=complete,
+                             summaries_first=intent == "summary")
             if not results:
                 return f"[{qtype}] No relevant knowledge found for: {question}"
-            level = "full" if qtype in ("procedural", "decision") else "abridged"
-            block = _render_context_sources(
-                stores, results, warnings, topic=question, level=level,
-                client=client, evaluation_time=now)
-            return f"[{qtype} question]\n\n{block}"
+            budget = max_tokens if max_tokens > 0 else context_budget(
+                config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary",
+                scale=max(memory_scale(store) for store in stores.values()))
+            evidence, omitted = _render_evidence_sources(
+                stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
+            header = f"[{qtype} question] Today's date: {now[:10]}"
+            coverage = coverage_note(complete, omitted, saturated)
+            if llm is None:
+                skipped = ("\n(No answer drafted: no LLM is configured or the budget is spent.)"
+                           if answer else "")
+                return f"{header}{skipped}\n\n{evidence}{coverage}"
+            drafted = draft_answer(llm, config, answer_prompt(
+                question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
+                coverage=coverage), ledger, intent, complete)
+            if drafted is None:
+                return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
+            return f"{drafted}\n\n---\n{header}\n\n{evidence}"
     except ValueError as exc:
         return f"Error: {exc}"
 
@@ -2034,9 +2203,14 @@ def learn(text: str, graph: str = "", source_refs: str = "") -> str:
     complex multi-step tasks. Summarize what happened and pass the text here
     for automatic concept extraction and linking.
 
-    Analyzes the text for concepts, decisions, questions, and connections.
-    Creates nodes and links automatically. Every extracted concept is grounded
-    to a source node so it can never orphan.
+    Extracts with the configured LLM when one is available (it reads the first
+    4,000 characters) and with keyword matching otherwise. Creates up to 10
+    concept nodes: low-information ones are rejected, and a concept whose title
+    already exists reuses that node. When it creates any, it grounds them to a
+    new source node holding the first 500 characters of the text. It links
+    extracted connections between nodes whose titles match and stores bridge
+    suggestions. Decisions and questions found in the text are counted in the
+    result but not created; capture those with `add`.
 
     Args:
         text: Text to extract knowledge from (session notes, documentation, etc.).

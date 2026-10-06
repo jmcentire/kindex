@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.46.0](https://img.shields.io/badge/version-0.46.0-purple.svg)](https://github.com/wandercom/kindex/releases)
+[![v0.47.0](https://img.shields.io/badge/version-0.47.0-purple.svg)](https://github.com/wandercom/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
 [![Tests](https://github.com/wandercom/kindex/actions/workflows/ci.yml/badge.svg)](https://github.com/wandercom/kindex/actions/workflows/ci.yml)
@@ -25,8 +25,10 @@ Docs: [kindex.tools](https://kindex.tools/) is the canonical public site, served
 Development preview: [Claude function hooks and signet-eval coexistence](docs/claude-function-hooks.md)
 adds repo-local durable tasks, secret minimization at Kindex-owned boundaries,
 and separately selectable modern/legacy adapters. The default remains compatible
-legacy hooks. Function hooks are qualified on Claude Code 2.1.274; this is not a
-promise that all Claude logs can be redacted or a published 1.0 release.
+legacy hooks. The modern adapter is a Claude Code mod: it installs on Claude Code
+2.1.287 or newer when that host's `claude plugin validate` accepts it (last
+verified on 2.1.288). This is not a promise that all Claude logs can be redacted
+or a published 1.0 release.
 
 Pick whichever installer you already use. They all install the same `kin` and `kin-mcp` binaries.
 
@@ -112,6 +114,36 @@ Extras — combine in one install (`'kindex[mcp,llm,reminders]'`) or use `'kinde
 Each agent reads MCP servers from a different config file. The `kin setup-*-mcp` commands write the right shape into the right path; the manual snippet is shown alongside in case you'd rather edit the file yourself.
 
 ### Claude Code
+
+As a plugin (MCP server, skills, and session hooks in one install):
+
+```bash
+claude plugin marketplace add wandercom/kindex
+claude plugin install kindex@kindex
+```
+
+or, inside a session, `/plugin install kindex --marketplace wandercom/kindex`.
+
+What the plugin runs:
+
+- **MCP server** (`scripts/claude-plugin/kin-mcp`): your installed `kin-mcp` when
+  one is on `PATH`, so the server and the `kin` CLI share one version and one
+  database. Otherwise it runs the matching PyPI release with
+  `uvx --from 'kindex[mcp]==<version>' kin-mcp`, which downloads kindex and its
+  dependencies from PyPI once and caches them. That needs
+  [uv](https://docs.astral.sh/uv/); without uv or kindex it exits with an install hint.
+- **Hooks** (`hooks/hooks.json`, through `scripts/claude-plugin/kin`): session
+  start, prompt submit, pre-tool-use, pre-compact and stop call your installed
+  `kin` to prime context, check prompts against the graph and capture the
+  session. Without an installed `kin` they do nothing. They source
+  `~/.profile` first so a `kin` installed by pipx, uv or Homebrew is found.
+- **Skills**: `kindex-prime`, `kindex-capture`, `kindex-learn`.
+
+Everything stays on your machine: the graph is a local SQLite database
+(`~/.kindex/` and per-repo `.kin/`). Nothing is sent anywhere unless you
+configure an LLM or embedding provider (see [Privacy](PRIVACY.md)).
+
+Or as a bare MCP server:
 
 ```bash
 claude mcp add --scope user --transport stdio kindex -- kin-mcp
@@ -233,8 +265,8 @@ Nodes have types, weights, domains, and audiences. Edges carry provenance and de
 ### Operational guardrails
 Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
 
-### Cache-optimized LLM retrieval
-Three-tier prompt architecture with Anthropic prompt caching. Stable knowledge (codebook) is cached at 10% cost. Query-relevant context is predicted via graph expansion and cached per-topic. Only the question pays full price. Transparent — `kin ask` just works better and cheaper.
+### Answers from dated evidence
+`kin ask` answers in one model call from dated evidence: the matching nodes in chronological order with today's date and your standing directives, trimmed to the messages that bear on the question, within a small budget for a single fact and a wider one for counts, lists, orderings, summaries and advice. Conversation facts and per-person profiles written by `kin digest` let it answer from a few thousand tokens, and relative dates in the evidence arrive already resolved. In a terminal the answer streams as it is written. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
@@ -682,7 +714,7 @@ profiles:
     roots: [~/Work]
   personal:
     data_dir: ~/.kindex
-    roots: [~/Code, ~/Personal]
+    roots: [~/src, ~/notes]
 default_profile: personal
 ```
 
@@ -699,7 +731,7 @@ Resolution order (first match wins):
 kin profile list                 # configured profiles + file-level stats
 kin profile which                # which profile this invocation resolves to
 # Two-step adoption: first register your existing graph as the default...
-kin profile create personal --data-dir ~/.kindex --roots ~/Code,~/Personal --default
+kin profile create personal --data-dir ~/.kindex --roots ~/src,~/notes --default
 # ...then add the sequestered one
 kin profile create work --data-dir ~/.kindex-work --roots ~/Work
 kin status                       # shows: Profile: work (via roots)
@@ -817,10 +849,10 @@ Projects use `.kin/` directories that encode their communication style, engineer
 ~/.kindex/voices/acme.kin             # Org voice (downloadable, public)
     ^
     |  inherits
-~/Code/platform/.kin/config           # Platform team context
+~/src/platform/.kin/config           # Platform team context
     ^
     |  inherits
-~/Code/payments-service/.kin/config   # Service-specific context
+~/src/payments-service/.kin/config   # Service-specific context
 ```
 
 ```yaml
@@ -921,10 +953,12 @@ Retrieval pipeline:
   Embedding providers (configurable):
       voyage-context-4 (contextual chunks) | openai | gemini | local
 
-LLM cache tiers (kin ask):
-  Tier 1: codebook (stable node index)     <- cached @ 10% cost
-  Tier 2: query-relevant context           <- cached per-topic @ 10% cost
-  Tier 3: user question                    <- full price, tiny
+kin ask (answer.py), configured under `ask:`:
+  classify   the question's kind, from its wording          (ask.plan: an LLM planner instead)
+  retrieve   hybrid_search, one per named part, rank fusion (ask.top_k = 60)
+  assemble   dated, oldest first, excerpted + directives    (ask.context_tokens = 5000,
+                                                              ask.wide_context_tokens = 16000, ask.excerpt)
+  answer     one call, the rules for that kind              (ask.effort = medium, ask.rules, ask.samples)
 
 Reminders:
   reminders table (SQLite)    <- separate from knowledge graph
@@ -979,7 +1013,7 @@ Code structure lives in the same graph as your decisions, watches, and constrain
 | `kin add <text>` | Quick capture with auto-extraction and linking (--tags, --type) |
 | `kin show <id>` | Full node details with edges, provenance, and state |
 | `kin list` | List nodes (--type, --status, --tags, --audience, --mine, --limit) |
-| `kin ask <question>` | Question classification + LLM or context answer |
+| `kin ask <question>` | Planned searches + an answer from dated evidence (`--as-of` sets today's date); search results without an LLM |
 
 ### Knowledge Management
 | Command | Description |
@@ -1178,8 +1212,8 @@ attention:
   cooldown_seconds: 1800          # suppress repeat injections
 
 project_dirs:
-  - ~/Code
-  - ~/Personal
+  - ~/src
+  - ~/notes
 
 defaults:
   hops: 2

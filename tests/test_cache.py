@@ -359,6 +359,17 @@ class TestCalculateCost:
         result = calculate_cost("unknown-model-v99", usage)
         assert result["amount"] > 0
 
+    def test_unknown_model_is_costed_at_the_highest_known_rate(self):
+        from kindex.llm import PRICING, _estimate_cost
+        highest = max(_estimate_cost(m, 1000, 100) for m in PRICING)
+        assert _estimate_cost("unknown-model-v99", 1000, 100) == highest
+
+    def test_platform_prefixed_and_dated_ids_use_the_model_price(self):
+        from kindex.llm import price_for, PRICING
+        assert price_for("us.anthropic.claude-opus-5-5") is PRICING["claude-opus-5-5"]
+        assert price_for("anthropic.claude-sonnet-5-5") is PRICING["claude-sonnet-5-5"]
+        assert price_for("claude-haiku-4-5-20251001") is PRICING["claude-haiku-4-5-20251001"]
+
     def test_openai_cached_usage_from_dict(self):
         from kindex.llm import calculate_cost
         usage = {
@@ -378,12 +389,12 @@ class TestLLMProviderConfig:
     def test_resolve_api_key_uses_first_available_fallback(self, monkeypatch):
         from kindex.llm import resolve_api_key
 
-        monkeypatch.delenv("JMC_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ORG_OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
         cfg = Config(llm=LLMConfig(
             enabled=True,
             provider="openai",
-            api_key_env="JMC_OPENAI_API_KEY,OPENAI_API_KEY",
+            api_key_env="ORG_OPENAI_API_KEY,OPENAI_API_KEY",
         ))
 
         key, env_name = resolve_api_key(cfg)
@@ -394,12 +405,12 @@ class TestLLMProviderConfig:
     def test_openai_configured_with_fallback_key(self, monkeypatch):
         from kindex.llm import is_configured
 
-        monkeypatch.delenv("JMC_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ORG_OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
         cfg = Config(llm=LLMConfig(
             enabled=True,
             provider="openai",
-            api_key_env="JMC_OPENAI_API_KEY,OPENAI_API_KEY",
+            api_key_env="ORG_OPENAI_API_KEY,OPENAI_API_KEY",
         ))
 
         assert is_configured(cfg) is True
@@ -420,3 +431,68 @@ class TestLLMConfig:
     def test_tier2_max_tokens_default(self):
         cfg = LLMConfig()
         assert cfg.tier2_max_tokens == 4000
+
+
+# ── Response text (thinking blocks before the reply) ──────────────────
+
+
+class TestResponseText:
+    def test_skips_thinking_blocks(self):
+        from types import SimpleNamespace
+        from kindex.llm import response_text
+        response = SimpleNamespace(content=[
+            SimpleNamespace(type="thinking", thinking="", signature="sig"),
+            SimpleNamespace(type="text", text='{"ok": true}'),
+        ])
+        assert response_text(response) == '{"ok": true}'
+
+    def test_untyped_blocks_are_text(self):
+        from types import SimpleNamespace
+        from kindex.llm import response_text
+        response = SimpleNamespace(content=[SimpleNamespace(text="plain")])
+        assert response_text(response) == "plain"
+
+    def test_no_text_is_empty(self):
+        from types import SimpleNamespace
+        from kindex.llm import response_text
+        assert response_text(SimpleNamespace(content=[])) == ""
+
+
+class TestThinkingHeadroom:
+    def test_thinking_models_get_headroom(self):
+        from kindex.llm import THINKING_HEADROOM_TOKENS, max_tokens_for
+        for model in ("claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5",
+                      "claude-sonnet-5", "claude-fable-5-1", "anthropic.claude-opus-5-5"):
+            assert max_tokens_for(model, 300) == 300 + THINKING_HEADROOM_TOKENS, model
+
+    def test_thinking_off_models_keep_the_reply_cap(self):
+        from kindex.llm import max_tokens_for
+        for model in ("claude-haiku-4-5", "claude-haiku-4-5-20251001",
+                      "claude-sonnet-4-6", "claude-opus-4-8", "gpt-5.4-mini"):
+            assert max_tokens_for(model, 300) == 300, model
+
+
+class TestCurrentModelPricing:
+    def test_current_models_are_priced(self):
+        from kindex.llm import PRICING
+        for model in ("claude-haiku-4-5", "claude-sonnet-5-5", "claude-opus-5-5",
+                      "claude-opus-5", "claude-fable-5-1"):
+            assert model in PRICING, model
+
+    def test_opus_5_5_is_not_billed_at_the_default_price(self):
+        from kindex.llm import calculate_cost
+        usage = {"input_tokens": 1_000_000, "output_tokens": 0}
+        assert calculate_cost("claude-opus-5-5", usage)["amount"] == 4.0
+
+
+class TestMinCacheableTokens:
+    def test_documented_minimums(self):
+        from kindex.llm import min_cacheable_tokens
+        assert min_cacheable_tokens("claude-haiku-4-5-20251001") == 4096
+        assert min_cacheable_tokens("claude-opus-4-6") == 4096
+        assert min_cacheable_tokens("claude-opus-4-7") == 2048
+        assert min_cacheable_tokens("claude-sonnet-4-6") == 1024
+        assert min_cacheable_tokens("claude-sonnet-5") == 1024
+        assert min_cacheable_tokens("claude-sonnet-5-5") == 512
+        assert min_cacheable_tokens("claude-opus-5") == 512
+        assert min_cacheable_tokens("claude-opus-5-5") == 512

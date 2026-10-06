@@ -60,8 +60,8 @@ class TestPunctuatedSiblings:
                                      roots=[str(tmp_path / "Code" / "acme")])}
 
     def test_cwd_sibling_not_claimed(self, tmp_path):
-        """The original repro: work root ~/Code/acme, personal project at
-        ~/Code/acme-tools. The JSONL cwd proves no match — the encoded-dir
+        """The original repro: work root ~/src/acme, personal project at
+        ~/src/acme-tools. The JSONL cwd proves no match — the encoded-dir
         fallback must not override it."""
         profiles = self._profiles(tmp_path)
         sibling = tmp_path / "Code" / "acme-tools"

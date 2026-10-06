@@ -74,6 +74,9 @@ for json_file in server.json docs/.well-known/mcp/server-card.json \
     sync_version_in "$json_file" \
         "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"${VERSION}\"/g"
 done
+# The Claude plugin's MCP launcher runs this exact release through uvx.
+sync_version_in "scripts/claude-plugin/kin-mcp" \
+    "s/kindex\\[mcp\\]==[0-9]+\\.[0-9]+\\.[0-9]+/kindex[mcp]==${VERSION}/"
 # The changelog entry is written by hand; say so before CI does.
 if ! grep -qE "^## \[${VERSION}\]" "$ROOT/CHANGELOG.md"; then
     echo "sync-version: CHANGELOG.md has no '## [${VERSION}]' entry; tests/test_release_metadata.py fails until it does" >&2

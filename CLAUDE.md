@@ -81,6 +81,27 @@ When working in this codebase, follow these practices:
 - **Session tags**: Use `kin tag start <name> --focus "what you're working on"` to create a named session handle. Update with `kin tag update <name> --focus "..."` or `kin tag segment <name> --focus "new topic" --summary "what happened"`. Resume in a new session with `kin tag resume <name>`. End with `kin tag end <name> --summary "..."`. See `kin tag list` for all tags.
 - **Project policy**: `.kin/config` ships with the repo. Run `kin policy check --event agent-start` before meaningful code work when shell access is available. Linear is opt-in only; enforce it only when `work_policy.linear.enabled` is true in the project config.
 
+## Project knowledge preservation
+
+Kindex databases hold durable state and may be its only complete copy. Capture
+and update knowledge through the supported Kindex tools in the selected graph.
+Do not delete a Kindex database, including an ignored worktree database, as a
+cache or assume tracked JSON/JSONL files can reconstruct it.
+
+- Stage and commit matching `.kin/config` and `.kin/index.json` changes with code.
+- Use `kin repo-memory publish` for explicitly selected active public/team
+  concepts, decisions, and questions. It is an evidence transport, not a full
+  database backup. Keep private knowledge, credentials, and local state out of Git.
+- Preserve both knowledge artifacts if JSON and JSONL coexist. Publish/import
+  refuse that layout until their records are explicitly reconciled into one file.
+- Preserve databases and relevant source records during migration or worktree
+  cleanup. Report unsupported fields, missing evidence, and unresolved references;
+  neither a summary index nor selected exports prove complete recovery.
+
+The planned canonical JSONL architecture and its unimplemented recovery
+requirements are documented in
+[canonical-knowledge-migration.md](docs/canonical-knowledge-migration.md).
+
 ## Auto-Context Loading
 
 At the start of each session, load relevant context:
@@ -110,7 +131,7 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
      | python3 -c "import json,sys; n='io.github.wandercom/kindex'; e=[x['server'] for x in json.load(sys.stdin)['servers'] if x['server']['name']==n and x['_meta']['io.modelcontextprotocol.registry/official']['isLatest']]; print(e[0]['version'] if e else 'MISSING')"
    ```
 
-   The registry is how MCP clients discover the server, and it stalled at 0.38.0 through six PyPI releases because nothing automated it.
+   The registry is how MCP clients discover the server.
 10. Verify the MCP listing metadata is current: `server.json` version/package fields match the release, and https://mcpmarket.com/server/kindex reflects the published package after indexing.
 
 **Definition of done:** The release is complete when (a) all workflow jobs are green, (b) the new version appears on PyPI, (c) `pip install kindex==X.Y.Z` succeeds, and (d) MCP/server metadata has been updated or a marketplace refresh has been requested. If any job fails, fix the issue, bump to a new patch version, and repeat from step 1 -- do not re-tag or force-push an existing tag.
@@ -132,4 +153,4 @@ When asked to release, follow these steps exactly. Do NOT install twine or attem
 | managed | task, session, coordination | Refused — use `kin task` / `kin tag` / `kin coord` |
 - Audience: private / team / public scoping with export boundary enforcement
 - Weight decay: Nodes and edges naturally fade unless accessed, keeping the graph fresh
-- Generated `.kin` artifacts (`.kin/index.json`, `.kin/code-map.json`): never hand-resolve a git conflict in them. `kin index` auto-registers the `kin merge-kin` structured union merge driver (via `.gitattributes` + local `.git/config`); `kin setup-merge` (re)installs it per clone. Regenerate with `kin index` / `kin export code-map` rather than hand-editing the JSON.
+- Generated `.kin` artifacts (`.kin/index.json`, `.kin/code-map.json`): never hand-resolve a git conflict in them. Same-ID index conflicts select the later timestamp (ties keep ours); code-map collisions can keep ours. Preserve input snapshots and relevant knowledge before regeneration; merging is not a lossless conflict archive. `kin index` auto-registers the `kin merge-kin` structured union merge driver (via `.gitattributes` + local `.git/config`); `kin setup-merge` (re)installs it per clone. Regenerate with `kin index` / `kin export code-map` rather than hand-editing the JSON.

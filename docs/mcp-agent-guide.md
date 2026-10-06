@@ -77,10 +77,10 @@ not preserve every conflicting record: same-ID index conflicts select the later
 honors supported deletions. A successful snapshot merge does not prove canonical
 source coverage or reconcile competing evidence revisions.
 
-Reconcile canonical JSONL records and source references explicitly before
-regenerating snapshots from reconciled knowledge and code with `kin index` /
-`kin export code-map`. Do not regenerate from an incomplete cache or hand-edit
-generated snapshots. `kin index` auto-registers the driver; run `kin setup-merge`
+Preserve both input snapshots and their relevant knowledge before regenerating
+with `kin index` / `kin export code-map` from the selected graph and merged code.
+Do not overwrite another branch's knowledge from an incomplete local graph or
+hand-edit generated snapshots. `kin index` auto-registers the driver; run `kin setup-merge`
 to install it in a fresh clone.
 
 Never put secrets, API keys, private transcripts, or machine-local cache in
@@ -468,48 +468,33 @@ discovery or explicit locator rebinding is future work. A copied database retain
 its UUID, so resolution verifies identity at the saved locator rather than
 asserting that the locator is the only copy of that graph.
 
-#### Git worktrees and disposable caches
+#### Git worktrees and durable local databases
 
-SQLite databases are disposable caches. For project knowledge, JSONLs are the
-canonical bearer of knowledge, and the agent is responsible for maintaining
-complete knowledge from `kindex.db` in those sources as it works. Existing
-JSON artifacts need explicit, lossless reconciliation when migrating to JSONL.
-This is the required workflow, not a claim of automatic runtime enforcement.
+Each implicitly selected worktree has a separate ignored
+`.kin/local/kindex/kindex.db` (or supported legacy local layout), with its own
+graph UUID. These databases may hold the only complete copy of durable knowledge.
+Do not delete them or remove their worktrees on the assumption that tracked
+JSON/JSONL files can rebuild them. Preserve their state during planned cleanup.
 
-Each implicitly selected worktree currently has a separate ignored
-`.kin/local/kindex/kindex.db` (or legacy local layout), with its own cache graph
-UUID. The UUID identifies that database, not the Git repository, branch, commit,
-or evidence revision. A sibling cache's matching node ID cannot establish source
-identity or authorize mutation.
+The UUID identifies that database, not the Git repository, branch, commit, or
+evidence revision. A sibling database's matching node ID cannot establish source
+identity or authorize mutation. A Git merge transfers tracked files, not these
+ignored databases. After deletion, a saved locator can return `database_missing`;
+a new database at the same path has a different UUID and returns
+`graph_identity_mismatch`. Neither result alone proves that a derived claim is
+false, and neither restores the missing source evidence.
 
-Worktrees are ephemeral and may be deleted outside our control. Encourage
-best-effort cleanup and persisting pending knowledge when possible, but
-correctness and recovery cannot depend on a pre-deletion hook or SQLite
-preservation, archival, merging, or rescue. Optional database merging is an
-optimization only. Agents maintain canonical sources continuously and commit
-project JSONLs with code; prompting them reduces loss but is not a runtime
-guarantee. The system must reconstruct disposable state from surviving canonical
-knowledge after uncoordinated deletion. Never-persisted knowledge may be
-unrecoverable and must be disclosed, not fabricated.
+Use supported capture/edit tools, commit project `.kin/config` and `.kin/index.json`
+changes with the code, and publish explicitly selected shareable evidence using
+`kin repo-memory publish`. That transport handles selected public/team concepts,
+decisions, and questions as quarantined evidence. It is not a complete backup.
+Graph-transfer export/import also omits `extra.source_refs` and other operational
+metadata. Report missing records and unresolved bindings without claiming that
+an export or a recreated database has recovered them.
 
-The current locator-only resolver has a narrower observable contract. A Git
-merge transfers tracked files, not the ignored cache. After worktree removal,
-a saved database locator can return `database_missing`. A newly initialized
-cache at the same path has a new UUID and returns `graph_identity_mismatch`.
-These are expected cache availability results, not evidence that deletion itself
-is a Kindex defect or that an agent must recover the removed database. Missing
-cache availability also does not by itself establish that a derived claim is
-false or stale.
-
-Evaluate canonical serialization and reference consistency separately: all
-knowledge, relationships, provenance, and evidence bindings must be represented
-losslessly in canonical sources, and references must identify the correct source
-and revision independently of cache paths. The current project registry stores
-paths, `.kin/index.json` stores selected summaries, and `repo-memory` publishes
-selected shareable evidence. None establishes complete coverage or independent
-source resolution. This PR adds graph-bound cache locators, not canonical JSONL
-serialization or a resolver for those canonical sources. Those implementation
-gaps remain real: a rebuilt cache has a new UUID and the locator-only resolver
-does not automatically recover traversal even when canonical evidence survives.
-Expected data loss is not a desired outcome or blanket acceptance of ongoing
-unrecoverability. Database survival or cleanup cannot be the required remedy.
+The planned architecture would make canonical JSONL sources sufficient to rebuild
+databases and resolve historical references even after uncoordinated deletion.
+That serializer, rebuilder, and canonical-reference resolver are not implemented.
+The [migration design](canonical-knowledge-migration.md) describes that target
+separately from the preservation steps supported today. Prompting alone does not
+supply recovery, and accidental deletion can lose knowledge.

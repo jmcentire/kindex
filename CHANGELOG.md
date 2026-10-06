@@ -4,74 +4,123 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+- `kin ingest conversations --directory DIR` stores chat transcripts (JSON or
+  JSONL: `{"id", "date", "messages": [{"role", "content", "name"}]}`) without
+  loss: whole messages packed into dated `document` nodes of at most 4,000
+  characters, linked in order. A digest pass (`kindex.conversations`) records
+  the user's standing instructions as `directive` nodes and summarizes
+  conversations of 6,000 tokens or more; short conversations are read from the
+  user's side only, and task setups ("respond only with OK until ...") are not
+  directives.
+- The digest pass also writes down each conversation's facts as dated nodes
+  (`conversations.facts`, on by default): self-contained statements with
+  names, numbers and the date they happened (relative dates resolved against
+  the conversation date), including what the assistant recommended. `kin ask`
+  lists retrieved facts by date above the conversation excerpts. A fact is a
+  sentence where an excerpt is a page, so they let `kin ask` answer from a
+  small context; the pass reads each conversation in full once. From the facts
+  it also writes a profile of each person they are mostly about (what was
+  recorded, then conclusions marked likely), rebuilt when those facts change
+  and removed with a retracted conversation; `kin ask` shows the profiles of
+  the people a question names, except for dates, counts, orderings and
+  summaries, where the dated evidence is the better source.
+- A conversation file entry may carry `"expires": "YYYY-MM-DD"` (its nodes and
+  everything derived from them stop surfacing after that date) or
+  `"retracted": true` (it, its summary and facts, and directives no other
+  conversation gave are removed). Re-ingesting a conversation reconciles it:
+  appended, edited and removed messages update the stored nodes and links, and
+  a changed conversation is digested again.
+
 ### Changed
-- Agent guidance makes JSONLs the canonical bearer of project knowledge and
-  SQLite databases disposable caches. The agent is responsible for maintaining
-  complete, lossless JSONL knowledge after captures, edits, and links. Worktree
-  deletion can bypass cleanup. Best-effort cleanup is encouraged, but correctness
-  and recovery never depend on database preservation, archival, merge, or rescue;
-  optional database merging is an optimization only. Prompting reduces loss but
-  does not implement a runtime recovery guarantee.
-- Generated agent prompts qualify snapshot merging: same-ID conflicts can select
-  one side, so successful merges do not prove canonical source coverage. Agents
-  reconcile canonical JSONL records/references before regenerating snapshots.
+- Agent instructions preserve Kindex databases as durable state, commit project
+  `.kin/config` and `.kin/index.json` with code, and use `kin repo-memory publish`
+  only for explicitly selected shareable evidence. Complete JSONL serialization,
+  reconstruction, and source-reference rebinding remain planned work; this update
+  does not migrate databases or make them disposable.
+- Snapshot merge guidance now states that same-ID conflicts can select one side.
+  Preserve the input snapshots and relevant knowledge before regeneration;
+  successful merging or selected exports do not prove complete recovery.
+- The [knowledge migration guide](docs/canonical-knowledge-migration.md) separates
+  current preservation steps from the planned canonical JSONL architecture.
+  Reinstall client instruction blocks to receive the corrected guidance. If
+  both `.kin/knowledge.json` and `.kin/knowledge.jsonl` exist, publication and
+  import refuse until their records are explicitly reconciled into one artifact.
+- `kin ask` answers from dated evidence in one model call (`kindex.answer`).
+  The question's wording sets its kind (a single fact, a count or list, a
+  date, an ordering, a summary, advice), which picks the evidence budget, the
+  answering rules sent and the answer's form; an LLM planner that writes the
+  searches is optional (`ask.plan`). The model sees the matching nodes dated
+  and oldest first, with today's date (`--as-of`) and the standing directives,
+  within 5,000 tokens for a single answer and 16,000 for counts, lists,
+  orderings, advice and judgements (summaries half again; the wide budget too when the
+  graph holds no facts). Conversation excerpts show only the messages that
+  share a word with the question, with one message either side, and relative
+  dates in them carry the date they mean ("next month [= October 2023]"). In
+  a terminal the answer is shown sentence by sentence as it is written. A question
+  that points at a time ("10 days ago", "last month") brings that span
+  forward; a count lists facts ahead of excerpts; a question naming several
+  things searches for each. Previously it saw five results truncated to 500
+  characters, with no dates. Settings live under `ask:` (`plan`, `top_k`,
+  `context_tokens`, `wide_context_tokens`, `excerpt`, `rules`, `samples`,
+  `effort`, `readings`). Without an LLM it still prints search results. The
+  LLM budget is checked before every model call; the context budget covers
+  every section, and what did not fit is reported to the caller. Stored text
+  is escaped so evidence cannot pose as a directive. The `ask:` and
+  `conversations:` sections decide LLM spend, so a repository's `.kin/config`
+  cannot set them, and `ask:` values are bounded.
+- The MCP `ask` tool returns what `kin ask` answers from: the matching nodes
+  dated and oldest first, with today's date and the standing directives,
+  within `kin ask`'s budgets (or `max_tokens`), each named by its title and
+  ref. Counting, listing and ordering questions search deeper and say when the
+  evidence may be incomplete. It makes no model call unless `answer=true`,
+  which drafts the answer with `kin ask`'s pipeline. `context` gains
+  `level="evidence"` for the same form; its default tier is unchanged.
+  Directives read from Kinbase are not standing instructions, and Kinbase
+  evidence keeps its governance note in both.
+- The OpenAI provider passes system instructions, reasoning effort and JSON
+  schemas. It retries rate limits and server errors only for callers that ask
+  (`kin ask`, `kin digest`), within an optional overall deadline; hooks get no
+  retries.
 
-### Migration guidance for existing users
+## [0.47.0] - 2026-10-03
 
-Updating Kindex or its instruction files does not automatically migrate existing
-knowledge. Reinstall the agent instructions for your client, then explicitly
-prompt your agent:
+### Added
+- Kindex is a Claude plugin you can install by name:
+  `claude plugin marketplace add wandercom/kindex`, then
+  `claude plugin install kindex@kindex`. Its MCP server uses an installed
+  `kin-mcp` and otherwise runs this release through `uvx`, so the plugin works
+  without a separate install. Its hooks do nothing until `kin` is installed,
+  instead of failing every prompt. The manifest is ready for Anthropic's plugin
+  directory.
+- New repo knowledge artifacts are written as `.kin/knowledge.jsonl`; an existing
+  `.kin/knowledge.json` keeps its format. Publish and import refuse a repo that
+  has both until they are merged, so neither file's records are dropped.
+- MCP captures record graph-bound source references that survive restarts, and
+  `show` can resolve them read-only (`resolve_sources`).
+- Prices for Claude Opus 4.8, 5 and 5.5, Sonnet 5 and 5.5, and Fable 5.1.
 
-> Ensure all existing knowledge in my Kindex `kindex.db` is represented losslessly
-> in the canonical JSONLs. Inventory all durable records, relationships,
-> metadata, provenance, and source bindings; reconcile existing JSON and JSONL
-> sources without silently choosing one; verify exact source coverage and
-> reference consistency. Respect audience and secret boundaries. Commit the
-> project knowledge sources with the code and keep them current after future
-> writes. Report anything the current serializer or reader cannot preserve;
-> list intentional migration exclusions with their reasons and consequences in
-> release notes, and report accidental or unexplained omissions separately. Do
-> not describe excluded knowledge as losslessly migrated. SQLite is a
-> disposable cache. Encourage best-effort cleanup, but recover from surviving
-> canonical knowledge without relying on it. Disclose never-persisted knowledge
-> that cannot be recovered.
+### Changed
+- The Claude mod (`kin setup-hooks --mode modern`) installs on Claude Code
+  2.1.287 and newer when that host's `claude plugin validate` accepts it; it
+  previously refused everything but 2.1.274. Last verified on 2.1.288.
+- An unpriced model is costed at the highest known rate, so budget caps fail
+  closed; prices resolve through `us.anthropic.` prefixes and date suffixes.
+- Prompt text audited for current Claude models: the MCP instructions, prime
+  directives, tool descriptions, skills and generated CLAUDE.md/AGENTS.md blocks
+  use plain wording, and the `learn` tool describes what it actually creates.
 
-### Intentional migration tradeoffs
-
-- Legacy format precedence is deliberate: if both `knowledge.json` and
-  `knowledge.jsonl` exist, `repo-memory` reads JSON only. JSONL records are not
-  deleted, but are absent from that import until the agent explicitly reconciles
-  the files. There is no automatic union, dual-write, or old-client JSONL support.
-  This documented compatibility limitation is accepted, not a merge blocker.
-- Existing captures with only expired session handles are not automatically
-  backfilled with durable source bindings. Their historical sources can remain
-  unresolved; the agent may reconstruct them only from verifiable canonical
-  evidence, otherwise it must record the missing bindings. Node knowledge is not
-  automatically deleted by this migration.
-- Intentional migration exclusions are permitted when release notes identify
-  the omitted knowledge/bindings, scope, reasons, and consequences. Preserve the
-  remaining knowledge accurately and report those exclusions explicitly.
-  This does not excuse unexplained loss or dropped provenance on new writes.
-- #71 now retains supplied `source_refs` for relationship-only `learn` through
-  linked learned-text evidence documents, including existing concepts and replay.
-  This closes incomplete coverage of its new guarantee; it is not an accepted
-  migration exclusion or a regression from previously working structured provenance.
-
-### Recovery limits
-
-The system must rebuild disposable state from surviving canonical knowledge when
-cleanup did not happen. This prompt/docs change does not implement complete
-canonical serialization, graph reconstruction, or canonical source-reference
-resolution. `index.json` is incomplete, `repo-memory` is a selected quarantined
-transport, and #71's saved cache locators/UUIDs are not automatically rebound to
-canonical evidence or rebuilt caches. Never-persisted knowledge may be
-unrecoverable and must be reported explicitly. Expected data loss is not desired
-or blanket permission for ongoing loss; accepted migration exclusions stay scoped.
-
-See the [migration guide](docs/canonical-knowledge-migration.md) for the full
-checklist and current limits. `kin index` and selected `repo-memory` exports
-alone are not complete knowledge migrations. No automatic storage rewrite or
-software release is included in this guidance.
+### Fixed
+- `kin` imports again on Python 3.10 and 3.11, which `requires-python` has always
+  promised: a 3.12-only f-string in `cli.py` (since 0.36.1) and `datetime.UTC` in
+  `vectors.py` broke every command there. CI now byte-compiles the package on 3.10.
+- LLM replies are read by block type. On models that think by default the first
+  block is a thinking block, and a refusal has no text, so extraction, `kin ask`,
+  attention, Sim and reinforcement silently returned nothing there. Those models
+  also get `max_tokens` headroom for thinking.
+- `kin ask` uses each model's real minimum cacheable prompt length.
+- Opening a graph created before graph identities no longer fails with
+  "database is locked" while another process is writing.
 
 ## [0.46.0] - 2026-10-01
 
@@ -967,7 +1016,7 @@ See [function-hook boundaries and migration](docs/claude-function-hooks.md).
 ## [0.26.0] - 2026-06-27
 
 ### Added
-- **Structured merge driver for `.kin` artifacts.** `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed JSON snapshots — git's line-based merge conflicts on them needlessly. The new `kin merge-kin` git merge driver does a structured 3-way **union** instead: for `index.json`, union nodes by id (newer `updated_at` wins, base detects deletions) and recompute the derived header; for `code-map.json`, union nodes/edges/layer members and recompute the tour. This is lossless across machines (regenerating `index.json` from one machine's local DB would drop the other branch's nodes), and the result is byte-identical to what `kin index` would emit, so a later regeneration produces no spurious diff. Install per repo with `kin setup-merge`, which registers the driver in `.git/config` and points `.kin/index.json` / `.kin/code-map.json` at it via `.gitattributes` (repos without the driver registered fall back to git's default merge).
+- **Structured merge driver for `.kin` artifacts.** `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed JSON snapshots — git's line-based merge conflicts on them needlessly. The new `kin merge-kin` git merge driver does a structured 3-way **union** instead: for `index.json`, union nodes by id (newer `updated_at` wins, base detects deletions) and recompute the derived header; for `code-map.json`, union nodes/edges/layer members and recompute the tour. This preserves distinct identities across machines; conflicting same-ID records can select one side (regenerating `index.json` from one machine's local DB would drop the other branch's nodes), and the result is byte-identical to what `kin index` would emit, so a later regeneration produces no spurious diff. Install per repo with `kin setup-merge`, which registers the driver in `.git/config` and points `.kin/index.json` / `.kin/code-map.json` at it via `.gitattributes` (repos without the driver registered fall back to git's default merge).
 
 ### Changed
 - `.kin/index.json` no longer carries a volatile `source_updated_at` timestamp. It changed on every regeneration — churning git history and conflicting on every concurrent merge — while the commit time already records snapshot freshness and each node keeps its own `updated_at`.
