@@ -8,9 +8,11 @@ textual 3-way diff. This module powers the ``kin merge-kin`` git merge driver.
 Why a union rather than "regenerate from the graph": ``index.json`` projects the
 local SQLite DB, which is NOT in git. Regenerating from one machine's DB would
 silently drop the *other* branch's concept/decision nodes (that DB never ingested
-them). A union of the two committed files is lossless across machines. The result
-is byte-identical to what ``kin index`` would emit for the merged node set, so a
-later regeneration produces no spurious diff.
+them). The union preserves distinct identities, but conflicting same-ID index
+records select the later timestamp (ties keep ours), code-map conflicts can keep
+ours, and supported deletions are honored. Keep the input knowledge available:
+a successful merge is not a lossless archive of competing revisions. The output
+uses the exporter's ordering for the records selected by the merge.
 
 ``code-map.json`` projects the code (which IS in the merge tree), so its content
 collections are unioned here too; ``kin code-map`` is the canonical refresh for
@@ -231,8 +233,8 @@ def merge_code_map(
 ) -> dict:
     """Union ``.kin/code-map.json`` content collections.
 
-    Nodes/edges are unioned (lossless across branches); layers union their
-    members; ``tour`` is recomputed from the merged layers. ``project`` keeps
+    Nodes/edges are unioned by identity; conflicting same-key records keep
+    ours, and supported deletions are honored. Layers union their members; ``tour`` is recomputed from the merged layers. ``project`` keeps
     ours' commit-tied metadata (``kin code-map`` refreshes it) but unions the
     detected ``languages``.
     """

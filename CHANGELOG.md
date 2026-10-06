@@ -33,6 +33,19 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   a changed conversation is digested again.
 
 ### Changed
+- Agent instructions preserve Kindex databases as durable state, commit project
+  `.kin/config` and `.kin/index.json` with code, and use `kin repo-memory publish`
+  only for explicitly selected shareable evidence. Complete JSONL serialization,
+  reconstruction, and source-reference rebinding remain planned work; this update
+  does not migrate databases or make them disposable.
+- Snapshot merge guidance now states that same-ID conflicts can select one side.
+  Preserve the input snapshots and relevant knowledge before regeneration;
+  successful merging or selected exports do not prove complete recovery.
+- The [knowledge migration guide](docs/canonical-knowledge-migration.md) separates
+  current preservation steps from the planned canonical JSONL architecture.
+  Reinstall client instruction blocks to receive the corrected guidance. If
+  both `.kin/knowledge.json` and `.kin/knowledge.jsonl` exist, publication and
+  import refuse until their records are explicitly reconciled into one artifact.
 - `kin ask` answers from dated evidence in one model call (`kindex.answer`).
   The question's wording sets its kind (a single fact, a count or list, a
   date, an ordering, a summary, advice), which picks the evidence budget, the
@@ -1003,7 +1016,7 @@ See [function-hook boundaries and migration](docs/claude-function-hooks.md).
 ## [0.26.0] - 2026-06-27
 
 ### Added
-- **Structured merge driver for `.kin` artifacts.** `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed JSON snapshots — git's line-based merge conflicts on them needlessly. The new `kin merge-kin` git merge driver does a structured 3-way **union** instead: for `index.json`, union nodes by id (newer `updated_at` wins, base detects deletions) and recompute the derived header; for `code-map.json`, union nodes/edges/layer members and recompute the tour. This is lossless across machines (regenerating `index.json` from one machine's local DB would drop the other branch's nodes), and the result is byte-identical to what `kin index` would emit, so a later regeneration produces no spurious diff. Install per repo with `kin setup-merge`, which registers the driver in `.git/config` and points `.kin/index.json` / `.kin/code-map.json` at it via `.gitattributes` (repos without the driver registered fall back to git's default merge).
+- **Structured merge driver for `.kin` artifacts.** `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed JSON snapshots — git's line-based merge conflicts on them needlessly. The new `kin merge-kin` git merge driver does a structured 3-way **union** instead: for `index.json`, union nodes by id (newer `updated_at` wins, base detects deletions) and recompute the derived header; for `code-map.json`, union nodes/edges/layer members and recompute the tour. This preserves distinct identities across machines; conflicting same-ID records can select one side (regenerating `index.json` from one machine's local DB would drop the other branch's nodes), and the result is byte-identical to what `kin index` would emit, so a later regeneration produces no spurious diff. Install per repo with `kin setup-merge`, which registers the driver in `.git/config` and points `.kin/index.json` / `.kin/code-map.json` at it via `.gitattributes` (repos without the driver registered fall back to git's default merge).
 
 ### Changed
 - `.kin/index.json` no longer carries a volatile `source_updated_at` timestamp. It changed on every regeneration — churning git history and conflicting on every concurrent merge — while the commit time already records snapshot freshness and each node keeps its own `updated_at`.

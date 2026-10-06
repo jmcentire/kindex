@@ -490,7 +490,7 @@ def prime_context(
         lines.append("- `tag_start`/`tag_update` to track session focus and progress")
         lines.append("**Project graph (`.kin/`)** — keep it with the code:")
         lines.append("- Look for a `.kin/` directory in the tree of the files you touch — not just your cwd root — and honor its config/index.")
-        lines.append("- When you `git add`/commit, stage the matching `.kin/` changes (config, index.json) alongside the code so the graph travels with the work.")
+        lines.extend(PROJECT_KNOWLEDGE_DIRECTIVES)
         lines.append("")
 
     if search_failed and ops_failed:
@@ -844,6 +844,16 @@ def write_inbox_item(
     return target
 
 
+PROJECT_KNOWLEDGE_DIRECTIVES = (
+    "- When you `git add`/commit, stage matching `.kin/config` and `.kin/index.json` changes alongside the code; keep private/local state out of Git.",
+    "- Capture and update durable knowledge with Kindex tools in the selected graph. Preserve Kindex databases, including ignored worktree databases; they may be the only complete copy.",
+    "- Do not delete a Kindex database or its containing worktree as disposable cache. Current JSON/JSONL exports do not provide a complete database rebuild.",
+    "- Use `kin repo-memory publish` for explicitly selected active public/team concepts, decisions, and questions. It is shareable evidence, not a full backup; never publish private material or credentials.",
+    "- If both `.kin/knowledge.json` and `.kin/knowledge.jsonl` exist, publish/import refuse. Preserve both and reconcile their records explicitly before keeping one artifact.",
+    "- Generated snapshots can select one side of same-ID conflicts. Preserve source knowledge before regeneration; report missing records and unresolved source bindings rather than claiming lossless recovery.",
+)
+
+
 def generate_session_directive(store: Store) -> str:
     """Generate CLAUDE.md text that instructs Claude Code to write back discoveries.
 
@@ -872,7 +882,7 @@ def generate_session_directive(store: Store) -> str:
         "",
         "### Project graph (`.kin/`)",
         "- Honor `.kin/` for the files you touch — look up the directory tree, not just the repo root.",
-        "- Stage and commit `.kin/` changes (config, index.json) together with the related code.",
+        *PROJECT_KNOWLEDGE_DIRECTIVES,
         "",
     ]
 

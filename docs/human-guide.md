@@ -77,6 +77,19 @@ visible. The instruction files are what make agents use Kindex proactively:
 start/resume a tag, search before adding, capture durable decisions, and end
 the tag with a summary.
 
+## Existing knowledge preservation
+
+Keep your Kindex databases: they may hold durable records and source bindings
+that current exports cannot reconstruct. Updating the package or reinstalling
+client instructions does not migrate those databases. Ask your agent to inventory
+the selected graph, preserve private/local state, commit project configuration
+and indexes, and publish only explicitly selected shareable evidence through
+`kin repo-memory publish`. Report incomplete coverage and unresolved bindings.
+
+See the [preservation checklist and planned migration architecture](canonical-knowledge-migration.md).
+Re-run instruction-file setup to receive the corrected guidance. Complete
+canonical JSONL serialization and reconstruction remain future work.
+
 ## Review Automatic Capture Before Promotion
 
 Automatic pre-compact extraction is quarantined. A successful hook stages
