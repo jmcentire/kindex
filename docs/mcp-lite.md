@@ -13,6 +13,11 @@ Kindex configuration. The server uses the repository's canonical
 `.kin/local/kindex` store, or the supported populated legacy `.kin/local` store.
 It refuses conflicting populated layouts instead of choosing silently.
 
+Install `kindex[mcp,kinbase]` when signed Kinbase event synchronization is needed.
+The `kinbase` extra supplies signature verification dependencies; the native
+Kinbase executable is separate and is needed for explain, reduced sync, and
+submissions. Raw sync can read the approved repository event copy without it.
+
 ## Client configuration
 
 Keep the MCP server name `kindex` so existing agent instructions and tool-name
@@ -115,6 +120,16 @@ See [Kinbase integration](kinbase.md).
 Kinbase may contact its configured authority service and refresh its own caches.
 Repository binding does not narrow Kinbase's authority projection beyond the
 permissions Kinbase already enforces for that repository.
+
+For isolated agents, do not pass the operator's entire `XDG_CONFIG_HOME` through
+to native Kinbase. Its config can contain absolute cache, Personal database, and
+privileged credential paths that a private `HOME` does not redirect. Provision a
+separate Kinbase config with private cache/data paths and only approved read
+credentials, or use a frozen raw event copy without the native executable.
+Preserve the approved repository proof-clock: native reads can fall back to the
+configured Personal database when it is missing. Native explain can update
+caches and authenticated-request bookkeeping; read access means no content
+submission, not an absence of all local or service-side writes.
 
 ## Boundary
 
