@@ -401,7 +401,7 @@
       </div>
       <div class="card">
         <h3>Project <code>.kin/</code> Contract</h3>
-        <p>Stage git-tracked <code>.kin/</code> artifacts alongside code. Generated <code>.kin/index.json</code> and <code>.kin/code-map.json</code> are never hand-resolved: <code>kin index</code> auto-registers a structured merge driver (<code>kin merge-kin</code>) that unions them losslessly across branches.</p>
+        <p>Stage git-tracked <code>.kin/</code> artifacts alongside code. Generated <code>.kin/index.json</code> and <code>.kin/code-map.json</code> are never hand-resolved: <code>kin index</code> auto-registers a structured merge driver (<code>kin merge-kin</code>) that unions distinct identities across branches. Same-ID index conflicts select by timestamp (ties keep ours); code-map conflicts can keep ours. Preserve input snapshots and relevant knowledge before regeneration: a successful merge is not a lossless conflict archive.</p>
       </div>
     </div>
     <p style="margin-top: 16px; color: var(--text-dim);">Lifecycle hooks reinforce these directives where the client exposes hook surfaces; instruction files cover clients that only expose MCP and rules.</p>

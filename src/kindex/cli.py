@@ -6707,7 +6707,9 @@ _KINDEX_BLOCK_MARKERS = ("## Kindex memory", "Kindex (REQUIRED", "kindex MCP too
 
 def _kindex_claude_md_block() -> str:
     """Generate the recommended CLAUDE.md block for kindex integration."""
-    return """\
+    from .hooks import PROJECT_KNOWLEDGE_DIRECTIVES
+
+    block = """\
 ## Kindex memory
 
 Kindex is a persistent knowledge graph the user relies on as memory across \
@@ -6726,12 +6728,15 @@ summarizing what was done
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not \
 private cache.
-- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: \
-never hand-resolve git conflicts in them. `kin index` auto-registers a structured \
-merge driver (`kin merge-kin`) on first run that unions them losslessly; run \
-`kin setup-merge` to (re)install it in a fresh clone.
-- Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, \
-`.kin/tmp`, `.kin/private`.
+- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots, \
+not complete canonical knowledge. `kin merge-kin` is not a lossless conflict \
+archive: same-ID index conflicts select by timestamp (ties keep ours), while \
+code-map collisions can keep ours. Preserve both input snapshots and relevant \
+knowledge before regenerating from the selected graph and merged code; never \
+hand-edit generated snapshots or overwrite another branch's knowledge from an \
+incomplete local graph. `kin index` auto-registers the driver; run `kin setup-merge` in a fresh clone.
+- Personal knowledge belongs in its explicitly selected personal graph. Ignored \
+project directories may hold the only copy of durable knowledge; preserve their databases.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` \
 sets `work_policy.linear.enabled: true`.
 
@@ -6765,11 +6770,16 @@ multiple concepts at once
 - The daemon will execute shell commands or launch headless Claude/Codex/OpenCode
   when they come due
 """
+    return block.replace("### Project `.kin/` contract\n",
+                         "### Project `.kin/` contract\n" +
+                         "\n".join(PROJECT_KNOWLEDGE_DIRECTIVES) + "\n", 1)
 
 
 def _kindex_agents_md_block() -> str:
     """Generate the recommended AGENTS.md block for Codex/kindex integration."""
-    return """\
+    from .hooks import PROJECT_KNOWLEDGE_DIRECTIVES
+
+    block = """\
 ## Kindex memory
 
 Kindex is a persistent knowledge graph the user relies on as memory across \
@@ -6793,8 +6803,9 @@ a concise summary.
 
 ### Project `.kin/` contract
 - `.kin/config` and `.kin/index.json` are repo-shipped project artifacts, not private cache.
-- `.kin/index.json` and `.kin/code-map.json` are generated, id-keyed snapshots: never hand-resolve git conflicts in them. `kin index` auto-registers a structured merge driver (`kin merge-kin`) that unions them losslessly; run `kin setup-merge` to (re)install it in a fresh clone.
-- Local-only state belongs in `~/.kindex` or ignored `.kin/local`, `.kin/cache`, `.kin/tmp`, `.kin/private`.
+- `.kin/index.json` and `.kin/code-map.json` are generated snapshots, not complete canonical knowledge. `kin merge-kin` is not a lossless conflict archive: same-ID index conflicts select by timestamp (ties keep ours), while code-map collisions can keep ours.
+- Preserve both input snapshots and relevant knowledge before regenerating from the selected graph and merged code; never hand-edit generated snapshots or overwrite another branch's knowledge from an incomplete local graph. `kin index` auto-registers the driver; run `kin setup-merge` in a fresh clone.
+- Personal knowledge belongs in its explicitly selected personal graph. Ignored project directories may hold the only copy of durable knowledge; preserve their databases.
 - Linear enforcement is opt-in. Only enforce Linear when local `.kin/config` sets `work_policy.linear.enabled: true`.
 - If no work policy is present, continue normally and still use kindex for search/capture.
 
@@ -6818,6 +6829,9 @@ a concise summary.
 ### Working rule
 Do not wait for the user to mention kindex. Treat it as your durable memory layer.
 """
+    return block.replace("### Project `.kin/` contract\n",
+                         "### Project `.kin/` contract\n" +
+                         "\n".join(PROJECT_KNOWLEDGE_DIRECTIVES) + "\n", 1)
 
 
 def _kindex_cursor_rule_block() -> str:
