@@ -227,7 +227,7 @@ For release work, verify:
 python3 -m pytest
 mcp-publisher validate server.json
 git describe --tags --exact-match HEAD
-gh release view vX.Y.Z --repo jmcentire/kindex
+gh release view vX.Y.Z --repo wandercom/kindex
 curl -fsSL https://pypi.org/pypi/kindex/json
 curl -fsSL https://kindex.tools/ | grep 'vX.Y.Z'
 curl -fsSL https://kindex.tools/.well-known/mcp/server-card.json | grep 'X.Y.Z'
