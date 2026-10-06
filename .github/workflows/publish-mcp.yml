@@ -41,6 +41,14 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
+      # Older release tags predate the verifier. Read it from the workflow's
+      # own immutable commit while keeping publication rooted in inputs.tag.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .registry-verifier
+          sparse-checkout: scripts
+
       - name: Check server.json names this version, and PyPI already has it
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -93,30 +101,4 @@ jobs:
       - name: Confirm the registry now serves this version
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          python - "$RELEASE_TAG" <<'CONFIRM'
-          import json, sys, urllib.parse, urllib.request
-
-          tag = sys.argv[1].lstrip("v")
-          name = "io.github.wandercom/kindex"
-          # search is a substring match over every server and every historical
-          # version, so the exact name and the registry's own isLatest flag
-          # decide which entry this is - never position in the result list.
-          query = urllib.parse.urlencode({"search": name, "version": "latest"})
-          with urllib.request.urlopen(
-              f"https://registry.modelcontextprotocol.io/v0/servers?{query}", timeout=30
-          ) as response:
-              servers = json.load(response)["servers"]
-          latest = [
-              entry["server"]
-              for entry in servers
-              if entry["server"]["name"] == name
-              and entry["_meta"]["io.modelcontextprotocol.registry/official"]["isLatest"]
-          ]
-          if not latest:
-              raise SystemExit(f"{name} has no latest entry in the registry")
-          published = latest[0]["version"]
-          if published != tag:
-              raise SystemExit(f"{name} still serves {published}, not {tag}")
-          print(f"{name} now serves {tag}")
-          CONFIRM
+        run: python .registry-verifier/scripts/check-mcp-registry.py "$RELEASE_TAG"

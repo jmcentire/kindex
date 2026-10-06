@@ -4,6 +4,16 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-10-06
+
+### Fixed
+- MCP Registry confirmation retries transient failures and propagation delays with
+  bounded attempts, and requires the exact server name, release version, and
+  official latest flag. Registry backfills load the verifier from the workflow
+  commit while publishing the selected release tag.
+- The public MCP server card lists all 70 registered tools, with a parity test
+  preventing omissions, and the release guide points at the current repository.
+
 ## [0.48.0] - 2026-10-06
 
 ### Added
