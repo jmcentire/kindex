@@ -317,6 +317,30 @@ class LLMConfig(BaseModel):
     tier2_max_tokens: int = 4000
 
 
+class AskConfig(BaseModel):
+    """`kin ask`: how a question is searched for and answered (see answer.py).
+    These settings decide LLM spend, so only user config may set them (see
+    _PROJECT_LAYER_UNTRUSTED_KEYS), and each is bounded."""
+    plan: bool = False               # an LLM planner writes the searches (one more call); else the wording decides
+    top_k: int = Field(default=60, ge=1, le=200)               # nodes retrieved per search
+    context_tokens: int = Field(default=5000, ge=1000, le=400000)  # evidence budget for a single-answer question
+    wide_context_tokens: int = Field(default=16000, ge=1000, le=400000)  # counts, lists, orderings, summaries, advice
+    excerpt: bool = True             # show only the messages of an excerpt that bear on the question
+    profiles: bool = True            # show the profiles of the people a question is about (`kin digest` writes them)
+    rules: Literal["intent", "all"] = "intent"  # answering rules: those for the kind of question, or all
+    samples: int = Field(default=1, ge=1, le=9)  # independent answers; with more than one, an adjudication pass picks
+    readings: bool = False           # answer each plausible reading when the answer depends on it
+    effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"  # reasoning effort, for providers that take one
+    plan_effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "low"
+    max_output_tokens: int = Field(default=16000, ge=256, le=128000)  # includes a reasoning model's reasoning
+    timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+
+
+class ConversationsConfig(BaseModel):
+    """Conversation digests (conversations.py). User config only."""
+    facts: bool = True               # also record each conversation's facts as dated nodes (keeps `kin ask` small)
+
+
 class BudgetConfig(BaseModel):
     daily: float = 0.50
     weekly: float = 2.00
@@ -418,7 +442,7 @@ class AttentionConfig(BaseModel):
 
 
 class AdvocateConfig(BaseModel):
-    """Opt-in deep escalation to ~/Code/advocate (multi-persona adversarial review,
+    """Opt-in deep escalation to the Advocate CLI (multi-persona adversarial review,
     including the Helland architectural seat).
 
     OFF by default — the light path is a recommendation folded into Sim's note.
@@ -430,7 +454,7 @@ class AdvocateConfig(BaseModel):
     """
     enabled: bool = False
     # Shell command that runs Advocate: the review brief arrives on stdin and the
-    # Advocate JSON is expected on stdout. The real ~/Code/advocate writes JSON to
+    # Advocate JSON is expected on stdout. The real Advocate CLI writes JSON to
     # a FILE (-o), not stdout, so the verified wrapper (persona ids checked against
     # advocate v0.1.5 — the Helland seat is `helland`) is:
     #   sh -c 'f=$(mktemp); advocate review --stdin --no-color \
@@ -502,12 +526,24 @@ class SimConfig(BaseModel):
     # the prompt on stdin and writes the response on stdout to wire in the real
     # Jeremy-simulacrum, e.g. "~/.claude/skills/simulacrum/run.py".
     command: str = ""
+    # Env-var NAMES (never values), in preference order, that may hold the
+    # Anthropic key a simulacrum `command` uses. Only presence is checked before
+    # launch. Default is the vendor-standard name; set your own order in
+    # ~/.config/kindex/kin.yaml, e.g. [MY_ORG_ANTHROPIC_API_KEY, ANTHROPIC_API_KEY].
+    api_key_env: list[str] = Field(default_factory=lambda: ["ANTHROPIC_API_KEY"])
+
+    @field_validator("api_key_env", mode="before")
+    @classmethod
+    def _split_api_key_env(cls, value):
+        if isinstance(value, str):
+            return [n.strip() for n in value.split(",") if n.strip()]
+        return value
     command_timeout: int = 60
     # Tier 0 triage: skip enqueuing a review for confident banter/small-talk so the
     # machinery never spends on light back-and-forth. Rounds UP when unsure — only a
     # confidently-trivial window is skipped. Disable to review every gated tick.
     triage_banter: bool = True
-    # Deep escalation to ~/Code/advocate (with the Helland seat). Off by default.
+    # Deep escalation to Advocate (with the Helland seat). Off by default.
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
 
 
@@ -694,7 +730,9 @@ class Config(BaseModel):
 
     data_dir: str = "~/.kindex"
     user: str = ""  # current user identity (auto-detected if empty)
-    project_dirs: list[str] = Field(default_factory=lambda: ["~/Code", "~/Personal"])
+    # Directories `kin ingest projects` scans. Empty by default: set your own
+    # roots in ~/.config/kindex/kin.yaml (see kin.sample.yaml).
+    project_dirs: list[str] = Field(default_factory=list)
     claude_dir: str = "~/.claude"
     codex_dir: str = "~/.codex"
     gemini_dir: str = "~/.gemini"
@@ -704,6 +742,8 @@ class Config(BaseModel):
     cursor_dir: str = "~/.cursor"
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    ask: AskConfig = Field(default_factory=AskConfig)
+    conversations: ConversationsConfig = Field(default_factory=ConversationsConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
@@ -883,6 +923,8 @@ _PROJECT_LAYER_UNTRUSTED_KEYS = frozenset({
     "project_dirs", "claude_dir", "codex_dir", "gemini_dir", "antigravity_dir",
     "antigravity_cli_dir", "opencode_dir", "cursor_dir",
     "user", "agent_id",
+    # LLM spend: how hard `kin ask` and conversation digests work.
+    "ask", "conversations",
 })
 # Sections a repository may tune only partly. Reminder channels carry private
 # reminder text to webhooks and mailboxes, and the rest of the section decides

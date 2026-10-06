@@ -54,7 +54,7 @@ the single startup repository. A scope violation returns an explicit error; it
 does not become an empty search result or silently redirect to the local graph.
 
 An explicit tool allowlist retains local memory, session tags, tasks, coordination,
-and Kinbase sync/status/explain/submission operations. Global graph requests
+and Kinbase sync/explain operations. Global graph requests
 and paths outside the bound repository are refused. Host-session ingestion,
 executable reminders, and general maintenance tools are not exposed. New tools
 added to the full server are not automatically admitted to this endpoint.
@@ -66,17 +66,38 @@ use; this endpoint does not run migration backups outside the repository.
 
 The local runtime graph persists across server restarts. Starting the server
 does not automatically import the tracked `.kin/index.json` or
-`.kin/knowledge.json` snapshots. Prepare approved shared context in each local
+`.kin/knowledge.jsonl` or legacy `.kin/knowledge.json` snapshots. Prepare approved shared context in each local
 graph before dispatching agents when the task requires it.
+
+Durable source references can resolve only within the selected local database.
+`show(resolve_sources=true)` reports references to other graphs as unresolved
+with reason `outside_repository_scope`, without opening those databases.
 
 ## Kinbase I/O
 
-`kinbase_sync`, `kinbase_status`, `kinbase_explain`, and `kinbase_submit` target only the bound
-repository. They retain their existing semantics: sync verifies and imports
-signed evidence into the local Kindex graph; explain reads an exact key; status
-can close overdue apologies through Kinbase.
+By default, only `kinbase_sync` and `kinbase_explain` are exposed. Both target
+the bound repository: sync verifies and imports signed evidence into the local
+Kindex graph, while explain reads an exact key. Neither submits implementation
+work to Kinbase. Native `status` is deliberately absent because it can close
+overdue apologies by writing signed events.
 
-`kinbase_submit(repo, text, node_type="concept")` submits an explicit observation
+For an authorized publishing stage, the launcher can enable write-capable tools:
+
+```bash
+kindex-lite --repo /absolute/path/to/repo --allow-kinbase-submit
+```
+
+This adds `kinbase_submit` and `kinbase_status`. Tool calls cannot enable them
+or change that choice after startup. Keep unfinished implementation lanes on
+the default read capability. Use `--no-kinbase` to omit all Kinbase operations;
+it is mutually exclusive with `--allow-kinbase-submit`. `scope_info` lists the
+operations actually enabled for the server.
+
+Python launchers use `create_server(repo, allow_kinbase_submit=True)` for the
+publishing stage, or `create_server(repo, no_kinbase=True)` for an isolated lane.
+Both options default to false.
+
+When enabled, `kinbase_submit(repo, text, node_type="concept")` submits an explicit observation
 through `kinbase ingest kindex`. Supported types are `concept`, `decision`,
 `constraint`, and `question`; the payload is always agent-authored evidence for
 the repository's team. The tool rejects empty, oversized, and recognized

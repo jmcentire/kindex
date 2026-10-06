@@ -1,0 +1,17 @@
+#!/bin/sh
+# Start the Kindex MCP server for the Claude plugin. An installed kin-mcp wins, so
+# the server and the kin CLI run one version against one database; otherwise uvx
+# runs the release this plugin was published with (scripts/sync-version.sh keeps
+# the pin equal to pyproject's version). stdout is the MCP channel: nothing else
+# may write to it.
+if [ -f "$HOME/.profile" ]; then
+    . "$HOME/.profile" >/dev/null 2>&1
+fi
+if command -v kin-mcp >/dev/null 2>&1; then
+    exec kin-mcp "$@"
+fi
+if command -v uvx >/dev/null 2>&1; then
+    exec uvx --from 'kindex[mcp]==0.47.0' kin-mcp "$@"
+fi
+echo "kindex: install uv (https://docs.astral.sh/uv/) or kindex itself (pip install 'kindex[mcp]')" >&2
+exit 1

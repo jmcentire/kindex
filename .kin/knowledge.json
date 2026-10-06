@@ -103,6 +103,28 @@
       "updated_at": "2026-10-05T22:43:27",
       "verification": {}
     },
+    "b8da96fba34301f6553c66c0dbc2cbf07959252d5ad6cd048487196f662586fd": {
+      "audience": "team",
+      "connections": [],
+      "content": "kindex-lite --repo binds memory to one repository without ambient graph or profile fallback. It uses an explicit allowlist and validates local storage each call. Kinbase defaults to sync/explain reads; --allow-kinbase-submit enables explicit agent-evidence submissions and native status, which may write overdue apology events. --no-kinbase removes all Kinbase tools. Permissions are fixed by the launcher, not tool arguments. Saved source locators outside the selected database remain unresolved. Local memory remains writable in every mode. This is an MCP capability boundary, not an OS sandbox: shell, hooks, and other servers need separate host controls. Tracked knowledge.json or knowledge.jsonl is not automatically imported. Existing schemas requiring migration need explicit preparation. Native submissions preserve Kinbase derivation/admission receipts, not authority ratification. See docs/mcp-lite.md for configuration and evidence limits.",
+      "domains": [
+        "mcp",
+        "scope",
+        "knowledge-graph",
+        "kindex"
+      ],
+      "id": "7ee63e931d49",
+      "provenance": {
+        "prov_activity": "release-closeout",
+        "prov_source": "agent:codex",
+        "prov_when": "2026-10-05T22:30:58",
+        "prov_why": "User requested per-agent Kinbase write control; source integration with current main"
+      },
+      "title": "Repository-bound Kindex Lite MCP endpoint",
+      "type": "concept",
+      "updated_at": "2026-10-05T23:47:38",
+      "verification": {}
+    },
     "d128752bba184fb9a76a3eacbaf1c15644d67df266a5c5f178d0685b242cd570": {
       "audience": "team",
       "connections": [],

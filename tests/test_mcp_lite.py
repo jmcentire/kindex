@@ -21,8 +21,8 @@ from kindex.config import Config
 from kindex.store import Store
 
 
-def _server(repo):
-    return importlib.import_module("kindex.mcp_lite").create_server(repo)
+def _server(repo, **capabilities):
+    return importlib.import_module("kindex.mcp_lite").create_server(repo, **capabilities)
 
 
 def _call(server, tool_name, **arguments):
@@ -99,10 +99,10 @@ def test_discovery_exposes_local_workflow_but_no_execution_surface(isolated):
     assert {
         "search", "add", "show", "context", "list_nodes", "status",
         "tag_start", "tag_update", "tag_resume", "task_add", "task_list", "task_done",
-        "coord_start", "coord_post", "coord_read", "kinbase_sync", "kinbase_status",
-        "kinbase_explain", "kinbase_submit",
+        "coord_start", "coord_post", "coord_read", "kinbase_sync", "kinbase_explain",
     } <= tools.keys()
     assert {"ingest", "remind_exec"}.isdisjoint(tools)
+    assert {"kinbase_submit", "kinbase_status"}.isdisjoint(tools)
     # New full-server tools must receive a deliberate capability decision.
     allowed = {
         "scope_info", "search", "add", "show", "context", "list_nodes", "status",
@@ -401,7 +401,7 @@ def test_kinbase_target_is_bound_before_bridge_invocation(isolated, monkeypatch,
     functions = {"kinbase_sync": "sync_kinbase", "kinbase_status": "read_status",
                  "kinbase_explain": "read_explain"}
     monkeypatch.setattr(bridge, functions[name], record)
-    server = _server(isolated["repo"])
+    server = _server(isolated["repo"], allow_kinbase_submit=name == "kinbase_status")
     arguments = {"logical_key": "symbol:scope", "decision": "inspect"} if name == "kinbase_explain" else {}
     assert "LOCAL_KINBASE_REPLY" in _call(server, name, repo=str(isolated["repo"]), **arguments)
     assert calls == [isolated["repo"].resolve()]
@@ -446,6 +446,66 @@ def test_unknown_full_server_tool_is_not_automatically_exposed(isolated):
         full.mcp.remove_tool("future_unreviewed_tool")
 
 
+@pytest.mark.parametrize("capabilities,expected", [
+    ({}, {"kinbase_sync", "kinbase_explain"}),
+    ({"allow_kinbase_submit": True},
+     {"kinbase_sync", "kinbase_explain", "kinbase_submit", "kinbase_status"}),
+    ({"no_kinbase": True}, set()),
+])
+def test_kinbase_capability_modes_are_fixed_at_server_creation(isolated, capabilities, expected):
+    server = _server(isolated["repo"], **capabilities)
+    advertised = {tool.name for tool in asyncio.run(server.list_tools())}
+    assert {name for name in advertised if name.startswith("kinbase_")} == expected
+    assert {"search", "add", "show", "context", "task_add"} <= advertised
+
+
+@pytest.mark.parametrize("capabilities", [{}, {"no_kinbase": True}])
+def test_omitted_kinbase_write_tools_cannot_be_invoked_or_enabled_by_arguments(
+        isolated, monkeypatch, capabilities):
+    import kindex.kinbase as bridge
+
+    attempted = []
+
+    def forbidden(*args, **kwargs):
+        attempted.append(True)
+        raise AssertionError("Caller enabled a withheld Kinbase write capability")
+
+    monkeypatch.setattr(bridge, "submit_observation", forbidden)
+    monkeypatch.setattr(bridge, "read_status", forbidden)
+    server = _server(isolated["repo"], **capabilities)
+    for injected in ({}, {"allow_kinbase_submit": True}, {"no_kinbase": False}):
+        _refused(_call(server, "kinbase_submit", repo=str(isolated["repo"]),
+                       text="Caller cannot grant itself write permission", **injected))
+        _refused(_call(server, "kinbase_status", repo=str(isolated["repo"]), **injected))
+    assert attempted == []
+    for tool in asyncio.run(server.list_tools()):
+        assert {"allow_kinbase_submit", "no_kinbase"}.isdisjoint(
+            tool.inputSchema.get("properties", {}))
+
+
+def test_no_kinbase_mode_refuses_even_read_tools(isolated, monkeypatch):
+    import kindex.kinbase as bridge
+
+    attempted = []
+
+    def forbidden(*args, **kwargs):
+        attempted.append(True)
+        raise AssertionError("No-Kinbase scope reached a Kinbase backend")
+
+    monkeypatch.setattr(bridge, "sync_kinbase", forbidden)
+    monkeypatch.setattr(bridge, "read_explain", forbidden)
+    server = _server(isolated["repo"], no_kinbase=True)
+    _refused(_call(server, "kinbase_sync", repo=str(isolated["repo"])))
+    _refused(_call(server, "kinbase_explain", repo=str(isolated["repo"]),
+                   logical_key="scope", decision="verify omitted capability"))
+    assert attempted == []
+
+
+def test_conflicting_kinbase_capabilities_refuse_at_construction(isolated):
+    with pytest.raises((ValueError, RuntimeError)):
+        _server(isolated["repo"], allow_kinbase_submit=True, no_kinbase=True)
+
+
 def test_console_entrypoint_requires_repo_and_describes_stdio(isolated):
     project = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((project / "pyproject.toml").read_text())
@@ -459,6 +519,14 @@ def test_console_entrypoint_requires_repo_and_describes_stdio(isolated):
                                  cwd=project, timeout=15)
     assert help_result.returncode == 0, help_result.stderr
     assert "--repo" in help_result.stdout
+    assert "--allow-kinbase-submit" in help_result.stdout
+    assert "--no-kinbase" in help_result.stdout
     missing = subprocess.run(command, capture_output=True, text=True, cwd=project, timeout=15)
     assert missing.returncode != 0
     assert "repo" in (missing.stderr + missing.stdout).lower()
+    conflicting = subprocess.run(
+        command + ["--repo", str(isolated["repo"]), "--allow-kinbase-submit", "--no-kinbase"],
+        capture_output=True, text=True, cwd=project, timeout=15)
+    assert conflicting.returncode != 0
+    assert any(word in (conflicting.stdout + conflicting.stderr).lower()
+               for word in ("not allowed", "exclusive", "conflict", "cannot"))

@@ -476,15 +476,15 @@ def prime_context(
     # Kindex's own fixed instructions, not graph content: outside the budget.
     if config is None or config.reminders.remind_kindex_usage:
         lines.append("### Session directives")
-        lines.append("You MUST use kindex MCP tools proactively — this is the user's external memory.")
+        lines.append("Kindex is the user's external memory: use kindex MCP tools proactively.")
         lines.append("**Capture as you go** — don't batch, don't wait until the end:")
-        lines.append("- `search` FIRST to see what's known, and before every `add` to avoid duplicates")
-        lines.append("- `add` discoveries, decisions (--type decision), questions (--type question)")
+        lines.append("- `search` first to see what's known, and before every `add` to avoid duplicates")
+        lines.append("- `add` discoveries, decisions (node_type=\"decision\"), questions (node_type=\"question\")")
         lines.append("- `watch_add` for things needing monitoring (flaky tests, unstable APIs, pending items)")
         lines.append("- `watch_resolve` when a watched issue is fixed or no longer relevant")
-        lines.append("- `link` aggressively — the graph's value is in connections, not isolated nodes")
+        lines.append("- `link` related nodes — the graph's value is in connections, not isolated nodes")
         lines.append("- `learn` after reading long files/outputs to bulk-extract knowledge")
-        lines.append("- `task_add` for work items — ALWAYS use link_to to connect to related concepts")
+        lines.append("- `task_add` for work items — pass link_to to connect them to related concepts")
         lines.append("- `task_done` to complete tasks, `task_list` to see what's open")
         lines.append("- `remind_create` for time-based triggers (with `action`, `instructions`, or `wake`)")
         lines.append("- `tag_start`/`tag_update` to track session focus and progress")
@@ -850,9 +850,9 @@ def generate_session_directive(store: Store) -> str:
     Returns markdown string with instructions for capturing knowledge during sessions.
     """
     lines = [
-        "## Kindex: Knowledge Capture (REQUIRED)",
+        "## Kindex: Knowledge Capture",
         "",
-        "You MUST use kindex MCP tools throughout this session to capture knowledge.",
+        "Use the kindex MCP tools throughout this session to capture knowledge.",
         "Prefer MCP tools (`add`, `search`, `link`, `learn`) over CLI when available.",
         "",
         "### What to capture",
@@ -865,7 +865,7 @@ def generate_session_directive(store: Store) -> str:
         "- **Connections**: when two concepts relate -- `link` with reason",
         "",
         "### Rules",
-        "- Always `search` before `add` to avoid duplicates",
+        "- `search` before `add` to avoid duplicates",
         "- Use `learn` for bulk extraction from long text/files",
         "- Use `tag_start`/`tag_update` to track session context",
         "- Use `remind_create` with `action`/`instructions`/`wake` for deferred tasks",

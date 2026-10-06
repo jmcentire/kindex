@@ -7,8 +7,8 @@ data_dir: ~/.kindex
 
 # Directories to scan for projects (kin ingest projects)
 project_dirs:
-  - ~/Code
-  - ~/Personal
+  - ~/src
+  - ~/notes
 
 # Claude Code data directory (for session scanning)
 claude_dir: ~/.claude
@@ -44,3 +44,9 @@ defaults:
   hops: 2
   min_weight: 0.1
   mode: bfs
+
+# Sim supervisory check-in (optional). When sim.command runs an external
+# simulacrum, these env-var NAMES (never values) are checked, in order, for an
+# Anthropic key before launch. Default: [ANTHROPIC_API_KEY].
+# sim:
+#   api_key_env: [MY_ORG_ANTHROPIC_API_KEY, ANTHROPIC_API_KEY]

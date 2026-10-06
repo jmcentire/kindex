@@ -31,11 +31,16 @@ def test_pr_and_release_share_the_full_test_job():
     # A hung test fails the job instead of holding the runner.
     assert str(test["timeout-minutes"]) == "30"
     assert [step["run"] for step in test["steps"] if "run" in step] == [
+        # Byte-compile on the requires-python floor before the 3.12 suite.
+        "python -m compileall -q src/kindex",
         "sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux universal-ctags",
         'pip install -e ".[dev,mcp]"', "pytest -n auto --dist loadfile --timeout 300",
     ]
     assert all("continue-on-error" not in step and "if" not in step
                for step in test["steps"])
+    pythons = [step["with"]["python-version"] for step in test["steps"]
+               if step.get("uses", "").startswith("actions/setup-python")]
+    assert pythons == ["3.10", "3.12"]
 
     jobs = release["jobs"]
     assert jobs["ci"] == {"uses": "./.github/workflows/ci.yml"}

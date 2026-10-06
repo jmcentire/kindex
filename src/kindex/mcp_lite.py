@@ -40,6 +40,7 @@ LOCAL_TOOLS = (
     "coord_inject", "coord_list", "coord_end", "lock_acquire", "lock_release",
 )
 KINBASE_TOOLS = ("kinbase_sync", "kinbase_status", "kinbase_explain", "kinbase_submit")
+KINBASE_READ_TOOLS = ("kinbase_sync", "kinbase_explain")
 
 
 class ScopeRefused(ValueError):
@@ -184,15 +185,38 @@ class _RepoScope:
         return scoped
 
 
-def create_server(repo: str | Path) -> FastMCP:
+def create_server(repo: str | Path, *, allow_kinbase_submit: bool = False,
+                  no_kinbase: bool = False) -> FastMCP:
     """Create a server bound to one existing repository, never ambient graphs.
 
     The canonical local layout is selected once. Every call revalidates that
     selection and filesystem links; conflicting populated layouts are refused.
     Repo/global YAML, profiles and graph-routing environment variables are not
     loaded. A missing local graph initializes on its first storage operation.
+    Kinbase defaults to source reads. Its write-capable status and submission
+    tools require explicit launcher opt-in; no_kinbase omits all Kinbase tools.
     """
+    if allow_kinbase_submit and no_kinbase:
+        raise ValueError("allow_kinbase_submit and no_kinbase are mutually exclusive")
     scope = _RepoScope(repo)
+    if no_kinbase:
+        kinbase_tools = ()
+        kinbase_instructions = "Kinbase tools are disabled for this server. "
+    elif allow_kinbase_submit:
+        kinbase_tools = KINBASE_TOOLS
+        kinbase_instructions = (
+            "Kinbase sync/explain/submit/status are bound to this repository. Submissions "
+            "send explicit AI evidence through native ingestion, whose receipt reports "
+            "derivation/admission. No bulk admission or ratification is requested. Kinbase status "
+            "may close overdue apologies through its existing signed-write behavior. "
+        )
+    else:
+        kinbase_tools = KINBASE_READ_TOOLS
+        kinbase_instructions = (
+            "Kinbase sync/explain read source evidence for this repository; sync updates "
+            "only the local Kindex projection. Kinbase submissions and write-capable status "
+            "are unavailable: unfinished work cannot be submitted through this server. "
+        )
     server = FastMCP(
         "kindex-lite",
         instructions=(
@@ -201,14 +225,11 @@ def create_server(repo: str | Path) -> FastMCP:
             "Use tag_start/tag_resume, search before adding, and tag_update to end sessions. "
             "Search uses local text and graph retrieval; learn uses keyword extraction. "
             "Ambient configuration and host conversation history are not loaded. "
-            "Kinbase sync/status/explain/submit are bound to this repository. Submissions "
-            "send explicit AI evidence through native ingestion, whose receipt reports "
-            "derivation/admission. No bulk admission or ratification is requested. Kinbase status may "
-            "close overdue apologies through its existing signed-write behavior. "
+            + kinbase_instructions +
             "This capability boundary does not sandbox other AI tools or the Kinbase executable."
         ),
     )
-    for name in (*LOCAL_TOOLS, *KINBASE_TOOLS):
+    for name in (*LOCAL_TOOLS, *kinbase_tools):
         # The full server's decorators record host health. The lite surface
         # supplies its own error/redaction guard and no host health writer.
         handler = inspect.unwrap(getattr(mcp_server, name))
@@ -220,7 +241,8 @@ def create_server(repo: str | Path) -> FastMCP:
         try:
             scope.validate()
             return {"ok": True, "repo": str(scope.repo), "data_dir": str(scope.data_path),
-                    "graph": "project", "kinbase_operations": list(KINBASE_TOOLS),
+                    "graph": "project", "kinbase_operations": list(kinbase_tools),
+                    "kinbase_submissions_allowed": allow_kinbase_submit,
                     "ambient_config": False, "os_sandbox": False}
         except (ValueError, OSError) as error:
             return {"ok": False, "error": safe_error(error)}
@@ -231,9 +253,15 @@ def create_server(repo: str | Path) -> FastMCP:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kindex MCP bound to one repository")
     parser.add_argument("--repo", required=True, help="Existing repository directory")
+    kinbase = parser.add_mutually_exclusive_group()
+    kinbase.add_argument("--allow-kinbase-submit", action="store_true",
+                         help="Enable Kinbase submission and write-capable status tools")
+    kinbase.add_argument("--no-kinbase", action="store_true",
+                         help="Disable all Kinbase tools")
     args = parser.parse_args()
     try:
-        server = create_server(args.repo)
+        server = create_server(args.repo, allow_kinbase_submit=args.allow_kinbase_submit,
+                               no_kinbase=args.no_kinbase)
     except (ValueError, OSError) as error:
         parser.error(safe_error(error))
     server.run(transport="stdio")

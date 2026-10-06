@@ -9,9 +9,118 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   local graph, with no global/profile fallback, a fixed tool allowlist, and
   repository-bound Kinbase operations. Local memory, tasks, sessions, and
   coordination remain available without host-history ingestion or executable
-  reminders. `kinbase_submit` / `kin kinbase submit` submit explicit agent
+  reminders. Kinbase defaults to sync/explain reads; `--allow-kinbase-submit`
+  enables submission and write-capable status, while `--no-kinbase` omits all
+  Kinbase tools. `kinbase_submit` / `kin kinbase submit` submit explicit agent
   evidence through Kinbase's native intake, retaining its derivation/admission
   receipt without requesting authority ratification.
+- `kin ingest conversations --directory DIR` stores chat transcripts (JSON or
+  JSONL: `{"id", "date", "messages": [{"role", "content", "name"}]}`) without
+  loss: whole messages packed into dated `document` nodes of at most 4,000
+  characters, linked in order. A digest pass (`kindex.conversations`) records
+  the user's standing instructions as `directive` nodes and summarizes
+  conversations of 6,000 tokens or more; short conversations are read from the
+  user's side only, and task setups ("respond only with OK until ...") are not
+  directives.
+- The digest pass also writes down each conversation's facts as dated nodes
+  (`conversations.facts`, on by default): self-contained statements with
+  names, numbers and the date they happened (relative dates resolved against
+  the conversation date), including what the assistant recommended. `kin ask`
+  lists retrieved facts by date above the conversation excerpts. A fact is a
+  sentence where an excerpt is a page, so they let `kin ask` answer from a
+  small context; the pass reads each conversation in full once. From the facts
+  it also writes a profile of each person they are mostly about (what was
+  recorded, then conclusions marked likely), rebuilt when those facts change
+  and removed with a retracted conversation; `kin ask` shows the profiles of
+  the people a question names, except for dates, counts, orderings and
+  summaries, where the dated evidence is the better source.
+- A conversation file entry may carry `"expires": "YYYY-MM-DD"` (its nodes and
+  everything derived from them stop surfacing after that date) or
+  `"retracted": true` (it, its summary and facts, and directives no other
+  conversation gave are removed). Re-ingesting a conversation reconciles it:
+  appended, edited and removed messages update the stored nodes and links, and
+  a changed conversation is digested again.
+
+### Changed
+- `kin ask` answers from dated evidence in one model call (`kindex.answer`).
+  The question's wording sets its kind (a single fact, a count or list, a
+  date, an ordering, a summary, advice), which picks the evidence budget, the
+  answering rules sent and the answer's form; an LLM planner that writes the
+  searches is optional (`ask.plan`). The model sees the matching nodes dated
+  and oldest first, with today's date (`--as-of`) and the standing directives,
+  within 5,000 tokens for a single answer and 16,000 for counts, lists,
+  orderings, advice and judgements (summaries half again; the wide budget too when the
+  graph holds no facts). Conversation excerpts show only the messages that
+  share a word with the question, with one message either side, and relative
+  dates in them carry the date they mean ("next month [= October 2023]"). In
+  a terminal the answer is shown sentence by sentence as it is written. A question
+  that points at a time ("10 days ago", "last month") brings that span
+  forward; a count lists facts ahead of excerpts; a question naming several
+  things searches for each. Previously it saw five results truncated to 500
+  characters, with no dates. Settings live under `ask:` (`plan`, `top_k`,
+  `context_tokens`, `wide_context_tokens`, `excerpt`, `rules`, `samples`,
+  `effort`, `readings`). Without an LLM it still prints search results. The
+  LLM budget is checked before every model call; the context budget covers
+  every section, and what did not fit is reported to the caller. Stored text
+  is escaped so evidence cannot pose as a directive. The `ask:` and
+  `conversations:` sections decide LLM spend, so a repository's `.kin/config`
+  cannot set them, and `ask:` values are bounded.
+- The MCP `ask` tool returns what `kin ask` answers from: the matching nodes
+  dated and oldest first, with today's date and the standing directives,
+  within `kin ask`'s budgets (or `max_tokens`), each named by its title and
+  ref. Counting, listing and ordering questions search deeper and say when the
+  evidence may be incomplete. It makes no model call unless `answer=true`,
+  which drafts the answer with `kin ask`'s pipeline. `context` gains
+  `level="evidence"` for the same form; its default tier is unchanged.
+  Directives read from Kinbase are not standing instructions, and Kinbase
+  evidence keeps its governance note in both.
+- The OpenAI provider passes system instructions, reasoning effort and JSON
+  schemas. It retries rate limits and server errors only for callers that ask
+  (`kin ask`, `kin digest`), within an optional overall deadline; hooks get no
+  retries.
+
+## [0.47.0] - 2026-10-03
+
+### Added
+- Kindex is a Claude plugin you can install by name:
+  `claude plugin marketplace add wandercom/kindex`, then
+  `claude plugin install kindex@kindex`. Its MCP server uses an installed
+  `kin-mcp` and otherwise runs this release through `uvx`, so the plugin works
+  without a separate install. Its hooks do nothing until `kin` is installed,
+  instead of failing every prompt. The manifest is ready for Anthropic's plugin
+  directory.
+- New repo knowledge artifacts are written as `.kin/knowledge.jsonl`; an existing
+  `.kin/knowledge.json` keeps its format. Publish and import refuse a repo that
+  has both until they are merged, so neither file's records are dropped.
+- MCP captures record graph-bound source references that survive restarts, and
+  `show` can resolve them read-only (`resolve_sources`).
+- Prices for Claude Opus 4.8, 5 and 5.5, Sonnet 5 and 5.5, and Fable 5.1.
+
+### Changed
+- The Claude mod (`kin setup-hooks --mode modern`) installs on Claude Code
+  2.1.287 and newer when that host's `claude plugin validate` accepts it; it
+  previously refused everything but 2.1.274. Last verified on 2.1.288.
+- An unpriced model is costed at the highest known rate, so budget caps fail
+  closed; prices resolve through `us.anthropic.` prefixes and date suffixes.
+- Prompt text audited for current Claude models: the MCP instructions, prime
+  directives, tool descriptions, skills and generated CLAUDE.md/AGENTS.md blocks
+  use plain wording, and the `learn` tool describes what it actually creates.
+
+### Fixed
+- `kin` imports again on Python 3.10 and 3.11, which `requires-python` has always
+  promised: a 3.12-only f-string in `cli.py` (since 0.36.1) and `datetime.UTC` in
+  `vectors.py` broke every command there. CI now byte-compiles the package on 3.10.
+- LLM replies are read by block type. On models that think by default the first
+  block is a thinking block, and a refusal has no text, so extraction, `kin ask`,
+  attention, Sim and reinforcement silently returned nothing there. Those models
+  also get `max_tokens` headroom for thinking.
+- `kin ask` uses each model's real minimum cacheable prompt length.
+- Opening a graph created before graph identities no longer fails with
+  "database is locked" while another process is writing.
+
+## [0.46.0] - 2026-10-01
+
+### Added
 - MCP reads in a repository-local session can consult both the selected project
   graph and configured user graph, with explicit per-call `auto`, `project`, and
   `global` scopes on retrieval, listings, and diagnostics. Session-qualified
@@ -27,11 +136,12 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   predecessors replaced by a successor outside the selected audience.
 
 ### Fixed
+- Session-tag `update`, `segment`, `pause`, and `end` require an explicit tag
+  name in the CLI and MCP tool. Missing or blank CLI names now exit with status
+  2 instead of silently selecting another active session.
 - Graph exports use a stable schema per audience and deterministic node/edge
   ordering. Directed relationships retain their stored direction on import;
   public/org exports preserve existing privacy omissions.
-
-### Fixed
 - Derived MCP writes route qualified global evidence to the user graph and
   refuse ambiguous or cross-store links before creating nodes. Contextual
   tasks routed outward retain the selected project association for `task_list`.

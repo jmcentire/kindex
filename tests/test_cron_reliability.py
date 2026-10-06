@@ -1152,7 +1152,7 @@ class TestSchedulerCommandShape:
             "*/7 * * * * /home/u/.local/pipx/venvs/kindex/bin/kin cron >> /x/c.log 2>&1")
         # User lines that merely mention kindex paths must never be ours
         assert not is_kindex_cron_line("0 3 * * * cp ~/.kindex/kindex.db /backups/")
-        assert not is_kindex_cron_line("0 4 * * * rsync -a ~/Code/kindex /backup/")
+        assert not is_kindex_cron_line("0 4 * * * rsync -a ~/src/kindex /backup/")
         assert not is_kindex_cron_line("# kindex jobs below")
 
     def test_crontab_user_lines_mentioning_kindex_survive_noop(self, config, monkeypatch):

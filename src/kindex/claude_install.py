@@ -29,8 +29,44 @@ def _atomic_json(path: Path, value: dict) -> None:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
-QUALIFIED_CLAUDE_VERSION = "2.1.274"
+# The release this plugin was last type-checked and validated against.
+QUALIFIED_CLAUDE_VERSION = "2.1.288"
+# Mods (function hooks) ship enabled from this release. The API is still early
+# access and moves between releases, so a newer host is accepted only when its
+# own `claude plugin validate` accepts the plugin, never on the number alone.
+MODS_RELEASE = (2, 1, 287)
+# The early-access release that needs CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1.
+EARLY_ACCESS_VERSION = "2.1.274"
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return ()
+
+
+def check_claude_host(claude: str, version: str, assets: Path) -> bool:
+    """Refuse a Claude Code host that would not load the plugin.
+
+    Returns whether the host needs the early-access activation setting.
+    """
+    if version == EARLY_ACCESS_VERSION:
+        return True
+    if _version_tuple(version) < MODS_RELEASE:
+        raise ValueError(f"Claude Code {version} predates mods ({'.'.join(map(str, MODS_RELEASE))}); "
+                         "update Claude Code or use --mode legacy")
+    checked = subprocess.run([claude, "plugin", "validate", str(assets)], capture_output=True,
+                             text=True, timeout=60)
+    if checked.returncode != 0:
+        detail = (checked.stdout + checked.stderr).strip().splitlines()[-5:]
+        raise ValueError(f"Claude Code {version} refuses the Kindex plugin; use --mode legacy: "
+                         + " | ".join(detail))
+    return False
 PLUGIN_NAME = "kindex-modern"
+# The packaged Claude plugin (repo root) reaches kin through this shim, which
+# runs an installed kin and otherwise lets the hook pass (scripts/claude-plugin/kin).
+PACKAGED_PLUGIN_KIN = "${CLAUDE_PLUGIN_ROOT}/scripts/claude-plugin/kin"
 
 
 def legacy_manifest(config, kin_path: str) -> dict:
@@ -154,20 +190,19 @@ def install(config, *, mode="legacy", dry_run=False, uninstall=False,
         unresolved = unresolved_handlers(data)
         if unresolved:
             raise ValueError("Unrecognized Kindex wrappers remain; inspect and explicitly retire with --retire-command: " + json.dumps(unresolved))
-        # Verified on 2.1.263 and 2.1.274: persistent settings env activates modules even
-        # when the launching shell does not export the early-access flag.
-        data.setdefault("env", {})["CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"] = "1"
         for name in ("kindex@kindex", "kindex@skills-dir"):
             if name in enabled:
                 enabled[name] = False
         claude = shutil.which("claude")
         if not claude:
-            raise ValueError(f"Modern adapter requires Claude Code {QUALIFIED_CLAUDE_VERSION} on PATH")
+            raise ValueError(f"Modern adapter requires Claude Code {'.'.join(map(str, MODS_RELEASE))} or newer on PATH")
         version = subprocess.run([claude, "--version"], capture_output=True, text=True,
                                  timeout=10, check=True).stdout.split()[0]
-        if version != QUALIFIED_CLAUDE_VERSION:
-            raise ValueError(f"Function hooks qualified on {QUALIFIED_CLAUDE_VERSION}, found {version}; use --mode legacy")
         assets = Path(__file__).parent / "claude_modern"
+        if check_claude_host(claude, version, assets):
+            # Verified on 2.1.263 and 2.1.274: persistent settings env activates modules even
+            # when the launching shell does not export the early-access flag.
+            data.setdefault("env", {})["CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"] = "1"
         manifest_path = plugin / ".claude-plugin" / "plugin.json"
         if plugin.exists() and (not manifest_path.exists() or
                                json.loads(manifest_path.read_text()).get("name") != PLUGIN_NAME):
@@ -175,7 +210,7 @@ def install(config, *, mode="legacy", dry_run=False, uninstall=False,
         if plugin.is_symlink() or (plugin.exists() and any(path.is_symlink() for path in plugin.rglob("*"))):
             raise ValueError("Refusing linked files in installed Kindex plugin")
         actions.append(f"Install {PLUGIN_NAME} at {plugin}; legacy hooks are not loaded")
-        actions.append("Enabled function hooks in Claude user settings; restart Claude (early-access host limits still apply)")
+        actions.append("Enabled the Kindex mod; restart Claude or run /reload-plugins")
         if not dry_run:
             base.mkdir(parents=True, exist_ok=True)
             staged_plugin = Path(tempfile.mkdtemp(dir=base, prefix=".kindex-plugin-stage-"))

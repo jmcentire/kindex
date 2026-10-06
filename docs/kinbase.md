@@ -10,8 +10,11 @@ kin kinbase submit "The dispatcher persists receipts before acknowledging delive
 ```
 
 The MCP equivalent is `kinbase_submit(repo, text, node_type="concept")`.
-`kindex-lite --repo PATH` exposes this operation with the repository fixed at
-startup. The CLI also accepts `--binary /absolute/path/to/kinbase`; MCP callers
+`kindex-lite --repo PATH --allow-kinbase-submit` exposes this operation with the
+repository fixed at startup. Lite defaults to sync/explain reads and excludes
+submission and native status, which can write overdue-apology events.
+Use `--no-kinbase` to omit all Kinbase tools from a lite server.
+The CLI also accepts `--binary /absolute/path/to/kinbase`; MCP callers
 cannot choose an executable.
 
 Submission supports `concept`, `decision`, `constraint`, and `question`, up to
@@ -109,7 +112,8 @@ repositories remain distinct. Rejected, proposed, and superseded facts stay
 inspectable via `--include-archived`; validity windows fence ordinary retrieval.
 
 JSON/JSONL graph export and import preserve standing and the Kinbase metadata
-that explains it. The unsigned `.kin/knowledge.json` publication path refuses
+that explains it. The unsigned `.kin/knowledge.jsonl` publication path (or an
+existing `.kin/knowledge.json`) refuses
 Kinbase imports because that transport cannot preserve their signed-source
 semantics. Store credentials are redacted as usual: the verification receipt
 applies to the original external bytes, not to a possibly redacted cached copy.

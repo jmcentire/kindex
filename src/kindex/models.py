@@ -3,9 +3,28 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
+
+
+class DurableSourceRef(BaseModel):
+    """Durable evidence locator, never an authorization handle for writes."""
+
+    version: Literal[1] = 1
+    node_id: str = Field(min_length=1)
+    graph_id: UUID
+    db_path: str
+    project_path: str = ""
+    profile: str = ""
+
+    @field_validator("db_path")
+    @classmethod
+    def absolute_locator(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("Source database locator must be absolute")
+        return value
 
 
 class Edge(BaseModel):

@@ -479,7 +479,7 @@ def _reinforce_claimed(store, config, conversation_id, trace, injected, state,
             max_tokens=config.attention.max_output_tokens * 2,
             messages=[{"role": "user", "content": prompt}],
         )
-        from .llm import calculate_cost
+        from .llm import calculate_cost, response_text
         cost = calculate_cost(config.llm.model, response.usage)
         ledger.record(
             cost["amount"], model=config.llm.model, purpose=REINFORCE_PURPOSE,
@@ -488,7 +488,7 @@ def _reinforce_claimed(store, config, conversation_id, trace, injected, state,
             cache_read_tokens=cost.get("cache_read_tokens", 0),
             conversation_id=conversation_id,
         )
-        parsed = _parse(response.content[0].text)
+        parsed = _parse(response_text(response))
     except Exception as exc:
         return {"status": "llm_error", "error": str(exc), "outcomes": []}
 

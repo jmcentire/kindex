@@ -277,7 +277,8 @@ def test_mcp_submission_has_no_caller_authority_controls(submission_env, monkeyp
 
     monkeypatch.setattr(bridge, "submit_observation", backend)
     if surface == "lite":
-        server = importlib.import_module("kindex.mcp_lite").create_server(env["repo"])
+        server = importlib.import_module("kindex.mcp_lite").create_server(
+            env["repo"], allow_kinbase_submit=True)
     else:
         monkeypatch.setattr(full, "_store", env["local"])
         monkeypatch.setattr(full, "_config", env["local"].config)

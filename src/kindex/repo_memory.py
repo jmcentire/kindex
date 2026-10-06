@@ -25,7 +25,17 @@ def _encoded(value):
 
 
 def _path(root):
-    path = Path(root) / ".kin" / "knowledge.json"
+    directory = Path(root) / ".kin"
+    legacy = directory / "knowledge.json"
+    current = directory / "knowledge.jsonl"
+    present = [p for p in (legacy, current) if p.exists() or p.is_symlink()]
+    # A client from before JSONL writes knowledge.json beside a newer client's
+    # knowledge.jsonl; choosing either would silently drop the other's records.
+    if len(present) == 2:
+        raise ValueError("Both .kin/knowledge.json and .kin/knowledge.jsonl exist; "
+                         "merge them into one before publishing or importing")
+    # Never migrate a tracked JSON artifact implicitly. New repos use JSONL.
+    path = legacy if present == [legacy] else current
     if path.is_symlink() or path.parent.is_symlink():
         raise ValueError("Refusing symlinked repo evidence")
     return path
@@ -80,7 +90,22 @@ def _load(path):
         return {"schema": SCHEMA, "records": {}}
     if path.stat().st_size > MAX_BYTES:
         raise ValueError("Repo evidence exceeds 2 MiB")
-    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    if path.suffix == ".jsonl":
+        records = {}
+        # JSONL records end at literal LF; Unicode line separators are valid
+        # characters inside JSON strings and must not split a record.
+        for line in path.read_text(encoding="utf-8").split("\n"):
+            if not line.strip():
+                continue
+            record = json.loads(line, object_pairs_hook=_unique_object)
+            _validate_record(record)
+            digest = hashlib.sha256(_encoded(record).encode()).hexdigest()
+            if digest in records:
+                raise ValueError("Duplicate repo evidence record")
+            records[digest] = record
+        value = {"schema": SCHEMA, "records": records}
+    else:
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
     if (not isinstance(value, dict) or value.keys() != {"schema", "records"}
             or value.get("schema") != SCHEMA or not isinstance(value.get("records"), dict)):
         raise ValueError("Unsupported repo evidence schema")
@@ -176,7 +201,11 @@ def _publish_locked(store, root, node_ids: list[str]) -> dict:
         if digest not in document["records"]:
             document["records"][digest] = record
             added += 1
-    output = json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    if path.suffix == ".jsonl":
+        output = "".join(_encoded(record) + "\n" for digest, record in sorted(
+            document["records"].items(), key=lambda item: (item[1]["id"], item[0])))
+    else:
+        output = json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if len(output.encode()) > MAX_BYTES:
         raise ValueError("Repo evidence exceeds 2 MiB; curate the transport explicitly")
     path.parent.mkdir(exist_ok=True)

@@ -9,11 +9,11 @@ Companies publish `.kin` voice files to encode their communication style, engine
     ^
     |  inherits
     |
-~/Code/platform/.kin/config           # Platform team context
+~/src/platform/.kin/config           # Platform team context
     ^
     |  inherits
     |
-~/Code/payments-service/.kin/config   # Service-specific context
+~/src/payments-service/.kin/config   # Service-specific context
 ```
 
 Each layer adds specificity. The payments service gets Anthropic's voice principles, the platform team's engineering standards, AND its own domain-specific context. Local values override ancestors.
