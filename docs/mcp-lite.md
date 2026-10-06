@@ -1,0 +1,142 @@
+# Repository-bound MCP
+
+Run a separate Kindex endpoint when an agent should remember only within one
+repository or Factory lane:
+
+```bash
+kindex-lite --repo /absolute/path/to/repo
+```
+
+The command is included in `kindex[mcp]`. It serves MCP over stdio. The repository
+must exist; an empty repository can start a fresh graph without a home-level
+Kindex configuration. The server uses the repository's canonical
+`.kin/local/kindex` store, or the supported populated legacy `.kin/local` store.
+It refuses conflicting populated layouts instead of choosing silently.
+
+Install `kindex[mcp,kinbase]` when signed Kinbase event synchronization is needed.
+The `kinbase` extra supplies signature verification dependencies; the native
+Kinbase executable is separate and is needed for explain, reduced sync, and
+submissions. Raw sync can read the approved repository event copy without it.
+
+## Client configuration
+
+Keep the MCP server name `kindex` so existing agent instructions and tool-name
+checks continue to recognize it. Configure it in the agent's isolated host
+configuration, replacing the unrestricted Kindex entry for that agent.
+
+```json
+{
+  "mcpServers": {
+    "kindex": {
+      "command": "kindex-lite",
+      "args": ["--repo", "/absolute/path/to/repo"]
+    }
+  }
+}
+```
+
+For clients that use TOML:
+
+```toml
+[mcp_servers.kindex]
+command = "kindex-lite"
+args = ["--repo", "/absolute/path/to/repo"]
+```
+
+Use an absolute executable path when the host does not inherit your shell's PATH.
+Each lane gets its own repository path and local store. Do not point Coder and
+Tester at the same repository or copy one lane's runtime graph into the other.
+
+## What is restricted
+
+The repository is chosen by the launcher, not by tool arguments. Home-level
+graphs, profile selection, parent configuration, and environment graph selectors
+cannot redirect this endpoint. The endpoint uses fixed defaults rather than
+loading routing or provider settings from YAML.
+
+Every exposed handler gets its graph, configuration, and repository binding from
+the single startup repository. A scope violation returns an explicit error; it
+does not become an empty search result or silently redirect to the local graph.
+
+An explicit tool allowlist retains local memory, session tags, tasks, coordination,
+and Kinbase sync/explain operations. Global graph requests
+and paths outside the bound repository are refused. Host-session ingestion,
+executable reminders, and general maintenance tools are not exposed. New tools
+added to the full server are not automatically admitted to this endpoint.
+
+Graph path validation rejects linked storage and checks the bound location again
+for each call. Missing or invalid storage never falls back to the user's graph.
+Existing databases that require migration must be upgraded explicitly before
+use; this endpoint does not run migration backups outside the repository.
+
+The local runtime graph persists across server restarts. Starting the server
+does not automatically import the tracked `.kin/index.json` or
+`.kin/knowledge.jsonl` or legacy `.kin/knowledge.json` snapshots. Prepare approved shared context in each local
+graph before dispatching agents when the task requires it.
+
+Durable source references can resolve only within the selected local database.
+`show(resolve_sources=true)` reports references to other graphs as unresolved
+with reason `outside_repository_scope`, without opening those databases.
+
+## Kinbase I/O
+
+By default, only `kinbase_sync` and `kinbase_explain` are exposed. Both target
+the bound repository: sync verifies and imports signed evidence into the local
+Kindex graph, while explain reads an exact key. Neither submits implementation
+work to Kinbase. Native `status` is deliberately absent because it can close
+overdue apologies by writing signed events.
+
+For an authorized publishing stage, the launcher can enable write-capable tools:
+
+```bash
+kindex-lite --repo /absolute/path/to/repo --allow-kinbase-submit
+```
+
+This adds `kinbase_submit` and `kinbase_status`. Tool calls cannot enable them
+or change that choice after startup. Keep unfinished implementation lanes on
+the default read capability. Use `--no-kinbase` to omit all Kinbase operations;
+it is mutually exclusive with `--allow-kinbase-submit`. `scope_info` lists the
+operations actually enabled for the server.
+
+Python launchers use `create_server(repo, allow_kinbase_submit=True)` for the
+publishing stage, or `create_server(repo, no_kinbase=True)` for an isolated lane.
+Both options default to false.
+
+When enabled, `kinbase_submit(repo, text, node_type="concept")` submits an explicit observation
+through `kinbase ingest kindex`. Supported types are `concept`, `decision`,
+`constraint`, and `question`; the payload is always agent-authored evidence for
+the repository's team. The tool rejects empty, oversized, and recognized
+credential-bearing text. A content-addressed SQLite artifact under the local
+graph's `kinbase-submissions/` directory makes unchanged retries use the same
+source identity. Existing artifacts are checked before reuse.
+
+Native intake can derive and admit local facts; its receipt reports those effects.
+The tool does not run a separate bulk admission command or request authority
+ratification. A timeout leaves the outcome unknown:
+Kinbase may already have recorded the observation. Retry the same text and type
+to reuse its identity. Kindex writes no signed source events itself.
+See [Kinbase integration](kinbase.md).
+
+Kinbase may contact its configured authority service and refresh its own caches.
+Repository binding does not narrow Kinbase's authority projection beyond the
+permissions Kinbase already enforces for that repository.
+
+For isolated agents, do not pass the operator's entire `XDG_CONFIG_HOME` through
+to native Kinbase. Its config can contain absolute cache, Personal database, and
+privileged credential paths that a private `HOME` does not redirect. Provision a
+separate Kinbase config with private cache/data paths and only approved read
+credentials, or use a frozen raw event copy without the native executable.
+Preserve the approved repository proof-clock: native reads can fall back to the
+configured Personal database when it is missing. Native explain can update
+caches and authenticated-request bookkeeping; read access means no content
+submission, not an absence of all local or service-side writes.
+
+## Boundary
+
+This restricts what this MCP endpoint can do. It is not an operating-system
+sandbox for the agent, its shell, hooks, other MCP servers, or the Kinbase binary.
+Use host isolation when those surfaces also need restrictions. In particular,
+an unrestricted Kindex primer hook or a second full Kindex server can still supply
+outside context even while this endpoint is correctly scoped.
+
+The normal `kin` CLI and `kin-mcp` server retain their existing behavior.

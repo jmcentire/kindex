@@ -4,7 +4,18 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-06
+
 ### Added
+- `kindex-lite --repo PATH` starts an MCP endpoint bound to one repository's
+  local graph, with no global/profile fallback, a fixed tool allowlist, and
+  repository-bound Kinbase operations. Local memory, tasks, sessions, and
+  coordination remain available without host-history ingestion or executable
+  reminders. Kinbase defaults to sync/explain reads; `--allow-kinbase-submit`
+  enables submission and write-capable status, while `--no-kinbase` omits all
+  Kinbase tools. `kinbase_submit` / `kin kinbase submit` submit explicit agent
+  evidence through Kinbase's native intake, retaining its derivation/admission
+  receipt without requesting authority ratification.
 - `kin ingest conversations --directory DIR` stores chat transcripts (JSON or
   JSONL: `{"id", "date", "messages": [{"role", "content", "name"}]}`) without
   loss: whole messages packed into dated `document` nodes of at most 4,000

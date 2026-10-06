@@ -1,7 +1,9 @@
-"""Read-only Kinbase evidence import; signing and governance stay in Kinbase.
+"""Kinbase evidence I/O; signing and governance stay in Kinbase.
 
 Raw verifies immutable local events. Reduced asks Kinbase to explain each local
 logical key, retaining the reduction receipt. Neither grants Kindex verification.
+Explicit submissions pass AI evidence through native ingestion. Native receipts
+own derivation/admission results; no separate bulk corpus admission is requested.
 """
 from __future__ import annotations
 
@@ -11,12 +13,15 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
+import tempfile
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .privacy import redact
+from .privacy import redact, safe_error
 from .schema import ALL_NODE_TYPES, STANDINGS
 from .trust import parse_rfc3339
 
@@ -291,10 +296,13 @@ def _node(repo, identity, doc, mode, receipt):
 #: query shape failing loudly rather than this bound being wrong, and the
 #: extrapolation is one measured point, not a second measurement.
 STATUS_TIMEOUT_S = 30
+SUBMIT_TIMEOUT_S = 30
+MAX_SUBMISSION_BYTES = 16 * 1024
+MAX_SUBMISSION_RECEIPT_BYTES = 64 * 1024
 
 
 def _query(argv, binary, timeout_s):
-    """Run one Kinbase query command and parse its JSON.
+    """Run one bounded native Kinbase command and parse its JSON.
 
     Neither command records the asking. `explain` reduces one key and writes
     nothing; `status` runs Kinbase's own due maintenance first, closing
@@ -307,6 +315,10 @@ def _query(argv, binary, timeout_s):
     it records the query and may open an Unknown, so each call adds to the
     queue people read, and an agent looping over it turns that queue into
     noise.
+
+    Explicit observation submission also uses this transport for `ingest`,
+    which writes native ingestion state. Its caller reports uncertain outcomes
+    distinctly and never treats transport failure as proof that nothing wrote.
     """
     executable = shutil.which(str(binary))
     if not executable:
@@ -314,6 +326,7 @@ def _query(argv, binary, timeout_s):
     try:
         result = subprocess.run([executable, *argv, "--json"],
                                 capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL,
                                 timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Kinbase {argv[0]} timed out") from exc
@@ -357,6 +370,140 @@ def read_explain(repo: str | Path, logical_key: str, decision: str, *,
     return _query(
         ["explain", logical_key, "--repo", str(root), "--decision", decision],
         binary, EXPLAIN_TIMEOUT_S)
+
+
+def _submission_paths(root: Path, artifact: Path | None = None) -> Path:
+    """Validate every generated-path ancestor before creating or reading it."""
+    directory = root / ".kin" / "local" / "kindex" / "kinbase-submissions"
+    for path in (root / ".kin", root / ".kin" / "local",
+                 root / ".kin" / "local" / "kindex", directory):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError("Refusing linked or non-directory Kinbase submission storage")
+    ignore = root / ".kin" / ".gitignore"
+    if ignore.is_symlink() or (ignore.exists() and ignore.stat().st_nlink > 1):
+        raise ValueError("Refusing linked .kin/.gitignore")
+    if artifact is not None:
+        if artifact.is_symlink() or (artifact.exists() and
+                (not artifact.is_file() or artifact.stat().st_nlink > 1)):
+            raise ValueError("Refusing linked Kinbase submission artifact")
+        if any(Path(str(artifact) + suffix).exists()
+               or Path(str(artifact) + suffix).is_symlink()
+               for suffix in ("-wal", "-shm", "-journal")):
+            raise ValueError("Refusing mutable Kinbase submission artifact with SQLite sidecars")
+    return directory
+
+
+def _observation_artifact(root: Path, text: str, node_type: str) -> Path:
+    """Install one immutable export atomically; identical retries keep its mtime."""
+    from .project_store import ensure_local_ignored, refuse_tracked_store
+
+    directory = _submission_paths(root)
+    refuse_tracked_store(root / ".kin" / "local")
+    ensure_local_ignored(root / ".kin" / "local" / "kindex")
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"format": "kindex-observation-v1", "node_type": node_type,
+                          "text": text}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    artifact = directory / f"{digest}.sqlite"
+    _submission_paths(root, artifact)
+    with tempfile.TemporaryDirectory(prefix=".submission-", dir=directory) as temporary:
+        pending = Path(temporary) / "observation.sqlite"
+        with closing(sqlite3.connect(pending)) as connection:
+            with connection:
+                connection.execute(
+                    "CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, title TEXT, "
+                    "content TEXT, extra BLOB, created_at TEXT, prov_source TEXT, "
+                    "status TEXT, audience TEXT)")
+                connection.execute("INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   (f"agent-observation-{digest}", node_type, text[:160],
+                                    text, b"{}", None, "agent:kindex-submit", "active", "team"))
+        os.chmod(pending, 0o600)
+        expected = pending.read_bytes()
+        with pending.open("rb") as stream:
+            os.fsync(stream.fileno())
+        _submission_paths(root, artifact)
+        try:
+            # Complete bytes appear together, and a concurrent submission can
+            # never be replaced. Remove the temporary link immediately.
+            os.link(pending, artifact)
+        except FileExistsError:
+            pass
+        finally:
+            pending.unlink()
+        _submission_paths(root, artifact)
+        # Limit the read even if someone replaced the immutable artifact.
+        with artifact.open("rb") as stream:
+            if stream.read(len(expected) + 1) != expected:
+                raise ValueError("Kinbase submission artifact drift; refusing to overwrite it")
+    return artifact
+
+
+def submit_observation(repo: str | Path, text: str, node_type: str = "concept", *,
+                       binary="kinbase") -> dict:
+    """Submit explicit AI evidence via native ingestion, preserving its receipt.
+
+    The export contains exactly one supplied observation, not the local graph.
+    Kinbase owns governance, content scanning, derivation/admission, receipts and
+    any signed writes. This never requests separate bulk corpus admission or
+    authority ratification; native ingestion may itself admit derived facts.
+    Identical text/type retries reuse the same native source identity. A timeout
+    is indeterminate: the native operation may have completed before termination.
+    """
+    if node_type not in ("concept", "decision", "constraint", "question"):
+        raise ValueError("Submission node_type must be concept, decision, constraint, or question")
+    if not isinstance(text, str) or not text.strip() or "\x00" in text:
+        raise ValueError("Submission text must be nonempty text without NUL characters")
+    if len(text.encode("utf-8")) > MAX_SUBMISSION_BYTES:
+        raise ValueError("Submission text exceeds the 16 KiB limit")
+    if redact(text) != text:
+        raise ValueError("Submission contains recognized credentials; remove them before submitting")
+    root = Path(repo).expanduser().resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Submission repository must be an existing directory")
+    executable = shutil.which(str(binary))
+    if not executable:
+        raise RuntimeError("Kinbase binary unavailable; install Kinbase")
+    artifact = _observation_artifact(root, text, node_type)
+    # Validate once more before handing the path to the native reader.
+    _submission_paths(root, artifact)
+    try:
+        receipt = _query(["ingest", "kindex", str(artifact), "--repo", str(root)],
+                         executable, SUBMIT_TIMEOUT_S)
+    except (RuntimeError, ValueError, OSError) as error:
+        timed_out = isinstance(error.__cause__, subprocess.TimeoutExpired)
+        return {"ok": False, "stage": "unknown", "artifact": str(artifact),
+                "bulk_admission": "not_requested", "ratification": "not_performed",
+                "error": {"code": "kinbase_submit_timeout" if timed_out else "kinbase_submit_unknown",
+                          "message": safe_error(error) + "; native ingestion may have completed. "
+                          "Retry the same text and node_type to reuse the same source identity."}}
+    receipt = redact(receipt)
+    refused = receipt.get("ok") is False or receipt.get("error") is not None
+    native_error = receipt.get("error")
+    encoded = json.dumps(receipt, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_SUBMISSION_RECEIPT_BYTES:
+        receipt = {"omitted": True, "bytes": len(encoded),
+                   "sha256": hashlib.sha256(encoded).hexdigest(),
+                   "reason": "Native receipt exceeds the 64 KiB tool limit"}
+    result = {"ok": not refused, "stage": "refused" if refused else "submitted",
+              "artifact": str(artifact), "bulk_admission": "not_requested",
+              "ratification": "not_performed", "receipt": receipt}
+    if native_error is not None:
+        error_bytes = json.dumps(native_error, ensure_ascii=False).encode("utf-8")
+        # Ordinary native refusals retain exactly the native typed error at
+        # the standard top level, including when a large receipt is omitted.
+        # An oversized error itself is bounded, retaining its code/reason.
+        if len(error_bytes) > MAX_SUBMISSION_RECEIPT_BYTES:
+            native_error = {
+                "code": str(native_error.get("code", "kinbase_submit_refused"))[:256]
+                if isinstance(native_error, dict) else "kinbase_submit_refused",
+                "message": (str(native_error.get("message", native_error))[:4096]
+                            if isinstance(native_error, dict) else str(native_error)[:4096]),
+                "truncated": True,
+                "bytes": len(error_bytes),
+                "sha256": hashlib.sha256(error_bytes).hexdigest(),
+            }
+        result["error"] = native_error
+    return result
 
 
 def sync_kinbase(store, repo: str | Path, *, mode="auto", binary="kinbase",

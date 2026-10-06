@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.47.0](https://img.shields.io/badge/version-0.47.0-purple.svg)](https://github.com/wandercom/kindex/releases)
+[![v0.48.0](https://img.shields.io/badge/version-0.48.0-purple.svg)](https://github.com/wandercom/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
 [![Tests](https://github.com/wandercom/kindex/actions/workflows/ci.yml/badge.svg)](https://github.com/wandercom/kindex/actions/workflows/ci.yml)
@@ -150,10 +150,18 @@ claude mcp add --scope user --transport stdio kindex -- kin-mcp
 kin init
 ```
 
-Or add `.mcp.json` to any repo for project-scope access:
+Or add `.mcp.json` to any repo to register the server for that project:
 ```json
 { "mcpServers": { "kindex": { "command": "kin-mcp" } } }
 ```
+
+Registration scope does not restrict graph access. For an agent that should use
+only one repository's memory, run `kindex-lite --repo /absolute/path/to/repo`
+instead. It binds the MCP server to that repository's `.kin` graph and Kinbase
+reads, without global-graph fallback. Kinbase submission and write-capable status
+require the launcher's `--allow-kinbase-submit`; `--no-kinbase` omits Kinbase entirely.
+See [repository-bound MCP](docs/mcp-lite.md)
+for configuration and the isolation boundary.
 
 The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `stale_check`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
 

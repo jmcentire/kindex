@@ -1,4 +1,39 @@
-# Reading Kinbase from Kindex
+# Kinbase I/O from Kindex
+
+## Submitting repository evidence
+
+Submit an explicit agent observation through Kinbase's native intake:
+
+```bash
+kin kinbase submit "The dispatcher persists receipts before acknowledging delivery." \
+  --repo /path/to/repo --type concept --json
+```
+
+The MCP equivalent is `kinbase_submit(repo, text, node_type="concept")`.
+`kindex-lite --repo PATH --allow-kinbase-submit` exposes this operation with the
+repository fixed at startup. Lite defaults to sync/explain reads and excludes
+submission and native status, which can write overdue-apology events.
+Use `--no-kinbase` to omit all Kinbase tools from a lite server.
+The CLI also accepts `--binary /absolute/path/to/kinbase`; MCP callers
+cannot choose an executable.
+
+Submission supports `concept`, `decision`, `constraint`, and `question`, up to
+16 KiB of UTF-8 text. The source always carries agent provenance and team
+audience. Empty or recognized credential-bearing payloads are refused. Kindex
+creates a content-addressed, single-observation SQLite artifact beneath the
+repository's local graph and invokes `kinbase ingest kindex` with the repository
+explicitly named. Unchanged retries reuse the same source and node identity;
+altered or linked artifacts are refused.
+
+Native intake can derive and admit local facts; the returned receipt reports
+those effects. Signing, authority checks, and ratification remain in Kinbase.
+Kindex does not invoke a separate bulk `corpus admit` command, submit authority
+answers, or synthesize signed events.
+Timeouts are reported as an unknown outcome because the intake may already have
+committed. Inspect the receipt or retry the unchanged submission; do not infer
+that nothing was written.
+
+## Reading signed evidence
 
 Install the optional verifier and sync a repository into your Kindex graph:
 
@@ -9,8 +44,8 @@ kin search "the decision" --top-k 1
 ```
 
 `--data-dir`, `--config`, `--profile`, and `--project-path` work like other Kindex
-commands. The matching MCP tool is `kinbase_sync(repo, mode="auto",
-binary="kinbase")`; Python callers can use
+commands. The matching MCP tool is `kinbase_sync(repo, mode="auto")`;
+MCP uses the executable on PATH. Python callers can use
 `kindex.kinbase.sync_kinbase(store, repo, mode="raw")`.
 
 ## Two different reads
