@@ -1314,8 +1314,8 @@ def _inventory_row(item, ref, quote, status="included", reason="reported acquisi
     return dict(item=item, ref=ref, quote=quote, status=status, reason=reason)
 
 
-def _inventory_payload(rows, answer="Three instruments.", mode="instances"):
-    return dict(answer=answer, mode=mode, unit="instruments", rows=rows)
+def _inventory_payload(rows, answer="Three instruments.", mode="instances", complete=True):
+    return dict(answer=answer, mode=mode, unit="instruments", complete=complete, rows=rows)
 
 
 def test_inventory_counts_all_tiers_in_one_reading_and_streams_only_the_rendered_answer(store, tmp_path, monkeypatch):

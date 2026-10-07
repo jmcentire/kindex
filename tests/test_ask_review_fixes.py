@@ -101,10 +101,12 @@ def test_an_inventory_keeps_a_lower_bound_answer():
     sources = {"r1": "user: I adopted Rex and Bella, and a few others I won't name."}
     rows = [{"item": name, "ref": "r1", "quote": "I adopted Rex and Bella", "reason": "adopted", "status": "included"}
             for name in ("Rex", "Bella")]
-    raw = json.dumps({"answer": "At least two dogs, with others unnamed.", "mode": "instances",
-                      "unit": "dogs", "rows": rows})
-    assert answer_mod.render_inventory(raw, sources) == "At least two dogs, with others unnamed."
-    exact = json.dumps({"answer": "Two dogs.", "mode": "instances", "unit": "dogs", "rows": rows})
+    for answer, complete in (("At least two dogs, with others unnamed.", True),
+                             ("A minimum of two dogs, plus others.", True),
+                             ("Two dogs named, and others I didn't list.", False)):
+        raw = json.dumps({"answer": answer, "mode": "instances", "unit": "dogs", "complete": complete, "rows": rows})
+        assert answer_mod.render_inventory(raw, sources) == answer
+    exact = json.dumps({"answer": "Two dogs.", "mode": "instances", "unit": "dogs", "complete": True, "rows": rows})
     assert answer_mod.render_inventory(exact, sources).startswith("2 dogs")
 
 
@@ -156,3 +158,69 @@ def test_mcp_verification_uses_the_kin_ask_pipeline(mcp, monkeypatch):
     cfg.ask = cfg.ask.model_copy(update={"verify": True})
     out = server.ask("How many kayak trips did I take?", answer=True, graph="project")
     assert out.startswith("Checked: forty trips.") and "## Verification reading" in out
+
+
+@pytest.mark.parametrize("answer", [
+    "3 days: from January 1, 2024 till January 3, 2024, counting both days.",
+    "3 days: from January 1, 2024 through January 3, 2024.",
+    "3 days: from January 1, 2024 till January 3, 2024 (inclusively).",
+])
+def test_day_arithmetic_keeps_an_inclusive_count(answer):
+    assert answer_mod.large_day_arithmetic("How many days did the festival last?", answer) == answer
+
+
+def test_past_week_is_the_seven_days_ending_today_and_last_week_the_calendar_week():
+    from datetime import datetime
+
+    past = answer_mod.relative_recall_window("What did I cook in the past week?", "2024-03-15")
+    last = answer_mod.relative_recall_window("What did I cook last week?", "2024-03-15")  # a Friday
+    assert past == (datetime(2024, 3, 8), datetime(2024, 3, 15))
+    assert last == (datetime(2024, 3, 4), datetime(2024, 3, 10))
+
+
+def test_the_calendar_month_reading_ends_with_the_previous_month():
+    from kindex.config import AskConfig
+
+    rules = answer_mod.question_guidance("How many trips did I take last month?", "aggregation",
+                                         as_of="2024-03-15", options=AskConfig(window_readings=True))
+    assert "previous calendar month (2024-02-01 to 2024-02-29)" in rules and "this month so far" not in rules
+
+
+def test_window_ranking_keeps_a_fact_that_happened_in_the_window():
+    from datetime import datetime
+
+    window = (datetime(2024, 3, 1), datetime(2024, 3, 10))
+    late_report = {"id": "f", "prov_when": "2024-04-02", "extra": {"kind": "conversation-fact", "fact_date": "2024-03-05"}}
+    outside = {"id": "o", "prov_when": "2024-01-02", "extra": {"kind": "conversation-fact", "fact_date": "2024-01-01"}}
+    ranked = answer_mod.favour([outside, late_report], window, facts_first=False)
+    assert [n["id"] for n in ranked] == ["f", "o"]
+
+
+def test_mcp_verification_keeps_the_client_scope(mcp, monkeypatch):
+    server, store, cfg = mcp
+    seen = {}
+
+    def fake_answer(store, question, config, ledger=None, *, node_filter=None, **kw):
+        seen["filter"] = node_filter
+        return SimpleNamespace(answer="Checked.", context="ctx")
+
+    monkeypatch.setenv("KIN_CLIENT", "codex")
+    monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=None))
+    monkeypatch.setattr(answer_mod, "answer_question", fake_answer)
+    cfg.ask = cfg.ask.model_copy(update={"verify": True})
+    assert server.ask("How many kayak trips did I take?", answer=True, graph="project").startswith("Checked.")
+    keep = seen["filter"]
+    assert keep is not None and keep({"tags": []})
+    assert not keep({"tags": ["client:claude-code"]})
+
+
+def test_the_node_scope_reaches_directives_and_searches(store, tmp_path, monkeypatch):
+    store.add_node("Always answer in metric units", node_id="d-mine", node_type="directive")
+    store.add_node("Reply only in French", node_id="d-other", node_type="directive", tags=["client:other"])
+    token = answer_mod._SCOPE.set(lambda n: "client:other" not in (n.get("tags") or []))
+    try:
+        ids = [d["id"] for d in answer_mod.standing_directives(store)]
+    finally:
+        answer_mod._SCOPE.reset(token)
+    assert "d-mine" in ids and "d-other" not in ids
+    assert {"d-mine", "d-other"} <= {d["id"] for d in answer_mod.standing_directives(store)}

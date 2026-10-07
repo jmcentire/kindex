@@ -2153,8 +2153,14 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                     if len(stores) == 1:
                         # Verification is `kin ask`'s own answer mode: the same
                         # pipeline, cap and source audit, on the one graph read.
+                        keep = None
+                        if client:
+                            from .agent_adapters import adapter_scoped_out
+                            # The client's scope holds through the whole pipeline,
+                            # verification sources and directives included.
+                            keep = lambda node: not adapter_scoped_out(node.get("tags"), client)  # noqa: E731
                         result = answer_question(next(iter(stores.values())), question, config, ledger,
-                                                 as_of=now[:10])
+                                                 as_of=now[:10], node_filter=keep)
                         header = f"[{qtype} question] Today's date: {now[:10]}"
                         if result is None:
                             return f"{header}\n(No answer drafted: the budget ran out.)"

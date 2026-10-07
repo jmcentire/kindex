@@ -510,6 +510,25 @@ def plan_question(question: str, config: Config, client, ledger, as_of=None) -> 
 WINDOW_TOP_K = 150
 
 
+# A caller that answers for one client (MCP with KIN_CLIENT) drops nodes scoped
+# to another client wherever the answer reads the graph; None keeps everything.
+_SCOPE: contextvars.ContextVar = contextvars.ContextVar("kin_ask_scope", default=None)
+
+
+def _scoped(nodes: list[dict]) -> list[dict]:
+    keep = _SCOPE.get()
+    return nodes if keep is None else [n for n in nodes if keep(n)]
+
+
+def _scope_nodes(fn):
+    """Apply the caller's node scope to a reader that returns nodes from the graph."""
+    @functools.wraps(fn)
+    def scoped(*args, **kwargs):
+        out = fn(*args, **kwargs)
+        return _scoped(out) if isinstance(out, list) else out
+    return scoped
+
+
 def gather(store: Store, queries: list[str], top_k: int, stats: dict | None = None,
            window: tuple[datetime, datetime] | None = None) -> list[dict]:
     """Runs every search and merges the rankings by reciprocal rank fusion.
@@ -530,7 +549,7 @@ def gather(store: Store, queries: list[str], top_k: int, stats: dict | None = No
         if window:
             deep = hybrid_search(store, q, top_k=max(top_k, WINDOW_TOP_K), **extra)
             rankings.append([n for n in deep if in_window(n, window)][:top_k])
-    return fuse(rankings)
+    return _scoped(fuse(rankings))
 
 
 def in_window(node: dict, window: tuple[datetime, datetime]) -> bool:
@@ -554,6 +573,7 @@ def fuse(rankings: list[list[dict]], key=lambda node: node["id"]) -> list[dict]:
     return [nodes[k] for k in sorted(scores, key=lambda k: -scores[k])]
 
 
+@_scope_nodes
 def every_fact(store: Store, cap_tokens: int) -> list[dict]:
     """Every current conversation fact in the graph, oldest first, when together
     they fit in `cap_tokens`; else none. A small memory can be shown whole."""
@@ -573,6 +593,7 @@ def every_fact(store: Store, cap_tokens: int) -> list[dict]:
     return sorted(facts, key=_fact_sort_key)
 
 
+@_scope_nodes
 def standing_directives(store: Store) -> list[dict]:
     today = date.today().isoformat()
     out = []
@@ -1060,8 +1081,8 @@ def favour(results: list[dict], window: tuple[datetime, datetime] | None, facts_
     ahead of conversation text, so more of the ground fits the budget."""
     def key(item):
         rank, node = item
-        when = node_date(node) if window else None
-        outside = window is not None and not (when and window[0].date() <= when.date() <= window[1].date())
+        # Inside the window as retrieval admits it: said, or (a fact) happened, there.
+        outside = window is not None and not in_window(node, window)
         kind = (node.get("extra") or {}).get("kind")
         tier = 0 if summaries_first and kind == "conversation-summary" else \
             1 if facts_first and kind == "conversation-fact" else 2 if facts_first or summaries_first else 0
@@ -1072,6 +1093,7 @@ def favour(results: list[dict], window: tuple[datetime, datetime] | None, facts_
 _FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself|i'm|i've|i'd)\b", re.I)
 
 
+@_scope_nodes
 def question_profiles(store: Store, question: str, limit: int = 2) -> list[dict]:
     """The profiles (`kin digest` writes them) of the people a question is
     about: those it names, and the user's own when it speaks of "I" or "my"."""
@@ -1454,6 +1476,7 @@ ROUND14_RULES = {
 }
 
 
+@_scope_nodes
 def bounded_conversation_sources(store: Store) -> list[dict]:
     """Read live local source chunks only when the entire graph has at most 1,000 nodes."""
     if store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] > 1000:
@@ -1639,6 +1662,8 @@ def relative_recall_window(question: str, as_of=None) -> tuple[datetime, datetim
         return None
     when = datetime.combine(when.date(), datetime.min.time())
     unit = match.group(2).lower()
+    if unit == "week" and match.group(1).lower() == "past":
+        return when - timedelta(days=7), when  # the seven days ending today
     if unit == "week":
         start = when - timedelta(days=when.weekday() + 7)
         return start, start + timedelta(days=6)
@@ -1724,6 +1749,7 @@ LARGE_READING_OPTIONS = (
 )
 
 
+@_scope_nodes
 def large_claim_denial_hits(store: Store, question: str) -> list[dict]:
     """Copy complete user denials without depending on search rank or the first eight hits."""
     from bisect import bisect_right
@@ -1816,6 +1842,7 @@ def span_queries(question: str) -> list[str]:
     return [p.strip() for p in match.groups()] if match else []
 
 
+@_scope_nodes
 def quoted_history_nodes(store: Store, jobs: list[tuple[str, bool | None, list[dict]]],
                          budget: int, *, literal_denials: bool = False) -> list[dict]:
     """Reserve equal space for both searches; retain literal user turns.
@@ -2024,11 +2051,19 @@ _CALENDAR_DATE = re.compile(
     rf"\d{{1,2}} (?:{_CALENDAR_MONTH}) \d{{4}})\b", re.I)
 
 
+# A count that includes both end days ("January 1–3 inclusive": three days)
+# is not an elapsed-day difference; it is never "repaired" to one.
+_INCLUSIVE_DAYS = re.compile(
+    r"\binclusive(?:ly)?\b|\bincluding both\b|\bcounting both\b|\bboth (?:end )?(?:days|dates)\b|"
+    r"\b(?:through|thru)\b|\bincluding (?:the )?(?:first|start(?:ing)?) and (?:the )?(?:last|end(?:ing)?)\b|"
+    r"\b(?:first|start) and (?:last|end) days? included\b", re.I)
+
+
 def large_day_arithmetic(question: str, answer: str) -> str:
     """Repair only a leading elapsed-day number, using the draft's own endpoints."""
     if not _LARGE_DAYS.search(question) or re.search(
-            r"\b(?:business|working|weekdays|inclusive|approximately|around|roughly)\b|\babout\s+\d",
-            question + " " + answer, re.I):
+            r"\b(?:business|working|weekdays|approximately|around|roughly)\b|\babout\s+\d",
+            question + " " + answer, re.I) or _INCLUSIVE_DAYS.search(question + " " + answer):
         return answer
     opening = re.split(r"(?<=[.!?])\s|\n\s*\n", answer, maxsplit=1)[0]
     lead = re.match(r"^\s*(?:\*\*)?(?P<n>\d+)(?:\*\*)?\s+days\b", opening, re.I)
@@ -2422,10 +2457,11 @@ def question_guidance(question: str, intent: str, *, as_of=None, options=None) -
 
             rolling = (when - timedelta(days=30)).date().isoformat()
             calendar = (when.replace(day=1) - relativedelta(months=1)).date().isoformat()
+            calendar_end = (when.replace(day=1) - timedelta(days=1)).date().isoformat()
             rules.append(
                 f"Here an unspecified last/past month has two ordinary readings: 30 days ending today "
-                f"({rolling} to {when.date().isoformat()}), or the previous calendar month plus this month "
-                f"so far ({calendar} to {when.date().isoformat()}). If these give different answers, state "
+                f"({rolling} to {when.date().isoformat()}), or the previous calendar month "
+                f"({calendar} to {calendar_end}). If these give different answers, state "
                 "both with their window labels. Do not broaden an explicit dated or numbered interval.")
     if options.relative_focus and recall and (relative_recall_window(question, as_of) or "ago" in question.lower()):
         window = relative_recall_window(question, as_of)
@@ -2957,6 +2993,7 @@ INVENTORY_SCHEMA = _object_schema("instance_inventory", {
     "answer": _STRING,
     "mode": {"type": "string", "enum": ["instances", "reported_total", "other"]},
     "unit": _STRING,
+    "complete": {"type": "boolean"},
     "rows": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
         "required": ["item", "ref", "quote", "status", "reason"],
@@ -2967,7 +3004,9 @@ INVENTORY_SCHEMA = _object_schema("instance_inventory", {
     }},
 })
 INVENTORY_PROMPT = (
-    "\n\nReturn JSON with answer (a normal concise answer), mode, unit, and rows. "
+    "\n\nReturn JSON with answer (a normal concise answer), mode, unit, complete, and rows. "
+    "complete is true only when the rows list every qualifying instance the records give; it is false "
+    "when the answer is a minimum, leaves instances unnamed or is otherwise partial. "
     "Before choosing the total, inventory the qualifying instances across ALL shown sections, including "
     "Other facts. Each row has a stable item identity, ref (the rN source label), an exact copied quote "
     "of at least eight characters, status (included, excluded, uncertain), and a short reason. "
@@ -2995,8 +3034,9 @@ def inventory_enabled(cfg, intent: str | None) -> bool:
 
 
 # An answer that says its count is incomplete or a minimum.
-_LOWER_BOUND = re.compile(r"\bat least\b|\bor more\b|\bmore than\b|\bunnamed\b|\bnot all\b|\bincomplete\b|"
-                          r"\b\d+\s*\+|\b(?:others?|more) (?:not|un)(?:named|listed|recorded)\b", re.I)
+_LOWER_BOUND = re.compile(r"\bat least\b|\b(?:a )?minimum\b|\bor more\b|\bmore than\b|\bplus (?:others|more)\b|"
+                          r"\bunnamed\b|\bnot all\b|\bincomplete\b|\b\d+\s*\+|"
+                          r"\b(?:others?|more) (?:not|un)(?:named|listed|recorded)\b", re.I)
 
 
 def render_inventory(raw: str, sources: dict[str, str]) -> str:
@@ -3035,8 +3075,8 @@ def render_inventory(raw: str, sources: dict[str, str]) -> str:
     uncertain = [r for r in accepted.values() if r["status"] == "uncertain"]
     if not included and not uncertain:
         return answer  # an empty positive inventory does not prove a zero total
-    if _LOWER_BOUND.search(answer):
-        return answer  # "at least two, others unnamed": the rows are not the whole count
+    if payload.get("complete") is not True or _LOWER_BOUND.search(answer):
+        return answer  # only an inventory declared complete replaces the qualified answer
     certain = f"{len(included)} {unit.strip()}"
     if uncertain:
         conditions = "; ".join(f"{r['item']} ({r['reason']})" for r in uncertain)
@@ -3215,6 +3255,7 @@ def _draft_nodes(results: list[dict]) -> list[dict]:
     return out
 
 
+@_scope_nodes
 def verification_nodes(store: Store, seeds: list[dict], results: list[dict], terms: set[str],
                        budget: int) -> list[dict]:
     """Original sessions for cited items and other highly ranked hits. Read a
@@ -3490,6 +3531,7 @@ def named_memory(store: Store, look: int = 20) -> bool:
     return named_dialogue([store._row_to_dict(row) for row in rows], look)
 
 
+@_scope_nodes
 def dialogue_source_sessions(store: Store) -> list[dict]:
     """A bounded, live archive of named dialogue; no search, model call or write."""
     rows = store.conn.execute(
@@ -3682,10 +3724,13 @@ def input_cap(ask) -> int | None:
 
 def answer_question(store: Store, question: str, config: Config, ledger=None, *,
                     as_of: str | date | datetime | None = None,
-                    team: list[str] | None = None, on_text=None) -> AskResult | None:
+                    team: list[str] | None = None, on_text=None,
+                    node_filter=None) -> AskResult | None:
     """Answers `question` from the graph, or returns None when no LLM is configured
     or the budget runs out before an answer is drafted. `team` is shared knowledge
-    a caller supplies (Kinbase passes its signed facts)."""
+    a caller supplies (Kinbase passes its signed facts). `node_filter`, when
+    given, keeps only the nodes it accepts wherever the answer reads the graph
+    (search hits, directives, profiles and verification sources)."""
     client = answer_client(config, ledger)
     if client is None:
         return None
@@ -3693,9 +3738,11 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     token = _USAGE.set(usage)
     limit_token = _INPUT_LIMIT.set(input_cap(config.ask))
     clock_token = _CLOCK.set(answer_clock(store, as_of) if config.ask.fixed_clock else None)
+    scope_token = _SCOPE.set(node_filter)
     try:
         result = _answer(store, question, config, client, ledger, as_of, team, on_text)
     finally:
+        _SCOPE.reset(scope_token)
         _CLOCK.reset(clock_token)
         _INPUT_LIMIT.reset(limit_token)
         _USAGE.reset(token)
