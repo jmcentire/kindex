@@ -224,3 +224,56 @@ def test_the_node_scope_reaches_directives_and_searches(store, tmp_path, monkeyp
         answer_mod._SCOPE.reset(token)
     assert "d-mine" in ids and "d-other" not in ids
     assert {"d-mine", "d-other"} <= {d["id"] for d in answer_mod.standing_directives(store)}
+
+
+def test_a_small_verification_cap_still_answers_with_a_plain_draft(store, tmp_path, monkeypatch):
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        return _reply("Your first kayak trip was on the river.")
+
+    monkeypatch.setattr(answer_mod, "get_client", lambda *a, **kw: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
+    cfg.ask = cfg.ask.model_copy(update={"verify": True, "verify_input_tokens": 4000})
+    result = answer_mod.answer_question(store, "Where was my first kayak trip?", cfg, as_of="2024-03-15")
+    assert result is not None and result.answer.startswith("Your first kayak trip")
+    assert len(calls) == 1 and result.input_tokens <= 4000
+    assert "first kayak trip was on the river" in calls[0]["messages"][0]["content"]
+
+
+def test_a_failed_planner_keeps_the_count_classification(tmp_path):
+    def create(**kw):
+        raise RuntimeError("planner unavailable")
+
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
+    cfg.ask = cfg.ask.model_copy(update={"plan": True})
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    question = "How many kayak trips did I take?"
+    intent, queries, needs_all = answer_mod.plan_question(question, cfg, client, None, "2024-03-15")
+    assert (intent, needs_all) == answer_mod.classify_question(question) and queries == [question]
+    assert needs_all or intent in answer_mod.COMPLETENESS_INTENTS
+
+
+def test_the_node_scope_filters_originals_before_sessions_are_joined(tmp_path):
+    s = Store(Config(data_dir=str(tmp_path)))
+    try:
+        for i, (who, text, tags) in enumerate([("Ann", "Ann: I painted a barn.", []),
+                                               ("Ben", "Ben: SECRET from the other client.", ["client:other"]),
+                                               ("Ann", "Ann: Then a lighthouse.", [])]):
+            s.add_node("", text, node_id=f"c{i}", node_type="document", prov_activity="conversation-ingest",
+                       prov_when="2024-01-10", tags=tags, extra={"conversation_id": "s1", "position": i})
+        s.add_node("", "Ben: Hello Ann.", node_id="c9", node_type="document", prov_activity="conversation-ingest",
+                   prov_when="2024-01-11", extra={"conversation_id": "s2", "position": 0})
+        token = answer_mod._SCOPE.set(lambda n: "client:other" not in (n.get("tags") or []))
+        try:
+            sessions = answer_mod.dialogue_source_sessions(s)
+            facts = answer_mod.every_fact(s, 10000)
+            clock = answer_mod.answer_clock(s)
+        finally:
+            answer_mod._SCOPE.reset(token)
+        joined = "\n".join(n["content"] for n in sessions)
+        assert "barn" in joined and "lighthouse" in joined and "SECRET" not in joined
+        assert facts == [] and clock is not None
+    finally:
+        s.close()

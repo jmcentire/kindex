@@ -293,8 +293,14 @@ def answer_clock(store: Store, as_of=None) -> datetime | None:
     if when is not None:
         return when.replace(tzinfo=None)
     latest = None
-    for (raw,) in store.conn.execute(
-            "SELECT prov_when FROM nodes WHERE prov_activity = 'conversation-ingest' AND prov_when IS NOT NULL"):
+    if _SCOPE.get() is None:
+        stamps = [raw for (raw,) in store.conn.execute(
+            "SELECT prov_when FROM nodes WHERE prov_activity = 'conversation-ingest' AND prov_when IS NOT NULL")]
+    else:
+        stamps = [node["prov_when"] for node in (store._row_to_dict(row) for row in store.conn.execute(
+            "SELECT * FROM nodes WHERE prov_activity = 'conversation-ingest' AND prov_when IS NOT NULL"))
+            if _visible(node)]
+    for raw in stamps:
         parsed = _parse_date(str(raw))
         if parsed is not None and (latest is None or parsed.replace(tzinfo=None) > latest):
             latest = parsed.replace(tzinfo=None)
@@ -500,7 +506,10 @@ def plan_question(question: str, config: Config, client, ledger, as_of=None) -> 
                     json_schema=PLAN_SCHEMA)
         plan = _parse_json(raw)
     except Exception:
-        return "fact", [question], False
+        # A failed planner leaves the question as its wording reads: a count or
+        # list keeps its depth and completeness.
+        intent, needs_all = classify_question(question)
+        return intent, [question], needs_all
     intent = plan.get("intent") if plan.get("intent") in INTENTS else "fact"
     queries = [q.strip() for q in plan.get("queries") or [] if isinstance(q, str) and q.strip()][:5]
     return intent, queries, bool(plan.get("needs_all_instances"))
@@ -518,6 +527,11 @@ _SCOPE: contextvars.ContextVar = contextvars.ContextVar("kin_ask_scope", default
 def _scoped(nodes: list[dict]) -> list[dict]:
     keep = _SCOPE.get()
     return nodes if keep is None else [n for n in nodes if keep(n)]
+
+
+def _visible(node: dict) -> bool:
+    keep = _SCOPE.get()
+    return keep is None or bool(keep(node))
 
 
 def _scope_nodes(fn):
@@ -584,7 +598,7 @@ def every_fact(store: Store, cap_tokens: int) -> list[dict]:
     facts, total = [], 0
     for row in rows:
         node = store._row_to_dict(row)
-        if node.get("status") in ("archived", "superseded") or node_expired(node):
+        if node.get("status") in ("archived", "superseded") or node_expired(node) or not _visible(node):
             continue
         total += estimate_tokens(node.get("content") or "") + 20
         if total > cap_tokens:
@@ -1486,7 +1500,7 @@ def bounded_conversation_sources(store: Store) -> list[dict]:
         "AND prov_activity = 'conversation-ingest' "
         "AND (json_extract(extra, '$.kind') IS NULL OR json_extract(extra, '$.kind') = 'chunk')"
     ).fetchall()
-    nodes = [store._row_to_dict(row) for row in rows]
+    nodes = _scoped([store._row_to_dict(row) for row in rows])
     return [n for n in nodes if not node_expired(n) and not (n.get("extra") or {}).get("kinbase")]
 
 
@@ -1771,6 +1785,8 @@ def large_claim_denial_hits(store: Store, question: str) -> list[dict]:
     groups: dict[str, list[dict]] = {}
     for row in rows:
         node = store._row_to_dict(row)
+        if not _visible(node):
+            continue
         if not node_expired(node, today=today) and not (node.get("extra") or {}).get("kinbase"):
             groups.setdefault(str(node["extra"]["conversation_id"]), []).append(node)
     runs = []
@@ -2130,10 +2146,10 @@ def large_slack_assembly(store: Store, results: list[dict], question: str,
             "AND (json_extract(extra, '$.kind') IS NULL OR "
             "json_extract(extra, '$.kind') = 'chunk') "
             "ORDER BY json_extract(extra, '$.position'), id", (conv,)).fetchall()
-        nodes = [n for row in rows if (n := store.get_node(row[0]))
+        nodes = _scoped([n for row in rows if (n := store.get_node(row[0]))
                  and n.get("status") not in ("archived", "superseded")
                  and not node_expired(n, today=today)
-                 and (window is None or in_window(n, window))]
+                 and (window is None or in_window(n, window))])
         # Rejoin continuation chunks, but never bridge a missing/archived chunk.
         runs, raw, offsets, anchors, previous = [], "", [], [], None
         for node in nodes:
@@ -2252,6 +2268,8 @@ def large_evidence_pack(store: Store, results: list[dict], queries: list[str],
     pool = []
     for row in rows:
         node = store.get_node(row[0])
+        if node is not None and not _visible(node):
+            continue
         if (node and node.get("status") not in ("archived", "superseded")
                 and not node_expired(node, today=date.today().isoformat())
                 and (window is None or in_window(node, window))):
@@ -3278,7 +3296,7 @@ def verification_nodes(store: Store, seeds: list[dict], results: list[dict], ter
                 "SELECT id FROM nodes WHERE json_extract(extra, '$.conversation_id') = ? "
                 "AND json_extract(extra, '$.kind') IS NULL "
                 "ORDER BY json_extract(extra, '$.position')", (conv,)).fetchall()
-            chunks = [n for r in rows if (n := store.get_node(r[0]))]
+            chunks = _scoped([n for r in rows if (n := store.get_node(r[0]))])
             if not chunks:
                 chunks = [node]  # a source-less note remains explicitly derived evidence
         chunks = [n for n in chunks if n.get("status") not in ("archived", "superseded")
@@ -3528,7 +3546,7 @@ def named_memory(store: Store, look: int = 20) -> bool:
     `named_dialogue`), judged from the first conversation chunks stored."""
     rows = store.conn.execute("SELECT * FROM nodes WHERE prov_activity = 'conversation-ingest' LIMIT ?",
                               (look,)).fetchall()
-    return named_dialogue([store._row_to_dict(row) for row in rows], look)
+    return named_dialogue(_scoped([store._row_to_dict(row) for row in rows]), look)
 
 
 @_scope_nodes
@@ -3543,7 +3561,7 @@ def dialogue_source_sessions(store: Store) -> list[dict]:
     ).fetchall()
     if len(rows) > 2000:
         return []
-    sources = [store._row_to_dict(row) for row in rows]
+    sources = _scoped([store._row_to_dict(row) for row in rows])  # before sessions are joined
     sources = [n for n in sources if not node_expired(n)]
     if (not sources or any((n.get("extra") or {}).get("kinbase") for n in sources)
             or sum(len(n.get("content") or "") for n in sources) > 256_000
@@ -3603,7 +3621,7 @@ def dialogue_session_order(store: Store, sessions: list[dict], results: list[dic
     for row in (rows if len(rows) <= 4000 else []):
         node = store._row_to_dict(row)
         session = key(node)
-        if session in index and not node_expired(node):
+        if session in index and not node_expired(node) and _visible(node):
             index[session] += "\n" + node_text(node)
     words = {k: query_terms(value) for k, value in index.items()}
     all_terms = query_terms(*queries)
@@ -3694,12 +3712,18 @@ def archive_reference(store: Store, results: list[dict], as_of=None):
     if as_of is not None or not named_dialogue(results, look=len(results)):
         return as_of
     rows = store.conn.execute(
+        "SELECT * FROM nodes WHERE status NOT IN ('archived', 'superseded') "
+        "AND json_extract(extra, '$.kind') IS NULL "
+        "AND (prov_activity = 'conversation-ingest' OR json_extract(extra, '$.conversation_id') IS NOT NULL)"
+    ).fetchall() if _SCOPE.get() is not None else store.conn.execute(
         "SELECT prov_when, extra FROM nodes WHERE status NOT IN ('archived', 'superseded') "
         "AND json_extract(extra, '$.kind') IS NULL "
         "AND (prov_activity = 'conversation-ingest' OR json_extract(extra, '$.conversation_id') IS NOT NULL)"
     ).fetchall()
     dates = []
     for row in rows:
+        if _SCOPE.get() is not None and not _visible(store._row_to_dict(row)):
+            continue
         if not re.search(r"\b(?:19|20)\d{2}\b", row["prov_when"] or ""):
             continue
         when = _parse_date(row["prov_when"])
@@ -3749,6 +3773,37 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     if result is not None:
         result.input_tokens, result.calls = sum(usage), len(usage)
     return result
+
+
+def plain_draft(question: str, config: Config, client, ledger, as_of, team, intent: str, complete: bool,
+                results: list[dict], directives: list[dict], searches: list[str], on_text=None) -> AskResult | None:
+    """One draft with the base answering rules and the evidence that fits what is
+    left of the cap: the answer when a small cap cannot hold the configured
+    reading rules or verification. None only when not even this fits."""
+    cfg = config.ask
+    system = answer_system(intent if cfg.rules == "intent" else None, complete)
+    empty = answer_prompt(question, "", intent, as_of=as_of)
+    budget = _input_left() - _prompt_cost(system, empty) - 300
+    if budget < 100:
+        return None
+    assembly = assemble(results, directives, budget, team, note_omitted=False)
+    shown: list[str] = []
+
+    def show(part: str) -> None:
+        shown.append(part)
+        on_text(part)
+
+    try:
+        text = _call(client, config, system=system, user=answer_prompt(question, assembly.text, intent, as_of=as_of),
+                     effort=cfg.effort, max_tokens=cfg.max_output_tokens, ledger=ledger, purpose="ask",
+                     sample=cfg.seed, on_text=show if on_text else None)
+    except BudgetExhausted:
+        return None
+    if not text:
+        return None
+    return AskResult(answer=text, streamed=bool(shown),
+                     intent=intent, queries=searches, context=assembly.text, context_tokens=assembly.tokens,
+                     results=assembly.chosen, omitted=assembly.omitted, truncated=assembly.truncated)
 
 
 def _answer(store: Store, question: str, config: Config, client, ledger, as_of, team, on_text) -> AskResult | None:
@@ -3950,13 +4005,19 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
         budget = min(budget, cfg.verify_draft_tokens,
                      _input_left() - _prompt_cost(system, empty, VERIFY_DRAFT_SCHEMA) - 2000)
         if budget < 100:
-            return None
+            # Too little of the cap for a cited draft and its audit: one plain draft.
+            return plain_draft(question, config, client, ledger, as_of, team, intent, complete,
+                               results, directives, searches, on_text)
     if cfg.max_input_tokens and not cfg.verify:
         # The whole answer stays within the question's input cap: the first
         # reading's evidence is sized to fit it.
         empty = answer_prompt(question, "", intent, as_of=as_of, readings=cfg.readings,
                               details=cfg.details, count_readings=cfg.count_readings, options=cfg)
         system = answer_system(intent if cfg.rules == "intent" else None, complete, options=cfg)
+        if _input_left() - _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 300 < 100:
+            # The configured reading rules alone fill the cap: one plain draft.
+            return plain_draft(question, config, client, ledger, as_of, team, intent, complete,
+                               results, directives, searches, on_text)
         budget = max(500, min(budget, _input_left() -
                               _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 300))
     if cfg.large_gap_retry and cfg.max_input_tokens:
