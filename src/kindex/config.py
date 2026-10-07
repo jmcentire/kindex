@@ -368,7 +368,12 @@ class AskConfig(BaseModel):
     # reads more inference into casual talk: its own effort and the planner.
     dialogue_effort: Literal["", "medium", "high", "xhigh"] = ""  # effort for every answer there ("" = effort/hard_effort)
     dialogue_plan: bool = False     # the planner there only
+    dialogue_archive: bool = False  # read all live named-dialogue originals when the whole archive fits
+    dialogue_sessions: bool = False  # index existing digests, then reserve space for intact source sessions
+    dialogue_relation_plan: bool = False  # plan separate entity/attribute and surrounding-episode searches there
     dialogue_context_tokens: int = Field(default=0, ge=0, le=400000)  # single-answer evidence budget there (0: context_tokens)
+    large_effort: Literal["", "medium", "high", "xhigh"] = ""  # effort for every answer when the memory has over 1,000 nodes
+    fixed_clock: bool = False       # search recency is measured from the question's date (else the memory's latest conversation), not the wall clock
     count_inventory: bool = False   # one quoted inventory; count distinct accepted rows locally (samples=1, no verify)
     plan_route: bool = False        # when plan is on, plan single dialogue recalls and inference/advice, not enumeration
     effort_route: bool = False      # effort for dialogue/large graphs; hard_effort (or high) for compact personal logs
@@ -379,6 +384,42 @@ class AskConfig(BaseModel):
     recall_candidates: bool = False  # relative mention recalls retain plausible alternatives when the episode is ambiguous
     archival_time: bool = False     # unanchored named-dialogue durations and relative recalls use archive/report clocks
     disposition_inference: bool = False  # third-person traits, choices and prior feelings use relevant supporting clues
+    large_landmarks: bool = False    # compact summary coverage in large user-assistant memories
+    large_recall_exchange: bool = False  # intact source chunks for explicitly recalled fields and advice
+    large_value_updates: bool = False  # reconcile scalar reports, updates, goals and implementation evidence
+    large_response_contract: bool = False  # apply recorded response fields and advice preferences
+    large_claim_witnesses: bool = False  # literal occurrence and denial witnesses in large chats
+    large_span_witnesses: bool = False  # independent endpoint retrieval in large chats
+    large_summary_coverage: bool = False  # preserve distinct summary content at the landmark cap
+    large_detail_binding: bool = False  # recalled particulars require the same entity, episode and field
+    large_claim_scan: bool = False  # seed existing denial witnesses from live original user turns
+    large_summary_methods: bool = False  # retain a relevant assistant explanation at the same summary cap
+    large_evidence_pack: bool = False  # bounded originals and existing summaries from the whole large chat
+    large_topic_sequence: bool = False  # source-turn order and distinct developments in large chats
+    large_gap_retry: bool = False  # reserve input for one targeted reading of a declined or hedged recall
+    large_day_arithmetic: bool = False  # elapsed days from explicit endpoints in a large-chat draft
+    large_order_append: bool = False  # additional ordered user turns in unused first-call input space
+    large_recall_append: bool = False  # additional original advice exchanges in unused input space
+    large_members_append: bool = False  # additional user witnesses for distinct-member counts
+    ordering_witnesses: bool = False  # bounded assistant-chat orderings retain original occurrence reports
+    dialogue_fields: bool = False    # named-dialogue relations retain the matching question/reply and artifact
+    episode_endpoints: bool = False  # bounded from/to spans and named-dialogue milestones use source endpoints
+    witness_coverage: bool = False   # diverse original reports for bounded factual recall and orderings
+    count_witnesses: bool = False    # bounded subject counts read literal reports before digest arithmetic
+    coarse_ordering: bool = False    # order recent occurrence reports without requiring exact event dates
+    episode_links: bool = False      # bounded named-dialogue spans retain linked milestones and returns
+    witness_named: bool = False      # the round-10 witness, count and episode options also apply to named dialogue
+    count_membership: bool = False   # with count_witnesses: coordinated clauses, service pickups and two-action counts
+    count_example_membership: bool = False  # route existing membership guidance to matching inline user examples
+    large_supplement_reserve: int = Field(default=0, ge=0, le=6000)  # evidence tokens kept free for the large-memory supplements
+    large_evidence_pack_intents: str = ""  # comma-separated intents the evidence pack applies to ("" = all)
+    xhigh_intents: str = ""          # comma-separated intents answered at reasoning effort xhigh ("" = none)
+    ordering_occurrences: bool = False  # attendance orderings retain literal completed reports and entity types
+    large_order_ledger: bool = False  # one cited development list, sorted by imported conversation parts
+    large_span_ledger: bool = False   # one cited endpoint table, with event/planned/report date roles
+    dialogue_field_values: bool = False  # bind recalled fields before selecting and phrasing values
+    dialogue_episode_bindings: bool = False  # connect event dates and places within a supported episode
+    dialogue_instance_identity: bool = False  # enumerate occurrences independently of their shared location
     max_input_tokens: int = Field(default=0, ge=0, le=400000)  # cap on estimated input over all calls for one answer (0: none)
     details: bool = False            # a question asking for particulars is answered only from particulars stated
     verify: bool = False             # one cited draft, then a check against original source chunks

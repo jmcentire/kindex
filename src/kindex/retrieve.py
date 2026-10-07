@@ -209,10 +209,11 @@ _ENSEMBLE_WEIGHTS_DEFAULT = {
 }
 
 
-def _recency_score(store: Store, node_ids: set[str]) -> list[tuple[str, float]]:
-    """Score nodes by recency — recently updated nodes score higher."""
+def _recency_score(store: Store, node_ids: set[str], now: datetime | None = None) -> list[tuple[str, float]]:
+    """Score nodes by recency — recently updated nodes score higher, measured
+    from `now` (the wall clock unless the caller fixes it)."""
     results = []
-    now = datetime.now()
+    now = now or datetime.now()
     for nid in node_ids:
         node = store.get_node(nid)
         if not node:
@@ -355,6 +356,7 @@ def hybrid_search(
     trusted_only: bool = False,
     evaluation_time: str | datetime | None = None,
     grounding: dict | None = None,
+    recency_time: datetime | None = None,
 ) -> list[dict]:
     """Hybrid search combining FTS5 + graph expansion + vector search.
 
@@ -539,7 +541,7 @@ def hybrid_search(
             except Exception:
                 pass
             try:
-                sources["recency"] = _recency_score(store, all_ids)
+                sources["recency"] = _recency_score(store, all_ids, recency_time)
             except Exception:
                 pass
             # Stigmergic injection-usefulness — separate channel from topology.

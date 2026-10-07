@@ -207,6 +207,22 @@ def answer_system(intent: str | None = None, needs_all: bool = False, *, options
             start = head.index("- Items are in chronological order.")
             end = head.index("\n- Figures", start)
             head = head[:start] + "- " + _EPISODE_HEAD + head[end:]
+        if getattr(options, "large_detail_binding", False) and intent == "fact":
+            rules["judge"] = (
+                "For a request to recall a recorded field, topical clues are not enough: "
+                "require support for the requested entity, episode and field together. "
+                "Infer only when the question actually requests a judgement or inference; "
+                "give new explanations or advice when requested, without calling them past facts."
+            )
+            rules["missing"] = (
+                "For recalled particulars, match each detail to the same entity and episode. "
+                "A mention, proposal, example or recommendation does not establish what was "
+                "used, done, received or felt. A recorded assistant reply can answer what was "
+                "recommended, but cannot establish adoption. If the requested field is absent, "
+                "say it is not recorded and stop; do not append related specifics. If some "
+                "requested fields are recorded, give those and identify only the missing ones. "
+                "Do not turn an incomplete excerpt into proof that a field was never recorded."
+            )
     selected = [rules[k] for k in keys]
     if options is not None and getattr(options, "count_scope", False):
         if "count" in keys:
@@ -265,6 +281,24 @@ def estimate_tokens(text: str) -> int:
 # Prompt tokens and calls spent on the answer being drafted, for AskResult.
 _USAGE: contextvars.ContextVar[list | None] = contextvars.ContextVar("kindex_answer_usage", default=None)
 _INPUT_LIMIT: contextvars.ContextVar[int | None] = contextvars.ContextVar("kindex_answer_input_limit", default=None)
+# The instant search recency is measured from (`ask.fixed_clock`); None is the wall clock.
+_CLOCK: contextvars.ContextVar[datetime | None] = contextvars.ContextVar("kindex_answer_clock", default=None)
+
+
+def answer_clock(store: Store, as_of=None) -> datetime | None:
+    """The question's date, else the latest date of the stored conversations:
+    an answer over an archive is read as of that archive, so rerunning it
+    later ranks the same evidence the same way."""
+    when = _parse_date(str(as_of)) if as_of else None
+    if when is not None:
+        return when.replace(tzinfo=None)
+    latest = None
+    for (raw,) in store.conn.execute(
+            "SELECT prov_when FROM nodes WHERE prov_activity = 'conversation-ingest' AND prov_when IS NOT NULL"):
+        parsed = _parse_date(str(raw))
+        if parsed is not None and (latest is None or parsed.replace(tzinfo=None) > latest):
+            latest = parsed.replace(tzinfo=None)
+    return latest
 
 
 @functools.lru_cache(maxsize=4096)
@@ -447,9 +481,21 @@ def plan_question(question: str, config: Config, client, ledger, as_of=None) -> 
     if not config.ask.plan or client is None:
         intent, needs_all = classify_question(question)
         return intent, [question], needs_all
+    prompt = PLAN_PROMPT.format(today=_today(as_of), question=question)
+    if config.ask.dialogue_relation_plan:
+        prompt += (
+            "\nThis memory is dialogue between named people. Cover each named subject "
+            "independently, with queries for the requested relation or attribute and "
+            "for the surrounding event or object. Use everyday paraphrases of the "
+            "question. Keep unknown values unknown; do not guess candidate answers "
+            "or add their names to searches. A dated event may be identified by "
+            "an earlier plan or a later retrospective report, so include a search "
+            "without the date. For a broad comparison, cover each person's "
+            "background and activities as well as their shared exchanges."
+        )
     try:
         raw = _call(client, config, system=None,
-                    user=PLAN_PROMPT.format(today=_today(as_of), question=question),
+                    user=prompt,
                     effort=config.ask.plan_effort, max_tokens=4000, ledger=ledger, purpose="ask-plan",
                     json_schema=PLAN_SCHEMA)
         plan = _parse_json(raw)
@@ -474,13 +520,15 @@ def gather(store: Store, queries: list[str], top_k: int, stats: dict | None = No
     from .retrieve import hybrid_search
 
     rankings = []
+    clock = _CLOCK.get()
+    extra = {"recency_time": clock} if clock is not None else {}
     for q in queries:
-        found = hybrid_search(store, q, top_k=top_k)
+        found = hybrid_search(store, q, top_k=top_k, **extra)
         if stats is not None and len(found) >= top_k:
             stats["saturated"] = True
         rankings.append(found)
         if window:
-            deep = hybrid_search(store, q, top_k=max(top_k, WINDOW_TOP_K))
+            deep = hybrid_search(store, q, top_k=max(top_k, WINDOW_TOP_K), **extra)
             rankings.append([n for n in deep if in_window(n, window)][:top_k])
     return fuse(rankings)
 
@@ -642,7 +690,7 @@ def excerpt(text: str, terms: set[str], around: int = 1, unmatched: str = "whole
         keep.update(i for i, owner in enumerate(owners) if owner in preceding)
     if user_turns and chat:
         # What the user said is what questions about the user ask after, in
-        # words of its own ("I just did the Spring Sprint Triathlon today"
+        # words of its own ("I ran my first half marathon today"
         # shares none with "sports events"); a pasted document is still cut.
         own = {i for i, (speaker, body) in enumerate(messages) if speaker.lower() == "user" and len(body) <= 1600}
         keep.update(i for i, owner in enumerate(owners) if owner in own)
@@ -689,7 +737,8 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
              unmatched: str = "whole", note_omitted: bool = True,
              profiles: list[dict] | None = None, truncate_first: bool = True,
              history_coverage: bool = False, date_anchors: bool = False,
-             exchange_context: bool = False, fact_tiers: int = 0, user_turns: bool = False) -> Assembly:
+             exchange_context: bool = False, fact_tiers: int = 0, user_turns: bool = False,
+             source_order: bool = False, witness_first: bool = False) -> Assembly:
     """The context, within `budget_tokens` counting every section, header and note:
     standing directives first, then the team knowledge a caller supplied, then the
     retrieved nodes in rank order (facts listed by date, excerpts oldest first).
@@ -711,6 +760,8 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
     remaining = budget_tokens - (estimate_tokens(EVIDENCE_HEADER) + sep) - (estimate_tokens(OMITTED_NOTE) + 2 + sep)
     if fact_tiers:
         remaining -= estimate_tokens(CLOSEST_FACTS) + estimate_tokens(OTHER_FACTS) + 2 * sep
+    if witness_first:
+        remaining -= estimate_tokens("## Evidence: original reports, oldest first") + sep
 
     def take(cost: int) -> bool:
         nonlocal remaining
@@ -764,9 +815,10 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         raw = node_text(node)
         extra = node.get("extra") or {}
         conversation = extra.get("conversation_id") or node.get("prov_activity") == "conversation-ingest"
-        if terms and conversation and extra.get("kind") is None:
+        if terms and conversation and extra.get("kind") is None and not extra.get("_ask_witness"):
             raw = excerpt(raw, terms, unmatched=unmatched, exchange_context=exchange_context, user_turns=user_turns)
-        if conversation and extra.get("kind") is None:
+        if conversation and (extra.get("kind") is None
+                             or witness_first and extra.get("_ask_witness")):
             raw = annotate_dates(raw, node_date(node), conservative=date_anchors)
         clipped = False
         if history_coverage and not is_fact(node) and estimate_tokens(raw) > 1200:
@@ -793,7 +845,7 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         have_facts = have_facts or is_fact(node)
     order = {n["id"]: i for i, n in enumerate(chosen)}
     def source_key(node):
-        if not history_coverage:
+        if not history_coverage and not source_order:
             return (node_date(node) or datetime.max, node.get("created_at") or "", order[node["id"]])
         extra = node.get("extra") or {}
         position = extra.get("position")
@@ -802,14 +854,20 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
                 position if isinstance(position, int) else -1, order[node["id"]])
     chosen.sort(key=source_key)
     facts = sorted((n for n in chosen if is_fact(n)), key=lambda n: (_fact_sort_key(n), order[n["id"]]))
-    parts = directive_part + profile_part + team_part
+    reports = [n for n in chosen if witness_first and (n.get("extra") or {}).get("_ask_witness")]
+    report_ids = {n["id"] for n in reports}
+    parts = directive_part + team_part if reports else directive_part + profile_part + team_part
+    if reports:
+        parts += ["## Evidence: original reports, oldest first", *(lines[n["id"]] for n in reports)]
+        parts += profile_part
     if facts and fact_tiers and len(facts) > fact_tiers:
         best = {n["id"] for n in sorted(facts, key=lambda n: order[n["id"]])[:fact_tiers]}
         parts += [FACTS_HEADER, CLOSEST_FACTS, *(lines[n["id"]] for n in facts if n["id"] in best),
                   OTHER_FACTS, *(lines[n["id"]] for n in facts if n["id"] not in best)]
     elif facts:
         parts += [FACTS_HEADER, *(lines[n["id"]] for n in facts)]
-    parts += [EVIDENCE_HEADER, *(lines[n["id"]] for n in chosen if not is_fact(n))]
+    parts += [EVIDENCE_HEADER, *(lines[n["id"]] for n in chosen
+                               if not is_fact(n) and n["id"] not in report_ids)]
     if omitted and note_omitted:
         parts.append(OMITTED_NOTE.format(n=omitted))
     text = "\n\n".join(parts)
@@ -843,6 +901,36 @@ def history_order(results: list[dict]) -> list[dict]:
         groups[key] = [first, *rest]
     return [groups[key][i] for i in range(max(map(len, groups.values())))
             for key in sessions if i < len(groups[key])]
+
+
+def landmark_nodes(results: list[dict], terms: set[str]) -> list[dict]:
+    """Compact derived summaries with complete sentences, then cover sessions.
+
+    Raw sources and facts stay intact. Copies retain their original provenance;
+    the originals remain available for the existing reread.
+    """
+    out = []
+    for node in results:
+        text = node_text(node)
+        if ((node.get("extra") or {}).get("kind") != "conversation-summary"
+                or estimate_tokens(text) <= 320):
+            out.append(node)
+            continue
+        units = list(dict.fromkeys(_SENTENCE.split(text)))
+        ranked = sorted(range(len(units)),
+                        key=lambda i: (-len(terms & query_terms(units[i])), i))
+        selected, remaining = [], 320 - estimate_tokens("[...]\n") * 4
+        for i in ranked:
+            cost = estimate_tokens(units[i]) + estimate_tokens("\n[...]\n")
+            if cost <= remaining:
+                selected.append(i)
+                remaining -= cost
+        if not selected:
+            out.append(node)  # do not silently cut a long sentence
+            continue
+        content = "[...]\n" + "\n[...]\n".join(units[i] for i in sorted(selected)) + "\n[...]"
+        out.append(dict(node, content=content))
+    return history_order(out)
 
 
 COVERAGE_NOTE = ("\n\n({why}. Give the count, total or list the evidence supports; only if the evidence "
@@ -1169,6 +1257,356 @@ def remainder_searches(question: str) -> list[str]:
     ]
 
 
+# Bounded source reads are for personal archives, not large chat histories.
+ROUND8_OPTIONS = ("ordering_witnesses", "dialogue_fields", "episode_endpoints")
+_ORDER_ENUM = re.compile(
+    r"\b(?:order of|in (?:the |what |which )?order|chronological (?:order|sequence))\b", re.I)
+_DIALOGUE_FIELD = re.compile(
+    r"^\s*what\b[^?]*\b(?:research|plans?|setbacks?|news|compare|common|share|shared|"
+    r"enjoy|favorite|favourite)\b", re.I)
+_FROM_TO_SPAN = re.compile(
+    r"\bhow many (?:days|weeks|months|years)\b[^?]*\bfrom\b[^?]*\b(?:to|until|till)\b", re.I)
+_EPISODE_ENDPOINT = re.compile(
+    r"\bhow many (?:days|weeks|months|years)\b[^?]*\bbetween\b"
+    r"|^\s*when\b[^?]*\b(?:finish|finished|complete|completed|start|started|begin|began)\b"
+    r"|^\s*what kind of project\b[^?]*\b(?:beginning|start)\b"
+    r"|^\s*where was\b[^?]*\bbetween\b"
+    r"|\bhow long\b[^?]*\b(?:complete|finish)\b", re.I)
+
+
+def round8_scope(question: str, *, named: bool, chat: bool) -> dict[str, bool]:
+    """Select shapes before planning; named dialogue and assistant chats stay separate."""
+    factual = not bool(_JUDGEMENT.search(question))
+    third_person = factual and not bool(_PERSONAL_ADDRESS.search(question))
+    return {
+        "ordering_witnesses": chat and factual and bool(_ORDER_ENUM.search(question)),
+        "dialogue_fields": named and third_person and bool(_DIALOGUE_FIELD.search(question)),
+        "episode_endpoints": factual and (
+            chat and bool(_FROM_TO_SPAN.search(question))
+            or named and third_person and bool(
+                _FROM_TO_SPAN.search(question) or _EPISODE_ENDPOINT.search(question))),
+    }
+
+
+ROUND10_OPTIONS = ("witness_coverage", "count_witnesses", "coarse_ordering", "episode_links")
+_WITNESS_INFERENCE = re.compile(
+    r"\b(?:(?:might|would|could|should)(?:n['’]t)?|likely|potentially|probably|possibly|suspected)\b", re.I)
+_OWN_ACTION = re.compile(r"\b(?:did|do|have|had) (?:i|we)\b", re.I)
+_NAMED_SPAN = re.compile(
+    r"^\s*how long\b|^\s*where\b[^?]*\b(?:between|last|past)\b", re.I)
+
+
+def round10_scope(question: str, *, named: bool, chat: bool) -> dict[str, bool]:
+    """Grammar and archive shape only; no topics, instance names or benchmark IDs."""
+    factual = not (_JUDGEMENT.search(question) or _WITNESS_INFERENCE.search(question))
+    third_person = factual and not _PERSONAL_ADDRESS.search(question)
+    return {
+        "witness_coverage": bool(factual and (
+            named and third_person and re.search(r"^\s*what\b", question, re.I)
+            and not _QUANTITY_QUESTION.search(question)
+            or chat and _ORDER_ENUM.search(question))),
+        "count_witnesses": bool(factual and (
+            chat and _OWN_ACTION.search(question) or named and third_person)
+                                and _INSTANCE_QUESTION.search(question)
+                                and not _DURATION_QUESTION.search(question)
+                                and not _WEEKLY_FREQUENCY.search(question)),
+        "coarse_ordering": bool(chat and factual and _ORDER_ENUM.search(question)),
+        "episode_links": bool(named and third_person and (
+            _FROM_TO_SPAN.search(question) or _EPISODE_ENDPOINT.search(question)
+            or _NAMED_SPAN.search(question))),
+    }
+
+
+_COUNT_EXAMPLE_UNIT = re.compile(
+    r"\b(?:how many|number of|count of)\s+(.+?)\s+(?:did|do|have|had)\s+(?:i|we)\b", re.I)
+_COORDINATED_EXAMPLE = re.compile(
+    r"(?:^|[.!?\n])([^.!?\n]{1,300}?)\b(?:like(?!\s+to\b)|such as|including)\b"
+    r"[^.!?\n]{0,600}\b(?:and|as well as)\b", re.I)
+
+
+def count_example_membership_scope(question: str, sources: list[dict]) -> bool:
+    """Inline user examples whose category contains every counted-unit term."""
+    if not round10_scope(question, named=False, chat=True)["count_witnesses"]:
+        return False
+    unit = _COUNT_EXAMPLE_UNIT.search(question)
+    terms = query_terms(unit.group(1)) if unit else set()
+    if not terms:
+        return False
+    for node in sources:
+        if (node.get("prov_activity") != "conversation-ingest"
+                or (node.get("extra") or {}).get("kind") not in (None, "chunk")):
+            continue
+        raw = node.get("content") or ""
+        for role in _ROLE_LINE.finditer(raw):
+            if role.group(1) != "user":
+                continue
+            line = raw[role.end():].split("\n", 1)[0].strip()
+            if len(line) > 2000:
+                continue
+            for example in _COORDINATED_EXAMPLE.finditer(line):
+                if terms <= query_terms(example.group(1)):
+                    return True
+    return False
+
+
+ROUND11_OPTIONS = ("ordering_occurrences",)
+_ATTEND_ORDER = re.compile(r"\bi (?:visited|attended|participated)\b", re.I)
+_OCCURRED_REPORT = re.compile(
+    r"\bi (?:have |had )?(?:(?:just|recently|also) )?"
+    r"(?:visited|attended|participated|completed|finished|took|went|returned|got back|came back)\b", re.I)
+
+
+def round11_scope(question: str, *, named: bool, chat: bool) -> dict[str, bool]:
+    """Question relations and bounded archive shape, before any model call."""
+    factual = not (_JUDGEMENT.search(question) or _WITNESS_INFERENCE.search(question))
+    return {
+        "ordering_occurrences": bool(chat and factual and _ORDER_ENUM.search(question)
+                                     and _ATTEND_ORDER.search(question)),
+    }
+
+
+def round11_source_bonus(question: str, text: str) -> int:
+    """Select literal completed-occurrence witnesses for an attendance ordering."""
+    if _ORDER_ENUM.search(question) and _ATTEND_ORDER.search(question):
+        return 30 if _OCCURRED_REPORT.search(text) else 0
+    return 0
+
+
+ROUND14_OPTIONS = ("dialogue_field_values", "dialogue_episode_bindings",
+                   "dialogue_instance_identity")
+_PAIR_VALUE = re.compile(r"\b(?:both|common|shared)\b", re.I)
+_VALUE_ANCHOR = re.compile(r"^\s*what\b[^?]*\b(?:before|after)\b", re.I)
+_EVENT_CHAIN = re.compile(
+    r"^\s*when\b[^?]*\b(?:met|meet|finish(?:ed)?|complete(?:d)?|start(?:ed)?|begin|began|return(?:ed)?)\b"
+    r"|^\s*how long\b[^?]*\b(?:finish|complete)\b"
+    r"|^\s*(?:where|which city)\b", re.I)
+_OCCURRENCE_UNIT = re.compile(r"^\s*how many (?:times|visits|trips|occasions)\b", re.I)
+
+
+def round14_scope(question: str, intent: str, *, named: bool) -> dict[str, bool]:
+    """Recall relations only; never route from a draft, answer or benchmark ID."""
+    recall = bool(named and intent in ("fact", "aggregation", "temporal")
+                  and not _PERSONAL_ADDRESS.search(question)
+                  and not _WITNESS_INFERENCE.search(question))
+    return {
+        "dialogue_field_values": recall and bool(
+            _DIALOGUE_FIELD.search(question) or _PAIR_VALUE.search(question)
+            or _VALUE_ANCHOR.search(question)),
+        "dialogue_episode_bindings": recall and bool(_EVENT_CHAIN.search(question)),
+        "dialogue_instance_identity": recall and bool(_OCCURRENCE_UNIT.search(question)),
+    }
+
+
+ROUND14_RULES = {
+    "dialogue_field_values": (
+        "Before answering, privately collect the subject, requested relation, value, episode or "
+        "time anchor, and witness for each supported candidate. A statement of that exact relation "
+        "outranks a nearby activity; use the latest direct statement of the same field unless a "
+        "historical anchor selects an earlier one. Digest facts remain usable when their original "
+        "turn is omitted, unless a shown original contradicts them. Shared interests or backgrounds "
+        "are the intersection of what each person reports, not only things they did together; "
+        "include the salient shared experiences rather than just one anecdote. A joint comparison "
+        "differs from each person's separate metaphor. For before/after questions, return the "
+        "requested activity, not the activity identifying the exchange. For pictures, keep the "
+        "caption's specific depicted items rather than replacing them with a broad category. "
+        "Return the requested values with only necessary qualifications. Apply the existing neutral "
+        "answer rule for a uniquely identified exchange with a minor name error; do not append an "
+        "unrequested correction or invent an attribution. Keep unsupported fields unfilled."
+    ),
+    "dialogue_episode_bindings": (
+        "Before choosing a date or place, privately connect the subject, episode, requested "
+        "milestone, event date, report date, place, and witness. A continuation about the same outing "
+        "can inherit its recorded time and place; its report date is not automatically a new event "
+        "date. A retrospective completion can close a unique compatible open project even when "
+        "the later turn uses a broader description; mark that link as likely when inferred. Do not "
+        "merge a different project already completed before the requested one began. Match a dated "
+        "location to its event date, not to when an undated memory was mentioned. Use departure and "
+        "return reports as interval bounds, without asserting continuous presence that is not "
+        "supported. Retain the source's geographical precision. For a duration, pair the requested "
+        "milestones and label report-to-report estimates as approximate; do not invent a start "
+        "date or transfer a component's completion to the whole project."
+    ),
+    "dialogue_instance_identity": (
+        "Privately enumerate each occurrence with its subject, action, event anchor, and witness "
+        "before counting. Recognize when a recorded action reasonably entails the broader action "
+        "asked about, stating likely when inference is needed. Normalize geographical names to "
+        "the requested level, but group by occurrence rather than by location: disjoint event "
+        "dates can establish separate visits to the same place. Several activities during one "
+        "visit remain one visit, and a date of retelling is not a new occurrence. Report the "
+        "supported count and its event anchors; preserve conditional cases instead of inventing "
+        "an occurrence or requiring a literal repetition of the question's verb."
+    ),
+}
+
+
+def bounded_conversation_sources(store: Store) -> list[dict]:
+    """Read live local source chunks only when the entire graph has at most 1,000 nodes."""
+    if store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] > 1000:
+        return []
+    rows = store.conn.execute(
+        "SELECT * FROM nodes WHERE status NOT IN ('archived', 'superseded') "
+        "AND prov_activity = 'conversation-ingest' "
+        "AND (json_extract(extra, '$.kind') IS NULL OR json_extract(extra, '$.kind') = 'chunk')"
+    ).fetchall()
+    nodes = [store._row_to_dict(row) for row in rows]
+    return [n for n in nodes if not node_expired(n) and not (n.get("extra") or {}).get("kinbase")]
+
+
+WITNESS_SCHEMA = {
+    "name": "witness_terms",
+    "schema": {"type": "object", "additionalProperties": False, "required": ["terms"],
+               "properties": {"terms": {"type": "array", "items": {"type": "string"}}}},
+}
+WITNESS_PROMPT = """List words that could name the specific things this question asks about, as a person might mention them in casual conversation: kinds, synonyms and typical instances (for "kitchen appliances": blender, toaster, kettle, mixer). Up to 20 single lower-case words.
+
+Question: {question}"""
+
+
+def witness_terms(client, config: Config, question: str, ledger=None) -> list[str]:
+    """Words naming instances of what the question asks about (one small call),
+    so a reported instance is found though it shares no word with the question;
+    none when the call fails."""
+    try:
+        raw = _call(client, config, system=None, user=WITNESS_PROMPT.format(question=question),
+                    effort="low", max_tokens=2000, ledger=ledger, purpose="ask-witness-terms",
+                    json_schema=WITNESS_SCHEMA)
+        terms = _parse_json(raw).get("terms") or []
+    except Exception:
+        return []
+    return [t.strip().lower() for t in terms if isinstance(t, str) and t.strip()][:20]
+
+
+def source_witnesses(sources: list[dict], question: str, budget: int,
+                     expansions: list[str] | None = None, *, diverse: bool = False,
+                     focused: bool = False) -> list[dict]:
+    """Select original short turns, with neighbours in named dialogue, without an LLM.
+
+    Snippets keep source IDs, dates and chunk positions. The input dictionaries
+    are never changed; the private marker only prevents a second excerpt pass.
+    """
+    if not sources or budget < 100:
+        return []
+    named = named_dialogue(sources, look=len(sources))
+
+    def source_key(node):
+        extra = node.get("extra") or {}
+        return (node_date(node) or datetime.max, str(extra.get("conversation_id") or node["id"]),
+                extra.get("position") if isinstance(extra.get("position"), int) else -1, node["id"])
+
+    ordered = sorted(sources, key=source_key)
+    terms = informative_terms(query_terms(question), ordered)
+    expanded = set(terms)
+    for term in expansions or []:
+        expanded.update(_stem(w) for w in _WORD.findall(term.lower()))
+    turns: list[tuple[dict, str, str, str]] = []
+    for node in ordered:
+        raw = node.get("content") or ""
+        matches = list(_ROLE_LINE.finditer(raw)) or (list(_NAME_LINE.finditer(raw)) if named else [])
+        for i, match in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+            text = raw[match.start():end].strip()
+            role = match.group(1)
+            extra = node.get("extra") or {}
+            session = str(extra.get("conversation_id") or node["id"])
+            turns.append((node, role, text, session))
+
+    ranked = []
+    for i, (node, role, text, _) in enumerate(turns):
+        if (not named and role != "user") or len(text) > 2000:
+            continue
+        words = {_stem(w) for w in _WORD.findall(text.lower())}
+        bonus = round11_source_bonus(question, text) if focused else 0
+        if not expanded & words and not bonus:
+            continue
+        score = bonus + 3 * len(terms & words) + len((expanded - terms) & words)
+        score += len(query_terms(question) & query_terms(node.get("prov_when") or ""))
+        if re.search(r"\b(?:visited|attended|went|took|completed|finished|got back|came back|"
+                     r"today|yesterday|last|ago|lead a team)\b", text, re.I):
+            score += 2
+        if ((_FROM_TO_SPAN.search(question) or _EPISODE_ENDPOINT.search(question))
+                and re.search(r"\b(?:released?|finished|completed|wrapped|started|began|first|second)\b",
+                              text, re.I)):
+            score += 4
+        ranked.append((-score, i))
+
+    def snapshots(indices: set[int]) -> list[dict]:
+        selected: dict[str, list[tuple[int, str]]] = {}
+        by_id = {n["id"]: n for n in ordered}
+        for i in sorted(indices):
+            node, _, text, _ = turns[i]
+            selected.setdefault(node["id"], []).append((i, text))
+        out = []
+        for nid, pieces in selected.items():
+            chunks = []
+            previous = -2
+            for i, text in pieces:
+                if chunks and i != previous + 1:
+                    chunks.append("[...]")
+                chunks.append(text)
+                previous = i
+            node = by_id[nid]
+            out.append({**node, "title": "", "content": "\n".join(chunks),
+                        "extra": {**(node.get("extra") or {}), "_ask_witness": True}})
+        return out
+
+    matched = {
+        i: expanded & {_stem(w) for w in _WORD.findall(turns[i][2].lower())}
+        for _, i in ranked
+    } if diverse else {}
+    weights = {
+        word: (3 if word in terms else 1) / (1 + sum(word in words for words in matched.values()))
+        for word in expanded
+    } if diverse else {}
+    covered: dict[str, int] = {}
+    pending = {i: -score for score, i in ranked}
+    static_order = iter(i for _, i in sorted(ranked))
+    keep: set[int] = set()
+
+    def contiguous(i: int, j: int) -> bool:
+        left, right = turns[i][0], turns[j][0]
+        a, b = (left.get("extra") or {}).get("position"), (right.get("extra") or {}).get("position")
+        return abs(a - b) <= 1 if isinstance(a, int) and isinstance(b, int) else left["id"] == right["id"]
+
+    while pending:
+        if diverse:
+            # Frequent query words cannot consume all slots. Repeated vocabulary
+            # loses priority, but distinct occurrences are never deduplicated here.
+            i = max(pending, key=lambda j: (
+                sum(weights[w] / (1 + covered.get(w, 0)) for w in matched[j])
+                + (0.1 if focused else 0.01) * pending[j], -j))
+        else:
+            i = next(static_order)
+        pending.pop(i)
+        proposed = keep | {i}
+        if named:
+            # A question can be in one chunk and its answer in the next.
+            proposed.update(j for j in range(i - 2, i + 3)
+                            if 0 <= j < len(turns) and turns[j][3] == turns[i][3]
+                            and len(turns[j][2]) <= 2000
+                            and (not diverse or contiguous(i, j)))
+        trial = snapshots(proposed)
+        # Leave room for source/date labels and resolved relative phrases.
+        cost = sum(estimate_tokens(annotate_dates(n["content"], node_date(n), conservative=True))
+                   + 80 for n in trial)
+        if cost <= budget:
+            for j in proposed - keep:
+                for word in matched.get(j, set()):
+                    covered[word] = covered.get(word, 0) + 1
+            keep = proposed
+    return snapshots(keep)
+
+
+def prefer_source_witnesses(results: list[dict], sources: list[dict],
+                           question: str, budget: int, expansions: list[str] | None = None, *,
+                           diverse: bool = False, focused: bool = False) -> list[dict]:
+    selected = source_witnesses(sources, question, min(6000, budget // 2), expansions,
+                                diverse=diverse, focused=focused)
+    if not selected:
+        return results
+    ids = {n["id"] for n in selected}
+    return selected + [n for n in results if n["id"] not in ids]
+
+
 def relative_recall_window(question: str, as_of=None) -> tuple[datetime, datetime] | None:
     """A single recalled episode's question anchor; never a window for counts.
 
@@ -1239,11 +1677,706 @@ def focus_relative_results(results: list[dict], question: str,
     return sorted(results, key=outside)
 
 
+_LARGE_LANDMARKS = re.compile(
+    r"\b(?:summari[sz]e|overview|recap)\b|"
+    r"\b(?:a|brief|clear|detailed|comprehensive|thorough|complete|cohesive) summary\b|"
+    r"\bmention only and only\b", re.I)
+_LARGE_RECALL = re.compile(
+    r"\b(?:did you (?:recommend|help)|you recommend(?:ed)?|"
+    r"did i (?:first )?(?:mention|say|set|schedule|buy))\b", re.I)
+_LARGE_VALUE = re.compile(
+    r"^\s*(?:what (?:is|are)\b|how often\b|how many\b|when is\b)", re.I)
+_LARGE_CONTRACT = re.compile(
+    r"\b(?:tools|libraries|dependencies)\b|\bhow much\b[^?]*\bcost\b|"
+    r"\bhow did\b[^?]*\bperform\b|"
+    r"\b(?:how (?:would|should|can) (?:you|i)|"
+    r"(?:can|could) you (?:help|suggest|recommend)|"
+    r"(?:some|any) tips|good routine|walk me through)\b", re.I)
+LARGE_MEMORY_OPTIONS = (
+    "large_landmarks", "large_recall_exchange",
+    "large_value_updates", "large_response_contract",
+)
+
+
+_LARGE_CLAIM = re.compile(
+    r"^\s*(?:have|has|did|do|does|had)\s+(?:i|we)\b|"
+    r"^\s*how (?:experienced|familiar|much experience)\b", re.I)
+LARGE_WITNESS_OPTIONS = (
+    "large_claim_witnesses", "large_span_witnesses", "large_summary_coverage",
+)
+LARGE_READING_OPTIONS = (
+    "large_detail_binding", "large_claim_scan", "large_summary_methods",
+)
+
+
+def large_claim_denial_hits(store: Store, question: str) -> list[dict]:
+    """Copy complete user denials without depending on search rank or the first eight hits."""
+    from bisect import bisect_right
+
+    terms = query_terms(_HISTORY_LEAD.sub("", question)) - {"never"}
+    if not terms:
+        return []
+    denial = re.compile(r"\bnever\b|\b(?:have|has|had) not\b|\bnot yet\b|"
+                        r"\b(?:haven't|hasn't|hadn't)\b", re.I)
+    today = (_CLOCK.get() or datetime.now()).date().isoformat()
+    rows = store.conn.execute(
+        "SELECT * FROM nodes WHERE status NOT IN ('archived', 'superseded') "
+        "AND prov_activity = 'conversation-ingest' "
+        "AND json_extract(extra, '$.conversation_id') IS NOT NULL "
+        "AND (json_extract(extra, '$.kind') IS NULL OR "
+        "json_extract(extra, '$.kind') = 'chunk') "
+        "ORDER BY prov_when, json_extract(extra, '$.conversation_id'), "
+        "json_extract(extra, '$.position'), id").fetchall()
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        node = store._row_to_dict(row)
+        if not node_expired(node, today=today) and not (node.get("extra") or {}).get("kinbase"):
+            groups.setdefault(str(node["extra"]["conversation_id"]), []).append(node)
+    runs = []
+    for nodes in groups.values():
+        raw, offsets, anchors, previous = "", [], [], None
+        for node in nodes:
+            position = (node.get("extra") or {}).get("position")
+            if raw and not (isinstance(position, int) and isinstance(previous, int)
+                            and position == previous + 1):
+                runs.append((raw, offsets, anchors))
+                raw, offsets, anchors = "", [], []
+            content = node.get("content") or ""
+            if raw and _ROLE_LINE.match(content):
+                raw += "\n"
+            offsets.append(len(raw))
+            anchors.append(node)
+            raw += content
+            previous = position
+        if raw:
+            runs.append((raw, offsets, anchors))
+    ranked = []
+    for run_index, (raw, offsets, anchors) in enumerate(runs):
+        turns = list(_ROLE_LINE.finditer(raw))
+        for i, turn in enumerate(turns):
+            if turn.group(1) != "user":
+                continue
+            end = turns[i + 1].start() if i + 1 < len(turns) else len(raw)
+            # Match the denial's own sentence; another activity in the turn must not qualify it.
+            overlap = max((len(terms & query_terms(sentence))
+                           for sentence in _SENTENCE.split(raw[turn.start():end])
+                           if denial.search(sentence)), default=0)
+            if overlap < min(2, len(terms)):
+                continue
+            anchor_index = bisect_right(offsets, turn.start()) - 1
+            anchor = anchors[anchor_index]
+            witness = dict(anchor, title="", content=raw[turn.start():end].strip(),
+                           extra={**anchor["extra"], "_ask_witness": True,
+                                  "_ask_turn_offset": turn.start() - offsets[anchor_index]})
+            ranked.append((-overlap, run_index, turn.start(), witness))
+    selected, seen = [], set()
+    for _, _, _, node in sorted(ranked, key=lambda row: row[:3]):
+        conv = str(node["extra"]["conversation_id"])
+        if conv not in seen:
+            selected.append(node)
+            seen.add(conv)
+        if len(selected) == 8:
+            break
+    return selected
+
+
+def span_queries(question: str) -> list[str]:
+    """Two endpoint searches derived only from the question."""
+    if (not _DURATION_QUESTION.search(question)
+            or re.search(r"\b(?:per|a|each|every) (?:day|week|month|year)\b", question, re.I)):
+        return []
+    body = question.strip(" ?.")
+    patterns = (
+        r"\bbetween\s+(.+?)\s+and\s+(.+)$",
+        r"\bfrom\s+(.+?)\s+(?:to|till|until)\s+(.+)$",
+        r"\bafter\s+(.+?)\s+(?:did|do|does|will|would|had|has|have)\s+(.+)$",
+        r"\bbefore\s+(.+?)\s+(?:is|are|was|were|did|do|will)\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, body, re.I)
+        if match and all(query_terms(p) for p in match.groups()):
+            return [p.strip() for p in match.groups()]
+    body = re.sub(r"^\s*how (?:many \w+|long)\b", "", body, flags=re.I).strip()
+    match = re.fullmatch(r"(.+?)\s+(?:before|until|by the time)\s+(.+)", body, re.I)
+    return [p.strip() for p in match.groups()] if match else []
+
+
+def quoted_history_nodes(store: Store, jobs: list[tuple[str, bool | None, list[dict]]],
+                         budget: int, *, literal_denials: bool = False) -> list[dict]:
+    """Reserve equal space for both searches; retain literal user turns.
+
+    Polarity selects candidate quotes, not truth or completion. Digests and
+    assistant examples cannot become user claims. Originals remain unmodified.
+    """
+    if not jobs or budget < 200:
+        return []
+    denial = re.compile(r"\bnever\b|\b(?:have|has|had) not\b|\bnot yet\b|"
+                        r"\b(?:haven't|hasn't|hadn't)\b", re.I)
+    share = budget // len(jobs)
+    picked: dict[str, dict] = {}
+    pieces: dict[str, dict[int, str]] = {}
+    for query, negative, hits in jobs:
+        terms = query_terms(query) - {"never"}
+        if literal_denials and negative is True:
+            # The scan already rejoined continuation chunks. Expanding these copies
+            # back to individual chunks would lose the complete denial again.
+            direct = [n for n in hits if (n.get("extra") or {}).get("_ask_witness")]
+            rest = [n for n in hits if not (n.get("extra") or {}).get("_ask_witness")]
+            sources = direct + verification_nodes(store, [], rest, terms, share)
+        else:
+            sources = verification_nodes(store, [], hits, terms, share)
+        ranked = []
+        for source_index, node in enumerate(sources):
+            if (node.get("extra") or {}).get("kind") not in (None, "chunk"):
+                continue
+            raw = node.get("content") or ""
+            matches = list(_ROLE_LINE.finditer(raw))
+            for i, match in enumerate(matches):
+                if match.group(1) != "user":
+                    continue
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+                quote = raw[match.start():end].strip()
+                if negative is not None and bool(denial.search(quote)) != negative:
+                    continue
+                overlap = len(terms & query_terms(quote))
+                if overlap < min(2, len(terms)) or not terms:
+                    continue
+                position = match.start() + ((node.get("extra") or {}).get("_ask_turn_offset", 0)
+                                            if literal_denials and negative is True else 0)
+                priority = -overlap
+                if literal_denials and negative is True and (node.get("extra") or {}).get("_ask_witness"):
+                    priority -= len(terms) + 1  # scanned denials take their existing half first
+                ranked.append((priority, source_index, position, node, quote))
+        remaining, seen = share, set()
+        for _, _, position, node, quote in sorted(ranked, key=lambda row: row[:3]):
+            if quote in seen:
+                continue
+            cost = estimate_tokens(annotate_dates(quote, node_date(node), conservative=True)) + 80
+            if cost > remaining:
+                continue
+            remaining -= cost
+            seen.add(quote)
+            picked[node["id"]] = node
+            pieces.setdefault(node["id"], {})[position] = quote
+    return [
+        dict(node, title="", content="\n[...]\n".join(text for _, text in sorted(pieces[nid].items())),
+             extra={**(node.get("extra") or {}), "_ask_witness": True})
+        for nid, node in picked.items()
+    ]
+
+
+def summary_coverage_nodes(results: list[dict], terms: set[str], *,
+                           methods_first: bool = False) -> list[dict]:
+    """Keep complete summary sentences that add distinct content at the same cap."""
+    covered: set[str] = set()
+    out = []
+    for node in results:
+        text = node_text(node)
+        if (node.get("extra") or {}).get("kind") != "conversation-summary":
+            out.append(node)
+            continue
+        if estimate_tokens(text) <= 320:
+            out.append(node)
+            covered.update(query_terms(text))
+            continue
+        units = list(dict.fromkeys(_SENTENCE.split(text)))
+        words = [query_terms(unit) for unit in units]
+        methods = [bool(re.search(
+            r"\b(?:assistant|reply|response)\s+(?:(?:also|then|generally|later)\s+)?"
+            r"(?:explain|recommend|suggest|demonstrat|advis|outlin)\w*\b", unit, re.I))
+            for unit in units] if methods_first else [False] * len(units)
+        costs = [estimate_tokens(unit) + estimate_tokens("\n[...]\n") for unit in units]
+        selected, remaining = [], 320 - estimate_tokens("[...]\n") * 4
+        available = set(range(len(units)))
+        while available:
+            eligible = [i for i in available if costs[i] <= remaining]
+            if not eligible:
+                break
+            def score(i):
+                relevance = len(terms & words[i]) / max(1, len(terms))
+                novelty = len(words[i] - covered - terms) / max(1, len(words[i])) ** 0.5
+                # At the same 320-token cap, protect one relevant explanation or advice sentence
+                # before repeated user progress snapshots. Whole sentences retain attribution.
+                method = int(methods[i] and bool(terms & words[i])
+                             and not any(methods[j] for j in selected))
+                return (method, 2 * relevance + novelty, -i)
+            best = max(eligible, key=score)
+            selected.append(best)
+            remaining -= costs[best]
+            covered.update(words[best])
+            available.remove(best)
+        if not selected:
+            out.append(node)  # a long sentence stays intact for ordinary assembly
+            continue
+        content = "[...]\n" + "\n[...]\n".join(units[i] for i in sorted(selected)) + "\n[...]"
+        out.append(dict(node, content=content))
+    return history_order(out)
+
+
+def large_question_shapes(question: str) -> dict[str, bool]:
+    landmarks = bool(_LARGE_LANDMARKS.search(question))
+    recall = not landmarks and bool(_LARGE_RECALL.search(question))
+    return {
+        "large_landmarks": landmarks,
+        "large_recall_exchange": recall,
+        "large_value_updates": bool(
+            not landmarks and not recall and _LARGE_VALUE.search(question)
+            and not _DURATION_QUESTION.search(question)
+            and not re.search(r"\bhow many different\b", question, re.I)
+            and not _DETAILS.search(question)),
+        "large_response_contract": not landmarks and bool(_LARGE_CONTRACT.search(question)),
+        "large_claim_witnesses": bool(_LARGE_CLAIM.search(question)),
+        "large_detail_binding": classify_question(question)[0] == "fact" and bool(_DETAILS.search(question)),
+        "large_claim_scan": classify_question(question)[0] == "fact" and bool(_LARGE_CLAIM.search(question)),
+        "large_summary_methods": classify_question(question)[0] == "summary" and landmarks,
+        "large_span_witnesses": bool(span_queries(question)),
+        "large_summary_coverage": classify_question(question)[0] == "summary",
+        "large_day_arithmetic": bool(_LARGE_DAYS.search(question)),
+        "large_order_append": classify_question(question)[0] == "ordering" and bool(_ORDER_ENUM.search(question)),
+        "large_recall_append": bool(_LARGE_ADVICE.search(question)),
+        "large_members_append": bool(_LARGE_MEMBERS.search(question)),
+        "large_order_ledger": (
+            classify_question(question)[0] == "ordering" and bool(_ORDER_ENUM.search(question))
+            and bool(re.search(r"\b(?:mention\w*|discuss\w*|conversations?|chats?|brought up)\b",
+                               question, re.I))),
+        "large_span_ledger": (
+            classify_question(question)[0] == "temporal" and bool(_LARGE_DAYS.search(question))
+            and not re.search(r"\b(?:(?:business|working)\s+days|inclusive)\b", question, re.I)),
+        "large_evidence_pack": True,
+        "large_topic_sequence": classify_question(question)[0] in ("ordering", "summary"),
+        "large_gap_retry": classify_question(question)[0] in (
+            "fact", "temporal", "aggregation", "knowledge_update", "assistant_recall"),
+    }
+
+
+def large_memory_config(store: Store, question: str, config: Config) -> Config:
+    """Normalize per-answer flags without changing requests outside their scopes."""
+    cfg = config.ask
+    names = (*LARGE_MEMORY_OPTIONS, *LARGE_WITNESS_OPTIONS,
+             *LARGE_ASSEMBLY_OPTIONS, *LARGE_SLACK_OPTIONS, *LARGE_LEDGER_OPTIONS,
+             *LARGE_READING_OPTIONS)
+    if not any(getattr(cfg, name) for name in names):
+        return config
+    shapes = large_question_shapes(question)
+    selected = {name: getattr(cfg, name) and shapes[name] for name in names}
+    if any(selected.values()) and (memory_scale(store) <= 1.0 or named_memory(store)):
+        selected = dict.fromkeys(selected, False)
+    # The cited verification path has its own source assembly and reference map.
+    if cfg.verify:
+        selected["large_landmarks"] = selected["large_recall_exchange"] = False
+        selected.update(dict.fromkeys((*LARGE_WITNESS_OPTIONS, *LARGE_ASSEMBLY_OPTIONS,
+                                        *LARGE_READING_OPTIONS), False))
+    local_options = (*LARGE_SLACK_OPTIONS, *LARGE_LEDGER_OPTIONS, *LARGE_READING_OPTIONS)
+    if any(selected[name] for name in local_options):
+        has_chat = all(store.conn.execute(
+            "SELECT 1 FROM nodes WHERE prov_activity = 'conversation-ingest' "
+            "AND (json_extract(extra, '$.kind') IS NULL OR "
+            "json_extract(extra, '$.kind') = 'chunk') "
+            "AND (content LIKE ? OR content LIKE ?) LIMIT 1",
+            (f"{role}: %", f"%\n{role}: %")).fetchone() for role in ("user", "assistant"))
+        if not has_chat:
+            selected.update(dict.fromkeys(local_options, False))
+    if cfg.verify or cfg.samples != 1 or cfg.count_inventory:
+        selected.update(dict.fromkeys(local_options, False))
+    if selected["large_claim_scan"]:
+        selected["large_claim_witnesses"] = True
+    if selected["large_summary_methods"]:
+        selected["large_summary_coverage"] = True
+    if selected["large_response_contract"]:
+        selected["directive_check"] = True
+    return config.model_copy(update={"ask": cfg.model_copy(update=selected)})
+
+
+LARGE_ASSEMBLY_OPTIONS = (
+    "large_evidence_pack", "large_topic_sequence", "large_gap_retry",
+)
+
+
+LARGE_SLACK_OPTIONS = (
+    "large_day_arithmetic", "large_order_append",
+    "large_recall_append", "large_members_append",
+)
+LARGE_LEDGER_OPTIONS = ("large_order_ledger", "large_span_ledger")
+_LARGE_DAYS = re.compile(r"\bhow many days\b", re.I)
+_LARGE_ADVICE = re.compile(
+    r"\b(?:did you (?:recommend|help|explain|suggest)|"
+    r"you (?:recommended|suggested|explained))\b", re.I)
+_LARGE_MEMBERS = re.compile(r"\bhow many (?:different|distinct|types|kinds)\b", re.I)
+_CALENDAR_MONTH = (
+    r"January|February|March|April|May|June|July|August|September|October|November|December")
+_CALENDAR_DATE = re.compile(
+    rf"\b(?:\d{{4}}-\d{{2}}-\d{{2}}|(?:{_CALENDAR_MONTH}) \d{{1,2}},? \d{{4}}|"
+    rf"\d{{1,2}} (?:{_CALENDAR_MONTH}) \d{{4}})\b", re.I)
+
+
+def large_day_arithmetic(question: str, answer: str) -> str:
+    """Repair only a leading elapsed-day number, using the draft's own endpoints."""
+    if not _LARGE_DAYS.search(question) or re.search(
+            r"\b(?:business|working|weekdays|inclusive|approximately|around|roughly)\b|\babout\s+\d",
+            question + " " + answer, re.I):
+        return answer
+    opening = re.split(r"(?<=[.!?])\s|\n\s*\n", answer, maxsplit=1)[0]
+    lead = re.match(r"^\s*(?:\*\*)?(?P<n>\d+)(?:\*\*)?\s+days\b", opening, re.I)
+    dates = list(_CALENDAR_DATE.finditer(opening))
+    # Missing years, numeric locale ambiguity, ranges and multiple readings
+    # remain the reader's responsibility. Never choose or alter an endpoint.
+    if not lead or len(dates) != 2 or not re.search(
+            r"\bfrom\b", opening[lead.end():dates[0].start()], re.I) or not re.search(
+            r"\b(?:to|till|until)\b", opening[dates[0].end():dates[1].start()], re.I):
+        return answer
+    parsed = []
+    for match in dates:
+        raw = match.group().replace(",", "")
+        for fmt in ("%Y-%m-%d", "%B %d %Y", "%d %B %Y"):
+            try:
+                parsed.append(datetime.strptime(raw, fmt).date())
+                break
+            except ValueError:
+                continue
+        else:
+            return answer
+    days = (parsed[1] - parsed[0]).days
+    if days < 0 or days == int(lead["n"]):
+        return answer
+    return answer[:lead.start("n")] + str(days) + answer[lead.end("n"):]
+
+
+def large_slack_assembly(store: Store, results: list[dict], question: str,
+                         mode: str, budget: int, *, baseline: str = "",
+                         window=None, date_anchors: bool = False) -> Assembly | None:
+    """Append source turns from retrieved sessions; never reselect baseline evidence."""
+    from bisect import bisect_right
+    from collections import Counter
+
+    from .retrieve import graph_text
+
+    if budget < 200:
+        return None
+    primary = query_terms(question)
+    facets = [primary, *(query_terms(q) for q in facet_searches(question))]
+    facets = [f for f in facets if f]
+    if not facets:
+        return None
+    # Expand only from already-retrieved summaries, never from a draft or a key.
+    summaries = []
+    for node in results:
+        if (node.get("extra") or {}).get("kind") == "conversation-summary":
+            for sentence in _SENTENCE.split(node_text(node)):
+                words = query_terms(sentence)
+                overlap = len(words & primary)
+                if overlap >= min(2, len(primary)) and estimate_tokens(sentence) <= 250:
+                    summaries.append((overlap, words))
+    facets += [words for _, words in sorted(summaries, key=lambda row: -row[0])[:6]]
+    expanded = set.union(*facets)
+    conversations = list(dict.fromkeys(
+        (n.get("extra") or {}).get("conversation_id") for n in results
+        if (n.get("extra") or {}).get("conversation_id") is not None))
+    candidates = []
+    visible = " ".join(baseline.split())
+    today = (_CLOCK.get() or datetime.now()).date().isoformat()
+    for conv in conversations:
+        rows = store.conn.execute(
+            "SELECT id FROM nodes WHERE json_extract(extra, '$.conversation_id') = ? "
+            "AND (json_extract(extra, '$.kind') IS NULL OR "
+            "json_extract(extra, '$.kind') = 'chunk') "
+            "ORDER BY json_extract(extra, '$.position'), id", (conv,)).fetchall()
+        nodes = [n for row in rows if (n := store.get_node(row[0]))
+                 and n.get("status") not in ("archived", "superseded")
+                 and not node_expired(n, today=today)
+                 and (window is None or in_window(n, window))]
+        # Rejoin continuation chunks, but never bridge a missing/archived chunk.
+        runs, raw, offsets, anchors, previous = [], "", [], [], None
+        for node in nodes:
+            position = (node.get("extra") or {}).get("position")
+            if raw and not (isinstance(position, int) and isinstance(previous, int)
+                            and position == previous + 1):
+                runs.append((raw, offsets, anchors))
+                raw, offsets, anchors = "", [], []
+            content = node.get("content") or ""
+            if raw and _ROLE_LINE.match(content):
+                raw += "\n"
+            offsets.append(len(raw))
+            anchors.append(node)
+            raw += content
+            previous = position
+        if raw:
+            runs.append((raw, offsets, anchors))
+        for raw, offsets, anchors in runs:
+            turns = list(_ROLE_LINE.finditer(raw))
+            for i, turn in enumerate(turns):
+                if turn.group(1) != "user":
+                    continue
+                end = turns[i + 1].start() if i + 1 < len(turns) else len(raw)
+                own = raw[turn.start():end].strip()
+                text = own
+                if mode == "recall":
+                    if i + 1 >= len(turns) or turns[i + 1].group(1) != "assistant":
+                        continue
+                    stop = turns[i + 2].start() if i + 2 < len(turns) else len(raw)
+                    reply = raw[end:stop].strip()
+                    if estimate_tokens(own + "\n" + reply) + 100 > budget:
+                        role = _ROLE_LINE.match(reply)
+                        parts = re.split(r"\n\s*\n", reply[role.end():] if role else reply)
+                        order = sorted(range(len(parts)),
+                                       key=lambda j: (-len(query_terms(parts[j]) & expanded), j))
+                        chosen, left = [], budget - estimate_tokens(own) - 150
+                        for j in order:
+                            cost = estimate_tokens(parts[j]) + 10
+                            if cost <= left:
+                                chosen.append(j)
+                                left -= cost
+                        if not chosen:
+                            continue
+                        reply = "assistant: [...]\n" + "\n[...]\n".join(
+                            parts[j] for j in sorted(chosen)) + "\n[...]"
+                    text += "\n" + reply
+                words = query_terms(text)
+                hits = [j for j, f in enumerate(facets) if len(words & f) >= min(2, len(f))]
+                if not hits:
+                    continue
+                anchor = anchors[max(0, bisect_right(offsets, turn.start()) - 1)]
+                shown = graph_text(annotate_dates(text, node_date(anchor), conservative=date_anchors))
+                if " ".join(shown.split()) in visible:
+                    continue
+                extra = anchor.get("extra") or {}
+                copy = dict(anchor, id=f"{anchor['id']}:slack:{turn.start()}", title="", content=text,
+                            extra={**extra, "_ask_witness": True, "_ask_source_id": anchor["id"],
+                                   "_ask_turn": turn.start()})
+                relevance = max(len(words & facets[j]) / len(facets[j]) for j in hits)
+                candidates.append((copy, words, relevance, conv))
+    picked, seen, covered, sessions = [], set(), set(), Counter()
+    def source_key(node):
+        extra = node.get("extra") or {}
+        position = extra.get("position")
+        return (node_date(node) or datetime.max, str(extra.get("conversation_id")),
+                position if isinstance(position, int) else -1, extra.get("_ask_turn", 0))
+    candidates.sort(key=lambda row: source_key(row[0]))
+    while candidates:
+        ranked = sorted(range(len(candidates)), key=lambda i: (
+            -(3 * candidates[i][2] +
+              len(candidates[i][1] - covered) / max(1, len(candidates[i][1]))) /
+            (1 + .25 * sessions[candidates[i][3]]), i))
+        accepted = False
+        for index in ranked:
+            node, words, _, conv = candidates[index]
+            key = " ".join(node["content"].split())
+            if key in seen:
+                continue
+            trial = sorted([*picked, node], key=source_key)
+            packet = assemble(trial, [], budget, truncate_first=False,
+                              source_order=True, witness_first=True, date_anchors=date_anchors)
+            if len(packet.chosen) != len(trial) or packet.tokens > budget:
+                continue
+            picked = trial
+            covered.update(words)
+            sessions[conv] += 1
+            seen.add(key)
+            candidates.pop(index)
+            accepted = True
+            break
+        if not accepted:
+            break
+    return (assemble(picked, [], budget, truncate_first=False, source_order=True, witness_first=True,
+                     date_anchors=date_anchors) if picked else None)
+
+
+def large_evidence_pack(store: Store, results: list[dict], queries: list[str],
+                        budget: int, *, window=None, sequence: bool = False) -> list[dict]:
+    """Scan local originals and existing digests; send only a bounded portfolio.
+
+    Query expansion comes from stored summary sentences, never an answer key.
+    Copies keep source IDs and turn positions; nothing is persisted.
+    """
+    from bisect import bisect_right
+    from collections import Counter
+    from math import log1p
+
+    if budget < 1000:
+        return results
+    rows = store.conn.execute(
+        "SELECT id FROM nodes WHERE json_extract(extra, '$.conversation_id') IS NOT NULL "
+        "AND (json_extract(extra, '$.kind') IS NULL OR "
+        "json_extract(extra, '$.kind') IN ('chunk', 'conversation-summary')) "
+        "ORDER BY prov_when, json_extract(extra, '$.conversation_id'), "
+        "json_extract(extra, '$.position'), id").fetchall()
+    pool = []
+    for row in rows:
+        node = store.get_node(row[0])
+        if (node and node.get("status") not in ("archived", "superseded")
+                and not node_expired(node, today=date.today().isoformat())
+                and (window is None or in_window(node, window))):
+            pool.append(node)
+    if not queries:
+        return results
+    queries = [queries[0], *span_queries(queries[0]), *facet_searches(queries[0]), *queries[1:]]
+    facets = [query_terms(q) for q in dict.fromkeys(queries)]
+    facets = [f for f in facets if f][:8]
+    if not facets:
+        return results
+    terms = set.union(*facets)
+    summaries = []
+    groups: dict[str, list[dict]] = {}
+    for node in pool:
+        extra = node.get("extra") or {}
+        if extra.get("kind") == "conversation-summary":
+            for i, sentence in enumerate(_SENTENCE.split(node.get("content") or "")):
+                words = query_terms(sentence)
+                if words & terms and estimate_tokens(sentence) <= 300:
+                    summaries.append((node, i, sentence, words))
+        else:
+            groups.setdefault(str(extra["conversation_id"]), []).append(node)
+    # Summary-derived vocabulary helps find source turns that name the subject's
+    # components without repeating the question's broad subject label.
+    ranked = sorted(summaries, key=lambda s: -len(s[3] & terms))
+    for _, _, _, words in ranked[:8]:
+        if len(words & terms) >= min(2, len(terms)):
+            facets.append(words)
+    expanded = set.union(*facets)
+    candidates = []
+    for nodes in groups.values():
+        raw, offsets, previous = "", [], None
+        for node in nodes:
+            content = node.get("content") or ""
+            position = (node.get("extra") or {}).get("position")
+            # pack() splits long messages without a separator; whole messages
+            # start with a role. Rejoin continuation chunks before choosing turns.
+            if raw:
+                adjacent = isinstance(position, int) and isinstance(previous, int) and position == previous + 1
+                if not adjacent:
+                    raw += "\n[...]\n"
+                elif _ROLE_LINE.match(content):
+                    raw += "\n"
+            offsets.append(len(raw))
+            raw += content
+            previous = position
+        turns = list(_ROLE_LINE.finditer(raw))
+        for i, turn in enumerate(turns):
+            if turn.group(1) != "user":
+                continue
+            end = turns[i + 1].start() if i + 1 < len(turns) else len(raw)
+            own = raw[turn.start():end].strip()
+            words = query_terms(own)
+            if not any(words & f for f in facets):
+                continue
+            stop = end
+            if i + 1 < len(turns) and turns[i + 1].group(1) == "assistant":
+                stop = turns[i + 2].start() if i + 2 < len(turns) else len(raw)
+            reply = raw[end:stop].strip()
+            if estimate_tokens(reply) > 600:
+                role = _ROLE_LINE.match(reply)
+                body = reply[role.end():] if role else reply
+                paragraphs = re.split(r"\n\s*\n", body)
+                ranked_reply = sorted(range(len(paragraphs)),
+                    key=lambda j: (-len(query_terms(paragraphs[j]) & expanded), j))
+                selected, left = [], 560
+                for j in ranked_reply:
+                    cost = estimate_tokens(paragraphs[j]) + 8
+                    if cost <= left:
+                        selected.append(j)
+                        left -= cost
+                reply = ((role.group(0) if role else "assistant: ") + "[...]\n" +
+                         "\n[...]\n".join(paragraphs[j] for j in sorted(selected)) +
+                         "\n[...]") if selected else ""
+            text = own + ("\n" + reply if reply else "")
+            if estimate_tokens(text) > 1000:
+                continue  # intact long originals remain in the ranked fallback
+            anchor = nodes[max(0, bisect_right(offsets, turn.start()) - 1)]
+            extra = anchor.get("extra") or {}
+            copy = dict(anchor, id=f"{anchor['id']}:turn:{i}", title="", content=text,
+                        extra={**extra, "_ask_witness": True,
+                               "_ask_source_id": anchor["id"], "_ask_turn": i})
+            candidates.append((copy, words, "source"))
+    for node, i, sentence, words in summaries:
+        copy = dict(node, id=f"{node['id']}:sentence:{i}", title="",
+                    content="[...] " + sentence + " [...]",
+                    extra={**(node.get("extra") or {}), "_ask_source_id": node["id"]})
+        candidates.append((copy, words, "summary"))
+    if not candidates:
+        return results
+    frequency = Counter(w for _, words, _ in candidates for w in words)
+    weights = {w: log1p(len(candidates) / (1 + frequency[w]))
+               for f in facets for w in f}
+    def relevance(words, facet):
+        return sum(weights[w] for w in words & facet) / max(
+            1.0, sum(weights[w] for w in facet))
+    def source_key(candidate):
+        n = candidate[0]
+        extra = n.get("extra") or {}
+        position = extra.get("position")
+        return (node_date(n) or datetime.max, str(extra.get("conversation_id")),
+                position if isinstance(position, int) else -1, extra.get("_ask_turn", -1), n["id"])
+    if sequence:
+        candidates.sort(key=source_key)
+    limits = {"source": min(7000, budget * 45 // 100),
+              "summary": min(3000, budget * 20 // 100)}
+    used = Counter()
+    sessions = Counter()
+    covered: set[str] = set()
+    facet_hits = Counter()
+    picked, seen = [], set()
+    # Existing endpoint/polarity witnesses keep a reserved part of the source share.
+    for node in results:
+        if not (node.get("extra") or {}).get("_ask_witness"):
+            continue
+        cost = estimate_tokens(_witness_text(node)) + 100
+        if used["source"] + cost <= min(2000, limits["source"]):
+            picked.append(node)
+            used["source"] += cost
+            seen.add(" ".join((node.get("content") or "").split()))
+    remaining = []
+    for node, words, kind in candidates:
+        matches = [j for j, f in enumerate(facets) if words & f]
+        if not matches:
+            continue
+        base = max(relevance(words, facets[j]) for j in matches)
+        cost = estimate_tokens(_witness_text(node)) + 100
+        text = " ".join((node.get("content") or "").split())
+        session = str((node.get("extra") or {}).get("conversation_id"))
+        remaining.append((node, words, kind, matches, base, cost, text, session))
+    while remaining:
+        eligible = []
+        for index, (_, words, kind, matches, base, cost, text, session) in enumerate(remaining):
+            if text in seen or used[kind] + cost > limits[kind]:
+                continue
+            novelty = len(words - covered) / max(1, len(words))
+            balance = sum(1 / (1 + facet_hits[j]) for j in matches) / len(matches)
+            score = (3 * base + novelty + balance) / (1 + .15 * sessions[session])
+            eligible.append((score, -index, index, cost, matches, session, text))
+        if not eligible:
+            break
+        _, _, index, cost, matches, session, text = max(eligible)
+        node, words, kind, *_ = remaining.pop(index)
+        picked.append(node)
+        used[kind] += cost
+        sessions[session] += 1
+        covered.update(words)
+        facet_hits.update(matches)
+        seen.add(text)
+    if not picked:
+        return results
+    picked.sort(key=lambda n: source_key((n, set(), "")))
+    source_ids = {(n.get("extra") or {}).get("_ask_source_id", n["id"]) for n in picked}
+    # The established semantic ranking fills the remaining space.
+    return picked + [n for n in results if n["id"] not in source_ids]
+
+
+def large_retry_needed(answer: str) -> bool:
+    """A gap anywhere near the opening, including after a supported answer."""
+    opening = answer.replace("\u2019", "'")[:1600]
+    return bool(_DECLINES.search(opening) or re.search(
+        r"\b(?:unclear|not enough (?:information|evidence)|cannot (?:determine|calculate)|"
+        r"can't (?:determine|calculate)|(?:records?|notes|evidence) "
+        r"(?:don't|do not|doesn't|does not) (?:confirm|establish|identify|provide|give))\b",
+        opening, re.I))
+
+
 def question_guidance(question: str, intent: str, *, as_of=None, options=None) -> str:
     """Optional instructions selected by question shape, independent of the planner."""
     if options is None:
         return ""
     rules: list[str] = []
+    selected14 = {name: enabled and getattr(options, name, False)
+                  for name, enabled in round14_scope(question, intent, named=True).items()}
     numeric = bool(_QUANTITY_QUESTION.search(question))
     comparison = bool(_PAIR_COMPARISON.search(question))
     recall = intent not in ("preference", "task", "summary", "assistant_recall") and not _JUDGEMENT.search(question)
@@ -1384,6 +2517,182 @@ def question_guidance(question: str, intent: str, *, as_of=None, options=None) -
             "Consider counterevidence, preserve the requested historical period, and do not "
             "infer a categorical identity just from affiliation or another person's attributes. "
             "If the evidence supports neither direction, say so.")
+    if getattr(options, "large_landmarks", False):
+        rules.append(
+            "Reconstruct developments from the recorded requests, difficulties, solutions and decisions. "
+            "Summary excerpts are incomplete derived notes. Cover distinct people, methods and named tools "
+            "rather than spending multiple slots on repeated status metrics. Preserve the requested period "
+            "and item count. Use the order within source exchanges to break date ties; retrieval rank is not chronology. "
+            "A broader history does not authorize adding developments outside the requested subject.")
+    if getattr(options, "large_recall_exchange", False):
+        rules.append(
+            "This explicitly recalls a statement or recommendation. Match its entity, action and requested "
+            "fields before choosing the exchange. Copy formula parameters, dates and times from that exchange; "
+            "a related later example is not a replacement. For recalled advice, include the recorded steps, "
+            "durations, named components, alternatives and follow-up, even when more than three sentences "
+            "are needed. Distinguish the user's statement from the assistant's worked example. If multiple "
+            "exchanges fit, label their answers and dates rather than silently selecting the newest.")
+    if getattr(options, "large_value_updates", False):
+        rules.append(
+            "Read all shown reports of the requested scalar field before choosing its value. An older code "
+            "sample does not disprove a later explicit report of an update in a different fact or summary. "
+            "When the newer report's original source is absent, attribute it to the recorded note; do not "
+            "silently replace it with an older snippet. Conversely, an original source identifying a number "
+            "as a goal, proposal or example overrides a note calling it achieved. Require the same entity, "
+            "measure and episode. Keep a newer valid current report; preserve original and current values "
+            "with dates when the question is ambiguous. Do not add cumulative snapshots or invent updates.")
+    if getattr(options, "large_response_contract", False):
+        rules.append(
+            "Before answering, identify the relevant standing response requirements and explicitly recorded "
+            "preferences for the requested advice: timing, example type, tools, trade-offs and explanation "
+            "sequence. Use those constraints in the actual recommendation, not merely in a recap. Prefer a "
+            "specific applicable preference to an unrelated routine or a generic template. Preserve a later "
+            "explicit replacement within the same activity. Include required export steps, formats, versions "
+            "or conversions when supported. Missing metrics or exchange rates stay missing; recommendations "
+            "and plausible mechanisms must not become claims of measured outcomes.")
+
+    if getattr(options, "large_claim_witnesses", False):
+        rules.append(
+            "Audit both sides of the exact historical predicate before answering yes or no. "
+            "A denial about another activity in the same turn does not negate this activity. "
+            "A later 'never' does not erase a supported earlier occurrence. Check the event dates "
+            "and scope: an earlier 'never' followed by a first occurrence is a valid progression. "
+            "Trying, planning, scheduling, sample code and drafts do not prove completion or attendance. "
+            "When claims really conflict, begin with the contradiction, reproduce both claims with "
+            "their concrete details, numbers and results, and ask which account is correct. "
+            "Do not manufacture a second side when only one is supported.")
+    if getattr(options, "large_span_witnesses", False):
+        rules.append(
+            "Pair the two requested endpoints from literal reports for the same episode before "
+            "calculating. Distinguish each report date, scheduled event or milestone date, and actual "
+            "completion date. Compare planned dates with planned dates and actual dates with actual "
+            "dates. Carry explicit reschedules and approved revisions forward within the same episode "
+            "unless the question requests the original plan. An unrelated later event is not an update. "
+            "If wording like setting a deadline genuinely permits both report-date and target-date "
+            "readings, compute the two supported pairs separately and label them. Never mix their "
+            "endpoints. A span of participation before someone returns starts at the requested "
+            "activity's start, rather than at the other person's departure. Show both endpoint dates "
+            "and the elapsed interval, in the requested unit. For coarse month or week wording, also "
+            "give an approximate interval in that unit alongside the precise calendar span. Retain "
+            "approximate dates and distinguish "
+            "scheduled intervals from confirmed attendance. Use calendar arithmetic, including leap days. "
+            "Do not derive extra dates from session numbers or assume a later similar event is the same one.")
+    if getattr(options, "large_summary_coverage", False):
+        rules.append(
+            "Cover the requested subject and its distinct threads across the stated period. A broad "
+            "history summary does not implicitly select only the newest project or episode. When "
+            "several threads fit an unnamed subject, summarize them separately without inventing links. "
+            "Include how requests, decisions, reasons, alternatives, advice and subsequent outcomes "
+            "developed, keeping advice and plans attributed as such. Retain concrete methods, people "
+            "and explanation steps rather than replacing them with repeated progress or budget snapshots. "
+            "For a short summary, compress wording after covering the facets; do not omit whole stages. "
+            "An explicit recent window still limits the summary.")
+
+    if (getattr(options, "ordering_witnesses", False) and recall and _ORDER_ENUM.search(question)
+            and not getattr(options, "coarse_ordering", False)):
+        rules.append(
+            "Build the sequence from original occurrence reports, not digest dates or repeated mentions. "
+            "Resolve each relative phrase in its own turn, distinguishing an event from a plan and a "
+            "visit from advice about visiting. A venue can host several events; several mentions can "
+            "describe one visit. Include every firmly qualifying item in the main sequence. Put an "
+            "additional report whose date, window membership or identity is unresolved after that "
+            "sequence with its uncertainty; do not insert it at an invented date or force the number "
+            "in the question. A report of returning is a return, not a start.")
+    if (getattr(options, "dialogue_fields", False) and recall and _DIALOGUE_FIELD.search(question)
+            and not selected14["dialogue_field_values"]):
+        rules.append(
+            "Find the exchange answering the exact requested relation, including its neighbouring "
+            "question and reply. A reply can omit words already in the question. Return the researched "
+            "object, stated plan, shared artifact, joint comparison or discovery, rather than related "
+            "activities or the newest similar anecdote. For shared pictures, describe the supplied "
+            "caption as the artifact and use the discussion to identify it; do not invent unseen "
+            "visual details or treat image-search keywords as a caption. For a shared background, "
+            "include the concrete experiences both speakers report. Keep the named speaker and any "
+            "explicit historical anchor. Retain a recorded title verbatim even if unusual; do not "
+            "append an unrequested attribution correction.")
+    if (getattr(options, "episode_endpoints", False) and recall
+            and not selected14["dialogue_episode_bindings"]
+            and (_FROM_TO_SPAN.search(question) or _EPISODE_ENDPOINT.search(question))):
+        rules.append(
+            "Identify the requested episode and both source endpoints before using digest dates. "
+            "First and second appointments mean the first two recorded occurrences, not the earliest "
+            "and latest. Read the prior and later chunks in their recorded turn order. A retrospective "
+            "'remember that project' or completion report can link an earlier open project; do not "
+            "merge a different project already completed before it began. Preserve the requested "
+            "historical period and distinguish a plan from completion. If only report anchors are "
+            "available, label an elapsed-span estimate as approximate rather than a measured duration.")
+        if _FROM_TO_SPAN.search(question):
+            rules.append(
+                "A duration phrased 'from X to Y' asks first for Y's endpoint minus X's endpoint. "
+                "Lead with that elapsed span and the endpoints. Do not replace it with the sum of "
+                "only the stages whose lengths were stated; an intermediate recorded stage may "
+                "explain the remainder. Do not claim uninterrupted attendance or work from a span, "
+                "invent an intermediate duration, or assume that an unrecorded named endpoint occurred.")
+    if getattr(options, "witness_coverage", False) and recall:
+        rules.append(
+            "Read the original reports for the exact requested relation before choosing among similar "
+            "digest entries. A short answer inherits its topic from the preceding question. Include "
+            "all directly supported parts of a shared background or comparison, rather than selecting "
+            "one related anecdote. Read a supplied image caption for the depicted content; search "
+            "keywords do not establish unseen details. Keep explicit historical anchors and speakers.")
+        rules.append(_OPTION_RULES["recall_relation"])
+    if getattr(options, "count_witnesses", False) and recall:
+        rules.append(
+            "Build an inventory of source-supported instances satisfying the question's action, unit "
+            "and interval before computing. Use the subject's surrounding description to decide category "
+            "membership; a narrower description can entail the broader action asked about. Count "
+            "different actions on one object once when the unit is objects, but separate occurrences "
+            "when the unit is times. A completed transaction and its later delivery are one acquisition. "
+            "Use the directly reported quantity for the exact relation requested; do not change it "
+            "because a digest paraphrases inclusion or because pronouns suggest a different grouping. "
+            "Require explicit evidence before adding or subtracting a participant. A user's correction "
+            "outranks an assistant's earlier interpretation. An assistant's doubt about a real-world "
+            "name does not retract the user's report. Mere possession does not prove a purchase; "
+            "a present count does not establish an initial count. Keep genuinely unresolved items "
+            "conditional, and do not discard qualifying evidence just to reach a premise's number.")
+        if getattr(options, "count_membership", False):
+            rules[-1] += (
+                " Expand coordinated clauses before judging membership: in 'A, and also B' the category "
+                "can govern both examples although B uses another noun. An item held for collection after "
+                "a service counts as something to pick up even without a sale. When the question names two "
+                "actions ('X or Y'), keep the items for each action. Merge repeated reports of one object "
+                "or occasion, not different objects or hosts.")
+    if getattr(options, "coarse_ordering", False) and recall:
+        rules.append(
+            "Order the qualifying occurrences using the best-supported chronology, including coarse "
+            "dates. An original 'just' occurrence report supports an approximate report-date anchor "
+            "unless a more explicit event date or contrary evidence overrides it. A date need not be "
+            "exact to establish a useful order. Show the likely sequence first, marking uncertain "
+            "placements and retaining the original timing words; do not silently drop an occurrence "
+            "only because its exact day is missing. Repeated anecdotes are not additional events. "
+            "Honor the requested entity type and unit rather than filling a stated count with a "
+            "related category. If sources genuinely permit different orders, state the alternatives. "
+            "A return anchors returning, not departing; keep those milestones distinct. "
+            "Never use a plan as an occurrence or fabricate dates to force an order.")
+    if getattr(options, "episode_links", False) and recall:
+        rules.append(
+            "Read the requested episode's milestones and later retrospective or return reports "
+            "together. First seek shared identity and explicit references; then consider continuity "
+            "of the same person's activity, place and distinctive attributes. A unique compatible "
+            "open episode can support a qualified link, while a different completed episode cannot. "
+            "For location over an interval, give the supported trip location before an unrelated home "
+            "base. For duration, distinguish creating a component, completing the work and releasing "
+            "it, and use the milestone actually requested. When endpoints are only reports, give an "
+            "approximate report-to-report span with its anchors, not a measured work duration. "
+            "If several episodes still fit, keep their alternatives separate and identify the missing "
+            "link; do not merge them or invent a start date.")
+    round11 = round11_scope(question, named=True, chat=True)
+    if getattr(options, "ordering_occurrences", False) and round11["ordering_occurrences"]:
+        rules.append(
+            "Inventory completed occurrence reports before filling the sequence. For each "
+            "candidate check its exact source name, requested entity type, completed action "
+            "and event anchor independently. A completed report can qualify without sharing "
+            "the question's vocabulary; a related entity of another type cannot fill its slot. "
+            "Use context to resolve a pronoun's venue, preserving the recorded name. Include "
+            "every supported qualifying occurrence before sorting; never fill an expected "
+            "number with a plan. Keep approximate or conflicting anchors qualified, and "
+            "deduplicate repeated anecdotes rather than treating their report dates as visits.")
+    rules.extend(ROUND14_RULES[name] for name in ROUND14_OPTIONS if selected14[name])
     return "".join("\n\n" + rule for rule in rules)
 
 
@@ -1396,8 +2705,29 @@ def answer_prompt(question: str, context: str, intent: str, *, as_of=None, readi
     shape = DETAILS_STYLE if details and intent == "fact" and _DETAILS.search(question) else ""
     inventory = inventory_enabled(options, intent)
     counting = COUNT_READINGS if count_readings and not readings and intent == "aggregation" and not inventory else ""
+    style = STYLE.get(intent, DEFAULT_STYLE)
+    if getattr(options, "large_topic_sequence", False):
+        if intent == "ordering":
+            style = (
+                "Build the requested subject's sequence from the source turns before choosing labels. "
+                "Use first mentions when asked, otherwise distinct requests, problems, decisions and "
+                "changes. One session can supply several items. Repeated mentions or metric snapshots "
+                "do not each create a development. Do not force equal spacing across dates. Preserve "
+                "source-turn order within a session; a digest date is not an event date. "
+                "Give the requested number of numbered items when supported, combining related "
+                "developments if necessary. Do not pad the list or invent dates.")
+        elif intent == "summary":
+            style += (
+                " First inventory the subject's distinct threads and the requests, explanations, "
+                "decisions, reasons, alternatives and follow-up in each. Use that inventory to "
+                "compress the summary; retain methods and reasoning as well as outcomes. "
+                "Attribute recommendations and illustrative examples as such.")
+    if getattr(options, "ordering_witnesses", False) and _ORDER_ENUM.search(question):
+        style = ("List the supported occurrences in chronological order with their source anchors. "
+                 "Preserve uncertain dates as uncertain; explain unresolved additional reports after "
+                 "the sequence. The requested number is a search cue, not evidence of membership.")
     return (f"Today's date: {_today(as_of)}\n\n{context}\n\nQuestion: {question}\n\n"
-            f"{STYLE.get(intent, DEFAULT_STYLE)}{shape}{READINGS if readings else ''}{counting}{coverage}"
+            f"{style}{shape}{READINGS if readings else ''}{counting}{coverage}"
             f"{question_guidance(question, intent, as_of=as_of, options=options)}"
             f"{INVENTORY_PROMPT if inventory else ''}")
 
@@ -1415,21 +2745,33 @@ def coverage_note(complete: bool, omitted: int, saturated: bool = False) -> str:
 
 def draft_answer(client, config: Config, user: str, ledger=None, intent: str | None = None,
                  needs_all: bool = False, on_text=None, effort: str | None = None,
-                 inventory_sources: dict[str, str] | None = None) -> str | None:
+                 inventory_sources: dict[str, str] | None = None,
+                 ledger_context: Assembly | None = None, ledger_question: str = "") -> str | None:
     """`ask.samples` independent answers to `user`, adjudicated when there are
     several. A spent budget stops sampling and keeps what was drafted; None
     when nothing was."""
     cfg = config.ask
     system = answer_system(intent if cfg.rules == "intent" else None, needs_all, options=cfg)
     inventory = inventory_enabled(cfg, intent) and inventory_sources is not None
+    ledger_mode = ("order" if cfg.large_order_ledger else "days" if cfg.large_span_ledger else "")
+    structured = bool(ledger_context is not None and ledger_mode and not inventory)
+    schema = INVENTORY_SCHEMA if inventory else None
+    request = user
+    if structured:
+        request += LARGE_LEDGER_ORDER if ledger_mode == "order" else LARGE_LEDGER_DAYS
+        schema = LARGE_LEDGER_SCHEMA
+        # Keep the already assembled evidence. Use the existing framing margin;
+        # if the schema and instruction do not fit, issue the baseline request.
+        if _prompt_cost(system, request, schema) > _input_left():
+            structured, request, schema = False, user, None
     answers = []
     for i in range(max(1, cfg.samples)):
         try:
             # A single answer can be shown as it is written; several are adjudicated first.
-            text = _call(client, config, system=system, user=user, effort=effort or cfg.effort,
+            text = _call(client, config, system=system, user=request, effort=effort or cfg.effort,
                          max_tokens=cfg.max_output_tokens, ledger=ledger, purpose="ask", sample=i + cfg.seed,
-                         on_text=on_text if cfg.samples <= 1 and not inventory else None,
-                         json_schema=INVENTORY_SCHEMA if inventory else None)
+                         on_text=on_text if cfg.samples <= 1 and not (inventory or structured) else None,
+                         json_schema=schema)
         except BudgetExhausted:
             break  # keep what was drafted; no further calls
         except Exception:
@@ -1437,11 +2779,12 @@ def draft_answer(client, config: Config, user: str, ledger=None, intent: str | N
                 raise
             continue
         if text:
-            answers.append(render_inventory(text, inventory_sources) if inventory else text)
+            answers.append(render_large_ledger(text, ledger_context, ledger_question, ledger_mode)
+                           if structured else render_inventory(text, inventory_sources) if inventory else text)
     if not answers:
         return None
     final = answers[0]
-    if inventory and on_text is not None:
+    if (inventory or structured) and on_text is not None:
         on_text(final)  # structured output is shown only after it has been checked and rendered
     if len(answers) > 1 and cfg.vote:
         # Self-consistency (Wang et al. 2023): the answer most drafts agree on,
@@ -1687,6 +3030,154 @@ def _input_left() -> int:
 def _prompt_cost(system: str, user: str, schema: dict | None = None) -> int:
     return estimate_tokens(system) + estimate_tokens(user) + 64 + \
         (estimate_tokens(json.dumps(schema)) if schema else 0)
+
+
+LARGE_LEDGER_SCHEMA = _object_schema("large_ledger", {
+    "answer": _STRING, "rows": {"type": "array", "items": _STRINGS},
+})
+LARGE_LEDGER_ORDER = (
+    "\n\nReturn JSON {answer,rows}; answer is a complete fallback; rows are "
+    "[development,exact_quote]. Inventory distinct requests, problems, explanations, decisions "
+    "and later changes from all shown summaries. Fit the requested item count by merging repeated "
+    "reports of the SAME development, not one item per date or person. Keep named methods and "
+    "different interactions with the same person. Quote continuous shown passages (at least "
+    "12 characters), preferring originals. Order by conversation part and turn position, not "
+    "embedded event dates. Do not add dates."
+)
+LARGE_LEDGER_DAYS = (
+    "\n\nReturn JSON {answer,rows}; answer is a complete fallback; rows are "
+    "[reading,start_label,start_role,start_quote,start_ISO_date,end_label,end_role,end_quote,end_ISO_date]. "
+    "Roles: event, planned, report. Match action and episode before dates: doing/planning an event "
+    "differs from saying it or revising its deadline. Quote continuous shown passages (at least "
+    "12 characters), preferring originals. Give the best reading first and at most three supported "
+    "alternatives, only when the question leaves event/report or original/revised ambiguous. Keep "
+    "each pair in one episode; mix schedule versions only when explicitly asked. Use report only without an event date; "
+    "qualify it. Never interpolate dates from session spacing."
+)
+_LEDGER_MONTH_DAY = re.compile(
+    rf"\b(?:(?:{_CALENDAR_MONTH})\s+\d{{1,2}}(?!\d)(?!,?\s*\d{{4}})"
+    rf"|\d{{1,2}}\s+(?:{_CALENDAR_MONTH})(?!,?\s*\d{{4}}))\b", re.I)
+_LEDGER_ITEM_WORDS = (
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+    "fifteen sixteen seventeen eighteen nineteen twenty"
+).split()
+
+
+def _ledger_witness(quote: str, assembly: Assembly):
+    """Accept only an unambiguous literal passage actually shown to the model."""
+    if len(quote) < 12:
+        return None
+    hits = []
+    for node in assembly.chosen:
+        line = assembly.witnesses.get(node["id"], "")
+        if line.count(quote) > 1:
+            return None
+        if quote in line:
+            hits.append((node, line.index(quote)))
+    return hits[0] if len(hits) == 1 else None
+
+
+def _ledger_date(quote: str, role: str, iso: str, node: dict) -> date | None:
+    from dateutil import parser
+
+    try:
+        target = date.fromisoformat(iso)
+    except ValueError:
+        return None
+    extra = node.get("extra") or {}
+    anchor = _parse_date(node.get("prov_when") or "")
+    if "date" in extra and not extra["date"]:
+        anchor = None  # an undated import's ingestion timestamp is not a report date
+    if role == "report":
+        return target if anchor and target == anchor.date() else None
+    if role not in ("event", "planned"):
+        return None
+    tokens = [m.group(0) for m in _CALENDAR_DATE.finditer(quote)]
+    if anchor:
+        tokens += [m.group(0) for m in _LEDGER_MONTH_DAY.finditer(quote)]
+    for token in tokens:
+        try:
+            if parser.parse(token, default=datetime(anchor.year if anchor else 2000, 1, 1)).date() == target:
+                return target
+        except (ValueError, OverflowError):
+            continue
+    return None
+
+
+def render_large_ledger(raw: str, assembly: Assembly, question: str, mode: str) -> str:
+    """Check quotes, then sort mentions or compute a span, without another call.
+
+    Episode and development matching remain model judgments. Summary sentences
+    do not prove within-part turn order; keep the model's order for those ties.
+    """
+    try:
+        data = _parse_json(raw)
+    except (ValueError, TypeError):
+        data = {}
+    fallback = data.get("answer") if isinstance(data, dict) else None
+    if not isinstance(fallback, str) or not fallback.strip():
+        return raw if not raw.lstrip().startswith(("{", "[")) else "The records do not support a checked answer."
+    rows = data.get("rows")
+    width = 2 if mode == "order" else 9
+    if (not isinstance(rows, list) or not rows
+            or any(not isinstance(r, list) or len(r) != width
+                   or any(not isinstance(v, str) or not v.strip() for v in r) for r in rows)):
+        return fallback
+    if mode == "order":
+        count = re.search(r"\b(\d+|" + "|".join(_LEDGER_ITEM_WORDS) + r")\s+items?\b", question, re.I)
+        if count:
+            word = count.group(1).lower()
+            wanted = int(word) if word.isdigit() else _LEDGER_ITEM_WORDS.index(word) + 1
+            if len(rows) != wanted:
+                return fallback
+        checked, seen, derived_parts = [], set(), set()
+        for i, (development, quote) in enumerate(rows):
+            hit = _ledger_witness(quote, assembly)
+            identity = " ".join(development.lower().split())
+            if hit is None or identity in seen:
+                return fallback
+            node, offset = hit
+            extra = node.get("extra") or {}
+            part = re.fullmatch(r"(.+)_p(\d+)", str(extra.get("conversation_id") or ""))
+            if not part:
+                return fallback  # arbitrary IDs or ingestion order cannot prove mention order
+            prefix, ordinal = part.group(1), int(part.group(2))
+            if extra.get("kind") in ("conversation-summary", "conversation-fact"):
+                derived_parts.add(ordinal)
+            position, turn = extra.get("position", 0), extra.get("_ask_turn", -1)
+            if not isinstance(position, int) or not isinstance(turn, int):
+                return fallback
+            checked.append((prefix, ordinal, position, turn, offset, i, development))
+            seen.add(identity)
+        if len({r[0] for r in checked}) != 1:
+            return fallback
+        checked.sort(key=lambda r: (r[1], 0, 0, r[5]) if r[1] in derived_parts
+                     else (r[1], r[2], r[3], r[4]))
+        return "\n".join(f"{i}. {r[-1]}" for i, r in enumerate(checked, 1))
+    if len(rows) > 3:
+        return fallback
+    directives = (assembly.text.split(DIRECTIVES_HEADER + "\n\n", 1)[1].split("\n\n## ", 1)[0]
+                  if DIRECTIVES_HEADER + "\n\n" in assembly.text else "")
+    date_format = "%Y-%m-%d"
+    if re.search(r"\bday[- /]month[- /]year\b", directives, re.I):
+        date_format = "%d-%m-%Y"
+    elif re.search(r"\bmonth[- /]day[- /]year\b", directives, re.I):
+        date_format = "%m-%d-%Y"
+    spans = []
+    for reading, start, sr, sq, sd, end, er, eq, ed in rows:
+        left, right = _ledger_witness(sq, assembly), _ledger_witness(eq, assembly)
+        if left is None or right is None:
+            return fallback
+        first = _ledger_date(sq, sr, sd, left[0])
+        last = _ledger_date(eq, er, ed, right[0])
+        if first is None or last is None or last < first:
+            return fallback
+        days = (last - first).days
+        prefix = f"{reading}: " if len(rows) > 1 else ""
+        qualifier = "Approximate span using report anchors; " if "report" in (sr, er) else ""
+        spans.append(f"{prefix}{qualifier}{days} days: from {start} ({sr}) on {first.strftime(date_format)} "
+                     f"till {end} ({er}) on {last.strftime(date_format)}.")
+    return "\n".join(spans)
 
 
 def _draft_nodes(results: list[dict]) -> list[dict]:
@@ -1973,6 +3464,149 @@ def named_memory(store: Store, look: int = 20) -> bool:
     return named_dialogue([store._row_to_dict(row) for row in rows], look)
 
 
+def dialogue_source_sessions(store: Store) -> list[dict]:
+    """A bounded, live archive of named dialogue; no search, model call or write."""
+    rows = store.conn.execute(
+        "SELECT * FROM nodes WHERE status NOT IN ('archived', 'superseded') "
+        "AND (prov_activity = 'conversation-ingest' OR "
+        "json_extract(extra, '$.conversation_id') IS NOT NULL) "
+        "AND (json_extract(extra, '$.kind') IS NULL OR "
+        "json_extract(extra, '$.kind') = 'chunk') ORDER BY id LIMIT 2001"
+    ).fetchall()
+    if len(rows) > 2000:
+        return []
+    sources = [store._row_to_dict(row) for row in rows]
+    sources = [n for n in sources if not node_expired(n)]
+    if (not sources or any((n.get("extra") or {}).get("kinbase") for n in sources)
+            or sum(len(n.get("content") or "") for n in sources) > 256_000
+            or not named_dialogue(sources, look=len(sources))):
+        return []
+
+    def position(node):
+        value = (node.get("extra") or {}).get("position")
+        return value if isinstance(value, int) else -1
+
+    sources.sort(key=lambda n: (
+        node_date(n) or datetime.max,
+        str((n.get("extra") or {}).get("conversation_id") or n["id"]),
+        position(n), n["id"]))
+    groups: dict[str, list[dict]] = {}
+    for node in sources:
+        key = str((node.get("extra") or {}).get("conversation_id") or node["id"])
+        groups.setdefault(key, []).append(node)
+    sessions = []
+    for nodes in groups.values():
+        pieces = []
+        previous = None
+        for node in nodes:
+            raw = node.get("content") or ""
+            if pieces:
+                adjacent = (position(node) >= 0 and previous is not None
+                            and position(node) == position(previous) + 1)
+                starts_turn = _ROLE_LINE.match(raw) or _NAME_LINE.match(raw)
+                pieces.append(("\n" if starts_turn else "") if adjacent else "\n[...]\n")
+            pieces.append(raw)
+            previous = node
+        first = nodes[0]
+        sessions.append({
+            **first, "title": "", "content": "".join(pieces),
+            "extra": {**(first.get("extra") or {}), "_ask_witness": True,
+                      "_ask_source_ids": [n["id"] for n in nodes]},
+        })
+    return sessions
+
+
+def dialogue_session_order(store: Store, sessions: list[dict], results: list[dict],
+                           queries: list[str]) -> list[dict]:
+    """Use every local source and existing digest as an index, not as the answer."""
+    from collections import Counter
+    from math import log1p
+
+    def key(node):
+        return str((node.get("extra") or {}).get("conversation_id") or node["id"])
+
+    index = {key(n): node_text(n) + "\n" + (n.get("prov_when") or "") for n in sessions}
+    rows = store.conn.execute(
+        "SELECT * FROM nodes WHERE status NOT IN ('archived', 'superseded') "
+        "AND json_extract(extra, '$.kind') IN "
+        "('conversation-summary', 'conversation-fact') ORDER BY id LIMIT 4001"
+    ).fetchall()
+    # A large digest is optional; never use an arbitrary prefix of its index.
+    for row in (rows if len(rows) <= 4000 else []):
+        node = store._row_to_dict(row)
+        session = key(node)
+        if session in index and not node_expired(node):
+            index[session] += "\n" + node_text(node)
+    words = {k: query_terms(value) for k, value in index.items()}
+    all_terms = query_terms(*queries)
+    speakers = all_terms - informative_terms(all_terms, sessions)
+    facets = [query_terms(q) - speakers for q in dict.fromkeys(queries)]
+    facets = [f for f in facets if f]
+    frequency = Counter(w for value in words.values() for w in value)
+    weights = {w: log1p(len(sessions) / (1 + frequency[w]))
+               for facet in facets for w in facet}
+    rank = {}
+    for i, node in enumerate(results):
+        rank.setdefault(key(node), i)
+    scores = {}
+    for session, value in words.items():
+        matches = [
+            sum(weights[w] for w in value & facet)
+            / max(1.0, sum(weights[w] for w in facet))
+            for facet in facets
+        ]
+        scores[session] = (max(matches, default=0.0)
+                          + sum(matches) / max(1, len(matches)) * 0.25
+                          + (0.15 / (1 + rank[session]) if session in rank else 0))
+    # An episode can begin in one session and be recalled in the next.
+    base = dict(scores)
+    for i, node in enumerate(sessions):
+        when = node_date(node)
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(sessions):
+                other = node_date(sessions[j])
+                if when and other and abs((when - other).days) <= 31:
+                    scores[key(sessions[j])] = max(
+                        scores[key(sessions[j])], 0.5 * base[key(node)])
+    return sorted(sessions, key=lambda n: (-scores[key(n)], node_date(n) or datetime.max, n["id"]))
+
+
+def dialogue_source_assembly(store: Store, sessions: list[dict], results: list[dict],
+                             queries: list[str], directives: list[dict], budget: int,
+                             capacity: int, cfg, team=None, profiles=None, *,
+                             terms=None, fact_tiers: int = 0) -> Assembly | None:
+    """Try a complete archive; otherwise select complete sessions within a quota."""
+    if not sessions or capacity < 500:
+        return None
+    common = dict(note_omitted=False, truncate_first=False,
+                  date_anchors=cfg.date_anchors, source_order=True, witness_first=True)
+    if cfg.dialogue_archive:
+        whole = assemble(sessions, directives, capacity, team, **common)
+        if len(whole.chosen) == len(sessions) and not whole.truncated:
+            return whole
+    if not cfg.dialogue_sessions:
+        return None
+    budget = min(budget, capacity)
+    overhead = assemble([], directives, budget, team, profiles=profiles,
+                        fact_tiers=fact_tiers, **common).tokens
+    source_budget = max(0, (budget - overhead) * 3 // 4)
+    selected = []
+    for node in dialogue_session_order(store, sessions, results, queries):
+        trial = assemble(selected + [node], [], source_budget, **common)
+        if len(trial.chosen) == len(selected) + 1 and not trial.truncated:
+            selected.append(node)
+    if not selected:
+        return None
+    source_ids = {nid for n in selected for nid in n["extra"]["_ask_source_ids"]}
+    fallback = [n for n in results if n["id"] not in source_ids
+                and (n.get("extra") or {}).get("_ask_source_id") not in source_ids]
+    return assemble(
+        selected + fallback, directives, budget, team, profiles=profiles,
+        terms=terms, fact_tiers=fact_tiers,
+        exchange_context=cfg.exchange_context, user_turns=cfg.user_turns,
+        **common)
+
+
 def should_plan(question: str, intent: str, complete: bool, results: list[dict]) -> bool:
     """Planning expands semantic searches, rather than replacing an exhaustive enumeration."""
     if intent in ("preference", "task") or _JUDGEMENT.search(question):
@@ -2026,9 +3660,11 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     token = _USAGE.set(usage)
     limit_token = _INPUT_LIMIT.set(config.ask.verify_input_tokens if config.ask.verify
                                    else config.ask.max_input_tokens or None)
+    clock_token = _CLOCK.set(answer_clock(store, as_of) if config.ask.fixed_clock else None)
     try:
         result = _answer(store, question, config, client, ledger, as_of, team, on_text)
     finally:
+        _CLOCK.reset(clock_token)
         _INPUT_LIMIT.reset(limit_token)
         _USAGE.reset(token)
     if result is not None:
@@ -2037,7 +3673,46 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
 
 
 def _answer(store: Store, question: str, config: Config, client, ledger, as_of, team, on_text) -> AskResult | None:
+    config = large_memory_config(store, question, config)
     cfg = config.ask
+    dialogue_sessions = dialogue_source_sessions(store) if (
+        not cfg.verify and not cfg.count_inventory
+        and (cfg.dialogue_archive or cfg.dialogue_sessions or cfg.dialogue_relation_plan)
+    ) else []
+    if cfg.dialogue_relation_plan:
+        config = config.model_copy(update={"ask": cfg.model_copy(update={
+            "dialogue_relation_plan": bool(dialogue_sessions),
+            "plan": cfg.plan or bool(dialogue_sessions),
+        })})
+        cfg = config.ask
+    source_candidates: list[dict] = []
+    source_options = ROUND8_OPTIONS + ROUND10_OPTIONS + ROUND11_OPTIONS
+    if any(getattr(cfg, name) for name in source_options):
+        shapes = {**round8_scope(question, named=True, chat=True),
+                  **round10_scope(question, named=True, chat=True),
+                  **round11_scope(question, named=True, chat=True)}
+        if not cfg.verify and any(getattr(cfg, name) and shapes[name] for name in source_options):
+            source_candidates = bounded_conversation_sources(store)
+        named = named_dialogue(source_candidates, look=len(source_candidates))
+        chat = not named and any(
+            m.group(1) == "assistant" for n in source_candidates
+            for m in _ROLE_LINE.finditer(n.get("content") or ""))
+        # Measured: these source readings help assistant chats and cost named dialogue.
+        scope = {**round8_scope(question, named=named, chat=chat),
+                 **round10_scope(question, named=named and cfg.witness_named, chat=chat),
+                 **round11_scope(question, named=named, chat=chat)}
+        config = config.model_copy(update={"ask": cfg.model_copy(update={
+            name: getattr(cfg, name) and scope[name] and not cfg.verify for name in source_options})})
+        cfg = config.ask
+    if (cfg.count_example_membership and cfg.count_witnesses and not cfg.count_membership
+            and count_example_membership_scope(question, source_candidates)):
+        # Reuse the measured rule verbatim, retaining its cached requests.
+        config = config.model_copy(update={"ask": cfg.model_copy(update={"count_membership": True})})
+        cfg = config.ask
+    focused_sources = cfg.ordering_occurrences
+    diverse_sources = cfg.witness_coverage or cfg.count_witnesses or cfg.episode_links or focused_sources
+    source_order = any(getattr(cfg, name) for name in ROUND8_OPTIONS) or diverse_sources
+    expansions = witness_terms(client, config, question, ledger) if source_order and source_candidates else []
     if cfg.archival_time or cfg.disposition_inference:
         scoped = {
             "archival_time": cfg.archival_time and as_of is None and archival_time_question(question),
@@ -2063,6 +3738,13 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
             update["context_tokens"] = cfg.dialogue_context_tokens
         config = config.model_copy(update={"ask": cfg.model_copy(update=update)})
         cfg = config.ask
+    if cfg.large_effort and memory_scale(store) > 1.0:
+        # A memory of thousands of nodes holds more competing mentions of
+        # anything (earlier values, near-duplicates): every answer reads them
+        # with more reasoning.
+        config = config.model_copy(update={"ask": cfg.model_copy(
+            update={"effort": cfg.large_effort, "hard_effort": cfg.large_effort})})
+        cfg = config.ask
     if cfg.verify:
         intent, needs_all = classify_question(question)
         queries = [question]  # the cited draft also supplies targeted follow-up searches
@@ -2084,6 +3766,9 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
     wide = needs_breadth(question, intent, complete)
     if (not cfg.plan or cfg.verify) and wide:
         queries = queries + facet_searches(question)
+    if cfg.large_landmarks or cfg.large_summary_coverage:
+        queries = queries + [
+            f"{question} requests difficulties solutions decisions people methods tools"]
     if (cfg.remainder_quantities and intent not in ("preference", "task", "summary", "assistant_recall")
             and not _JUDGEMENT.search(question)):
         queries = queries + remainder_searches(question)
@@ -2092,23 +3777,57 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
     searches = [question] + [q for q in dict.fromkeys(queries) if q.lower() != question.lower()]
     stats: dict = {}
     window = question_window(question, as_of) if cfg.window_search else None
-    results = gather(store, searches, max(cfg.top_k, COMPLETE_TOP_K) if complete else cfg.top_k, stats, window)
+    depth = max(cfg.top_k, COMPLETE_TOP_K) if complete else cfg.top_k
+    if cfg.large_landmarks or cfg.large_summary_coverage:
+        depth = max(depth, 400)
+    results = gather(store, searches, depth, stats, window)
+    witness_jobs: list[tuple[str, bool | None, list[dict]]] = []
+    if cfg.large_claim_witnesses:
+        core = _HISTORY_LEAD.sub("", question).strip(" ?.")
+        requests = [(core, False), (f"never {core}", True)]
+    elif cfg.large_span_witnesses:
+        requests = [(query, None) for query in span_queries(question)]
+    else:
+        requests = []
+    for query, negative in requests:
+        hits = gather(store, [query], max(cfg.top_k, 80))
+        hits = [n for n in hits if (n.get("extra") or {}).get("kind") != "entity-profile"]
+        witness_jobs.append((query, negative, hits))
+    if witness_jobs:
+        results = fuse([results, *(hits for _, _, hits in witness_jobs)])
+    if cfg.large_claim_scan and intent == "fact":
+        # Seed only the negative witness half. Preserve baseline searches, fusion,
+        # positive witnesses and the existing quote budget.
+        denials = large_claim_denial_hits(store, question)
+        ids = {n["id"] for n in denials}
+        witness_jobs = [
+            (query, negative, denials + [n for n in hits if n["id"] not in ids])
+            if negative is True else (query, negative, hits)
+            for query, negative, hits in witness_jobs
+        ]
     # Profiles are shown in their own section, for the people the question names.
     results = [n for n in results if (n.get("extra") or {}).get("kind") != "entity-profile"]
-    if not results and not team:
+    if not results and not team and not dialogue_sessions:
         return AskResult(answer="No relevant knowledge found.", intent=intent, queries=searches)
     # Reading rules that fit one shape of question or evidence apply only there:
     # stopping at a missing recalled detail to questions asking for particulars,
     # dialogue focus to conversations between named people.
     shaped = {}
     extended = cfg.plan_route or cfg.effort_route or cfg.recall_relation or cfg.archive_clock
-    dialogue = named_dialogue(results, look=len(results) if extended else 20)
+    dialogue = bool(dialogue_sessions) or named_dialogue(results, look=len(results) if extended else 20)
     if cfg.recall_only and not (intent == "fact" and _DETAILS.search(question)):
         shaped["recall_only"] = False
     if cfg.dialogue_focus and not dialogue:
         shaped["dialogue_focus"] = False
     if cfg.recall_relation and not dialogue:
         shaped["recall_relation"] = False
+    if any(getattr(cfg, name) for name in ROUND14_OPTIONS):
+        shapes14 = round14_scope(question, intent, named=True)
+        active14 = any(getattr(cfg, name) and shapes14[name] for name in ROUND14_OPTIONS)
+        named14 = (active14 and not cfg.verify and not cfg.count_inventory
+                   and memory_scale(store) <= 1.0 and named_memory(store))
+        shaped.update({name: bool(getattr(cfg, name) and shapes14[name] and named14)
+                       for name in ROUND14_OPTIONS})
     if shaped:
         config = config.model_copy(update={"ask": cfg.model_copy(update=shaped)})
         cfg = config.ask
@@ -2161,23 +3880,95 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
         system = answer_system(intent if cfg.rules == "intent" else None, complete, options=cfg)
         budget = max(500, min(budget, _input_left() -
                               _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 300))
-    assembly = assemble(_draft_nodes(results) if cfg.verify else results, directives, budget, team, note_omitted=False,
+    if cfg.large_gap_retry and cfg.max_input_tokens:
+        budget = max(500, min(budget, _input_left() -
+                             _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 6500))
+    if cfg.large_supplement_reserve and (cfg.large_recall_append or cfg.large_members_append
+                                         or cfg.large_order_append):
+        # Leave room for the original-turn supplement, which otherwise only gets
+        # whatever the first reading leaves unused (nothing, at a full budget).
+        budget = max(500, budget - cfg.large_supplement_reserve)
+    if source_order:
+        results = prefer_source_witnesses(results, source_candidates, question, budget, expansions,
+                                          diverse=diverse_sources, focused=focused_sources)
+    reading_results = results
+    if cfg.large_summary_coverage:
+        reading_results = summary_coverage_nodes(results, informative_terms(words, results),
+                                                 methods_first=cfg.large_summary_methods)
+    elif cfg.large_landmarks:
+        reading_results = landmark_nodes(results, informative_terms(words, results))
+    elif cfg.large_recall_exchange:
+        sources = verification_nodes(store, [], results, words, min(budget, 12000))
+        source_ids = {n["id"] for n in sources}
+        reading_results = sources + [n for n in results if n["id"] not in source_ids]
+    if witness_jobs:
+        witnesses = quoted_history_nodes(store, witness_jobs, min(6000, budget // 2),
+                                          literal_denials=cfg.large_claim_scan)
+        witness_ids = {n["id"] for n in witnesses}
+        reading_results = witnesses + [n for n in reading_results if n["id"] not in witness_ids]
+    pack_intents = [i.strip() for i in cfg.large_evidence_pack_intents.split(",") if i.strip()]
+    portfolio = (cfg.large_evidence_pack and (not pack_intents or intent in pack_intents)) \
+        or cfg.large_topic_sequence
+    if portfolio:
+        reading_results = large_evidence_pack(
+            store, reading_results, searches, budget, window=window,
+            sequence=cfg.large_topic_sequence)
+    if inventory or source_order or portfolio:
+        refs = {n["id"]: f"r{i + 1}" for i, n in enumerate(reading_results)}
+    assembly = assemble(_draft_nodes(reading_results) if cfg.verify else reading_results,
+                        directives, budget, team, note_omitted=False,
                         label=(lambda n: f"Source {refs[n['id']]}") if cfg.verify else
                               (lambda n: refs[n["id"]]) if inventory else None,
                         profiles=question_profiles(store, question) if cfg.profiles and wants_profile(question, intent)
                         else None,
-                        terms=informative_terms(words, results) if cfg.excerpt and not (cfg.list_position and list_position(question))
+                        terms=informative_terms(words, results)
+                        if cfg.excerpt and not cfg.large_recall_exchange
+                        and not (cfg.list_position and list_position(question))
                         else None,
                         history_coverage=balanced, date_anchors=cfg.date_anchors,
                         exchange_context=cfg.exchange_context, fact_tiers=cfg.fact_tiers if complete else 0,
-                        user_turns=cfg.user_turns)
+                        user_turns=cfg.user_turns, source_order=source_order or bool(witness_jobs) or portfolio,
+                        witness_first=diverse_sources or portfolio)
     if cfg.verify:
         return verify_answer(store, question, config, client, ledger, as_of, team, intent, complete,
                              searches, results, assembly, directives, refs, on_text)
+    if dialogue_sessions and (cfg.dialogue_archive or cfg.dialogue_sessions):
+        empty = answer_prompt(question, "", intent, as_of=as_of, readings=cfg.readings,
+                              details=cfg.details, count_readings=cfg.count_readings, options=cfg)
+        system = answer_system(intent if cfg.rules == "intent" else None, complete, options=cfg)
+        capacity = _input_left() - _prompt_cost(system, empty) - 300
+        replacement = dialogue_source_assembly(
+            store, dialogue_sessions, reading_results, searches, directives, budget,
+            capacity, cfg, team,
+            question_profiles(store, question) if cfg.profiles and wants_profile(question, intent) else None,
+            terms=informative_terms(words, results) if cfg.excerpt
+            and not (cfg.list_position and list_position(question)) else None,
+            fact_tiers=cfg.fact_tiers if complete else 0)
+        if replacement is not None:
+            assembly = replacement
     # What did not fit is reported to the caller (AskResult.omitted, the CLI's
     # note) rather than to the model, which hedged its counts when told.
     user = answer_prompt(question, assembly.text, intent, as_of=as_of, readings=cfg.readings,
                          details=cfg.details, count_readings=cfg.count_readings, options=cfg)
+    mode = ("recall" if cfg.large_recall_append else "members" if cfg.large_members_append
+            else "ordering" if cfg.large_order_append else "")
+    if mode:
+        # Baseline retrieval, selection, directives and prompt sizing have already
+        # finished. Spend only input that would otherwise be unused on this call.
+        system = answer_system(intent if cfg.rules == "intent" else None, complete, options=cfg)
+        room = min(1800, _input_left() - _prompt_cost(system, user) - 64)
+        packet = large_slack_assembly(store, results, question, mode, room,
+                                     baseline=assembly.text, window=window,
+                                     date_anchors=cfg.date_anchors)
+        if packet:
+            text = assembly.text + "\n\n" + packet.text
+            supplemented = answer_prompt(question, text, intent, as_of=as_of, readings=cfg.readings,
+                                         details=cfg.details, count_readings=cfg.count_readings, options=cfg)
+            if _prompt_cost(system, supplemented) + 64 <= _input_left():
+                assembly = Assembly(text, estimate_tokens(text), [*assembly.chosen, *packet.chosen],
+                                    assembly.omitted, assembly.truncated,
+                                    {**assembly.witnesses, **packet.witnesses})
+                user = supplemented
     shown = []
 
     def show(text: str) -> None:
@@ -2185,12 +3976,18 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
         on_text(text)
 
     effort = routed_effort(cfg, intent, complete, dialogue, scale)
+    if intent in [i.strip() for i in cfg.xhigh_intents.split(",") if i.strip()]:
+        effort = "xhigh"
     # With a second reading possible, the first draft is not shown as it is
     # written: it may be replaced.
     final = draft_answer(client, config, user, ledger, intent, complete,
-                         on_text=show if on_text and not cfg.reread else None, effort=effort,
+                         on_text=show if on_text and not (cfg.reread or cfg.large_gap_retry
+                                                        or cfg.large_day_arithmetic) else None,
+                         effort=effort,
                          inventory_sources={refs[nid]: line for nid, line in assembly.witnesses.items()}
-                         if inventory else None)
+                         if inventory else None,
+                         ledger_context=assembly if (cfg.large_order_ledger or cfg.large_span_ledger) else None,
+                         ledger_question=question)
     if final is None:
         return None
     reread_budget = max(budget, cfg.reread_tokens)
@@ -2202,12 +3999,18 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
         system = answer_system(intent if cfg.rules == "intent" else None, complete, options=cfg)
         reread_budget = min(reread_budget, _input_left() -
                             _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 1000)
-    if cfg.reread and declines(final) and reread_budget >= 2500:
+    retry = declines(final) or cfg.large_gap_retry and large_retry_needed(final)
+    if (cfg.reread or cfg.large_gap_retry) and retry and reread_budget >= 2500:
         # The draft says the evidence lacks the answer. The excerpts may have
         # cut the line that holds it: read the same results again whole, with
         # a larger budget and more reasoning.
         # New searches for what the draft says is missing, ahead of the old results.
-        found = gather(store, gap_searches(client, config, question, final, ledger, as_of), cfg.top_k)
+        gaps = gap_searches(client, config, question, final, ledger, as_of)
+        found = gather(store, gaps, cfg.top_k)
+        if cfg.large_gap_retry and cfg.max_input_tokens:
+            # Gap planning has now spent its actual input; size the last call again.
+            reread_budget = max(0, min(reread_budget, _input_left() -
+                _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 300))
         found = [n for n in found if (n.get("extra") or {}).get("kind") != "entity-profile"]
         if found:
             results = fuse([found, results])
@@ -2215,24 +4018,54 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
             results = focus_relative_results(results, question, recall_window)
         if balanced:
             results = history_order(results)
+        if source_order:
+            results = prefer_source_witnesses(results, source_candidates, question, reread_budget, expansions,
+                                              diverse=diverse_sources, focused=focused_sources)
+        reread_results = (summary_coverage_nodes(results, informative_terms(words, results),
+                                                methods_first=cfg.large_summary_methods)
+                          if cfg.large_summary_coverage else results)
+        if witness_jobs:
+            witnesses = quoted_history_nodes(store, witness_jobs, min(6000, reread_budget // 2),
+                                              literal_denials=cfg.large_claim_scan)
+            witness_ids = {n["id"] for n in witnesses}
+            reread_results = witnesses + [n for n in reread_results if n["id"] not in witness_ids]
+        if portfolio:
+            reread_results = large_evidence_pack(
+                store, reread_results, [question, *gaps], reread_budget, window=window,
+                sequence=cfg.large_topic_sequence)
         if inventory:
-            refs = {n["id"]: f"r{i + 1}" for i, n in enumerate(results)}
-        wider = assemble(results, standing_directives(store), reread_budget, team,
+            refs = {n["id"]: f"r{i + 1}" for i, n in enumerate(reread_results)}
+        wider = assemble(reread_results, standing_directives(store), reread_budget, team,
                          note_omitted=False, label=(lambda n: refs[n["id"]]) if inventory else None,
                          profiles=question_profiles(store, question) if cfg.profiles and wants_profile(question, intent)
                          else None, terms=None, history_coverage=balanced, date_anchors=cfg.date_anchors,
                          exchange_context=cfg.exchange_context, fact_tiers=cfg.fact_tiers if complete else 0,
-                        user_turns=cfg.user_turns)
-        again = draft_answer(client, config, answer_prompt(question, wider.text, intent, as_of=as_of,
+                         user_turns=cfg.user_turns, source_order=source_order or bool(witness_jobs) or portfolio,
+                         witness_first=diverse_sources or portfolio)
+        if dialogue_sessions and (cfg.dialogue_archive or cfg.dialogue_sessions):
+            capacity = _input_left() - _prompt_cost(system, empty) - 300
+            replacement = dialogue_source_assembly(
+                store, dialogue_sessions, reread_results, [question, *gaps], directives,
+                reread_budget, capacity, cfg, team,
+                question_profiles(store, question) if cfg.profiles and wants_profile(question, intent) else None,
+                fact_tiers=cfg.fact_tiers if complete else 0)
+            if replacement is not None:
+                wider = replacement
+        again = None if reread_budget < 500 else draft_answer(
+            client, config, answer_prompt(question, wider.text, intent, as_of=as_of,
                                                            readings=cfg.readings, details=cfg.details,
                                                            count_readings=cfg.count_readings, options=cfg),
                              ledger, intent, complete,
                              effort=effort if cfg.effort_route else cfg.hard_effort or "high",
                              inventory_sources={refs[nid]: line for nid, line in wider.witnesses.items()}
-                             if inventory else None)
+                             if inventory else None,
+                             ledger_context=wider if (cfg.large_order_ledger or cfg.large_span_ledger) else None,
+                             ledger_question=question)
         if again:
             final, assembly = again, wider
-    if on_text and cfg.reread:
+    if cfg.large_day_arithmetic:
+        final = large_day_arithmetic(question, final)
+    if on_text and (cfg.reread or cfg.large_gap_retry or cfg.large_day_arithmetic):
         show(final)
     return AskResult(answer=final, streamed=bool(shown), intent=intent,
                      queries=searches, context=assembly.text,
