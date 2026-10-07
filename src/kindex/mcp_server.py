@@ -2117,9 +2117,10 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
         max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
             a single answer and wide for counts, lists, orderings and advice).
     """
-    from .answer import (COMPLETE_TOP_K, COMPLETENESS_INTENTS, answer_client, answer_prompt, context_budget,
-                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, memory_scale,
-                         needs_breadth, plan_question)
+    from .answer import (_INPUT_LIMIT, _USAGE, COMPLETE_TOP_K, COMPLETENESS_INTENTS, _input_left, _prompt_cost,
+                         answer_client, answer_prompt, answer_question, answer_system, context_budget,
+                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, input_cap,
+                         memory_scale, needs_breadth, plan_question)
 
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
@@ -2143,44 +2144,71 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
             searches = [question]
             complete = complete or bool(_COMPLETENESS.search(question))
             llm = ledger = None
+            verify_note = ""
             if answer:
                 from .budget import BudgetLedger
                 ledger = BudgetLedger(config.ledger_path, config.budget)
                 llm = answer_client(config, ledger)
+                if llm is not None and config.ask.verify:
+                    if len(stores) == 1:
+                        # Verification is `kin ask`'s own answer mode: the same
+                        # pipeline, cap and source audit, on the one graph read.
+                        result = answer_question(next(iter(stores.values())), question, config, ledger,
+                                                 as_of=now[:10])
+                        header = f"[{qtype} question] Today's date: {now[:10]}"
+                        if result is None:
+                            return f"{header}\n(No answer drafted: the budget ran out.)"
+                        return f"{result.answer}\n\n---\n{header}\n\n{result.context}"
+                    verify_note = ("\n(Not verified: verification reads one graph; ask with graph=project "
+                                   "or graph=global.)")
+            # Every model call of one answer shares `kin ask`'s input cap.
+            usage: list[int] = []
+            usage_token = _USAGE.set(usage)
+            limit_token = _INPUT_LIMIT.set(input_cap(config.ask))
+            try:
                 if llm is not None:
                     intent, queries, needs_all = plan_question(question, config, llm, ledger, now[:10])
                     searches += [q for q in queries if q.lower() != question.lower()]
                     complete = complete or needs_all or intent in COMPLETENESS_INTENTS
-            depth = max(config.ask.top_k, COMPLETE_TOP_K) if complete else config.ask.top_k
-            rankings, warnings, saturated = [], None, False
-            for search in searches:
-                rows, found_warnings = _context_hits(stores, search, depth, client, trusted_only=False,
-                                                     evaluation_time=now)
-                warnings = warnings or found_warnings  # the question's own verdicts
-                saturated = saturated or len(rows) >= depth
-                rankings.append(rows)
-            results = favour(fuse(rankings, key=lambda row: (row["_graph_source"], row["id"])),
-                             date_window(question, now[:10]), facts_first=complete,
-                             summaries_first=intent == "summary")
-            if not results:
-                return f"[{qtype}] No relevant knowledge found for: {question}"
-            budget = max_tokens if max_tokens > 0 else context_budget(
-                config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary",
-                scale=max(memory_scale(store) for store in stores.values()))
-            evidence, omitted = _render_evidence_sources(
-                stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
-            header = f"[{qtype} question] Today's date: {now[:10]}"
-            coverage = coverage_note(complete, omitted, saturated)
-            if llm is None:
-                skipped = ("\n(No answer drafted: no LLM is configured or the budget is spent.)"
-                           if answer else "")
-                return f"{header}{skipped}\n\n{evidence}{coverage}"
-            drafted = draft_answer(llm, config, answer_prompt(
-                question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
-                coverage=coverage), ledger, intent, complete)
-            if drafted is None:
-                return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
-            return f"{drafted}\n\n---\n{header}\n\n{evidence}"
+                depth = max(config.ask.top_k, COMPLETE_TOP_K) if complete else config.ask.top_k
+                rankings, warnings, saturated = [], None, False
+                for search in searches:
+                    rows, found_warnings = _context_hits(stores, search, depth, client, trusted_only=False,
+                                                         evaluation_time=now)
+                    warnings = warnings or found_warnings  # the question's own verdicts
+                    saturated = saturated or len(rows) >= depth
+                    rankings.append(rows)
+                results = favour(fuse(rankings, key=lambda row: (row["_graph_source"], row["id"])),
+                                 date_window(question, now[:10]), facts_first=complete,
+                                 summaries_first=intent == "summary")
+                if not results:
+                    return f"[{qtype}] No relevant knowledge found for: {question}"
+                budget = max_tokens if max_tokens > 0 else context_budget(
+                    config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary",
+                    scale=max(memory_scale(store) for store in stores.values()))
+                if llm is not None and _INPUT_LIMIT.get():
+                    # The evidence is sized so the draft fits what the planner left of the cap.
+                    system = answer_system(intent if config.ask.rules == "intent" else None, complete,
+                                           options=config.ask)
+                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=config.ask.readings)
+                    budget = max(500, min(budget, _input_left() - _prompt_cost(system, empty) - 300))
+                evidence, omitted = _render_evidence_sources(
+                    stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
+                header = f"[{qtype} question] Today's date: {now[:10]}"
+                coverage = coverage_note(complete, omitted, saturated)
+                if llm is None:
+                    skipped = ("\n(No answer drafted: no LLM is configured or the budget is spent.)"
+                               if answer else "")
+                    return f"{header}{skipped}\n\n{evidence}{coverage}"
+                drafted = draft_answer(llm, config, answer_prompt(
+                    question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
+                    coverage=coverage), ledger, intent, complete)
+                if drafted is None:
+                    return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
+                return f"{drafted}{verify_note}\n\n---\n{header}\n\n{evidence}"
+            finally:
+                _INPUT_LIMIT.reset(limit_token)
+                _USAGE.reset(usage_token)
     except ValueError as exc:
         return f"Error: {exc}"
 

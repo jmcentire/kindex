@@ -651,6 +651,21 @@ def informative_terms(terms: set[str], results: list[dict]) -> set[str]:
     return terms - speakers
 
 
+_SYSTEM_TURN = re.compile(r"system:\s", re.I)
+
+
+def _role(speaker: str) -> str:
+    """"user (Ann)" is the user role spoken by Ann."""
+    return speaker.split(" (", 1)[0].strip().lower()
+
+
+def _is_chat(text: str) -> bool:
+    """A user/assistant transcript, including one that opens with a system turn."""
+    if _SYSTEM_TURN.match(text):
+        return any(_ROLE_SPEAKER.match(line) for line in text.split("\n")[1:])
+    return bool(_ROLE_SPEAKER.search(text))
+
+
 def excerpt(text: str, terms: set[str], around: int = 1, unmatched: str = "whole", *,
             exchange_context: bool = False, user_turns: bool = False) -> str:
     """The parts of a conversation excerpt that bear on the searches: every
@@ -659,7 +674,7 @@ def excerpt(text: str, terms: set[str], around: int = 1, unmatched: str = "whole
     A text that shares no word with the searches was retrieved for its meaning:
     it is kept whole, or with `unmatched="head"` only its opening lines."""
     messages: list[list[str]] = []  # [speaker, body]; a line with no speaker continues the message
-    chat = (exchange_context or user_turns) and bool(_ROLE_SPEAKER.search(text))
+    chat = (exchange_context or user_turns) and _is_chat(text)
     speaker_line = _ROLE_SPEAKER if chat else _LINE_SPEAKER
     for line in text.split("\n"):
         match = speaker_line.match(line)
@@ -684,15 +699,15 @@ def excerpt(text: str, terms: set[str], around: int = 1, unmatched: str = "whole
         # Sentence-level matching inside long replies can omit the very user
         # statement the reply answers. Preserve that turn, not the whole reply.
         # Long pasted documents are left to ordinary excerpting and budgeting.
-        preceding = {owners[i] - 1 for i in hits if units[i][0].lower() == "assistant" and owners[i] > 0}
-        preceding = {i for i in preceding if messages[i][0].lower() == "user"
+        preceding = {owners[i] - 1 for i in hits if _role(units[i][0]) == "assistant" and owners[i] > 0}
+        preceding = {i for i in preceding if _role(messages[i][0]) == "user"
                      and len(messages[i][1]) <= 1600}
         keep.update(i for i, owner in enumerate(owners) if owner in preceding)
     if user_turns and chat:
         # What the user said is what questions about the user ask after, in
         # words of its own ("I ran my first half marathon today"
         # shares none with "sports events"); a pasted document is still cut.
-        own = {i for i, (speaker, body) in enumerate(messages) if speaker.lower() == "user" and len(body) <= 1600}
+        own = {i for i, (speaker, body) in enumerate(messages) if _role(speaker) == "user" and len(body) <= 1600}
         keep.update(i for i, owner in enumerate(owners) if owner in own)
     out: list[str] = []
     previous = -1
@@ -2979,6 +2994,11 @@ def inventory_enabled(cfg, intent: str | None) -> bool:
                 and cfg.samples == 1 and not cfg.verify)
 
 
+# An answer that says its count is incomplete or a minimum.
+_LOWER_BOUND = re.compile(r"\bat least\b|\bor more\b|\bmore than\b|\bunnamed\b|\bnot all\b|\bincomplete\b|"
+                          r"\b\d+\s*\+|\b(?:others?|more) (?:not|un)(?:named|listed|recorded)\b", re.I)
+
+
 def render_inventory(raw: str, sources: dict[str, str]) -> str:
     """Count one reading's literal witnesses; semantic inclusion remains the reader's judgement."""
     try:
@@ -3015,6 +3035,8 @@ def render_inventory(raw: str, sources: dict[str, str]) -> str:
     uncertain = [r for r in accepted.values() if r["status"] == "uncertain"]
     if not included and not uncertain:
         return answer  # an empty positive inventory does not prove a zero total
+    if _LOWER_BOUND.search(answer):
+        return answer  # "at least two, others unnamed": the rows are not the whole count
     certain = f"{len(included)} {unit.strip()}"
     if uncertain:
         conditions = "; ".join(f"{r['item']} ({r['reason']})" for r in uncertain)
@@ -3257,7 +3279,8 @@ def _checked_rows(check: dict, sources: dict[str, dict]) -> list[dict] | None:
         quote, item, value = row.get("quote"), row.get("item"), row.get("value")
         if not all(isinstance(s, str) for s in (quote, item, value)) or not item.strip() or len(quote.strip()) < 8:
             return None
-        if " ".join(quote.split()) not in " ".join(_witness_text(sources[row["ref"]]).split()):
+        shown = sources[row["ref"]].get("_rendered") or _witness_text(sources[row["ref"]])
+        if " ".join(quote.split()) not in " ".join(shown.split()):
             return None
     return rows
 
@@ -3385,7 +3408,10 @@ def verify_answer(store: Store, question: str, config: Config, client, ledger, a
                             effort=cfg.hard_effort or "high", max_tokens=cfg.max_output_tokens,
                             ledger=ledger, purpose="ask-verify", json_schema=VERIFY_CHECK_SCHEMA)
                 check = _parse_json(raw)
-                sources = {refs[n["id"]]: n for n in verified.chosen}
+                # Quotes are checked against the rendered lines the audit read
+                # (date headers and anchors included), not a reconstruction.
+                sources = {refs[n["id"]]: {**n, "_rendered": verified.witnesses.get(n["id"], "")}
+                           for n in verified.chosen}
                 sources["today"] = {"content": clock_text}
                 rows = _checked_rows(check, sources) if isinstance(check, dict) else None
                 if rows is not None and type(check.get("answerable")) is bool \
@@ -3647,6 +3673,13 @@ def answer_client(config: Config, ledger=None):
     return get_client(config, timeout=config.ask.timeout_seconds, retries=3)
 
 
+def input_cap(ask) -> int | None:
+    """The estimated-input cap over all calls of one answer: the lower of the
+    nonzero `max_input_tokens` and, with verification, `verify_input_tokens`."""
+    caps = [cap for cap in (ask.max_input_tokens, ask.verify_input_tokens if ask.verify else 0) if cap]
+    return min(caps) if caps else None
+
+
 def answer_question(store: Store, question: str, config: Config, ledger=None, *,
                     as_of: str | date | datetime | None = None,
                     team: list[str] | None = None, on_text=None) -> AskResult | None:
@@ -3658,8 +3691,7 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
         return None
     usage: list[int] = []
     token = _USAGE.set(usage)
-    limit_token = _INPUT_LIMIT.set(config.ask.verify_input_tokens if config.ask.verify
-                                   else config.ask.max_input_tokens or None)
+    limit_token = _INPUT_LIMIT.set(input_cap(config.ask))
     clock_token = _CLOCK.set(answer_clock(store, as_of) if config.ask.fixed_clock else None)
     try:
         result = _answer(store, question, config, client, ledger, as_of, team, on_text)
@@ -4001,68 +4033,71 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
                             _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 1000)
     retry = declines(final) or cfg.large_gap_retry and large_retry_needed(final)
     if (cfg.reread or cfg.large_gap_retry) and retry and reread_budget >= 2500:
-        # The draft says the evidence lacks the answer. The excerpts may have
-        # cut the line that holds it: read the same results again whole, with
-        # a larger budget and more reasoning.
-        # New searches for what the draft says is missing, ahead of the old results.
-        gaps = gap_searches(client, config, question, final, ledger, as_of)
-        found = gather(store, gaps, cfg.top_k)
-        if cfg.large_gap_retry and cfg.max_input_tokens:
-            # Gap planning has now spent its actual input; size the last call again.
-            reread_budget = max(0, min(reread_budget, _input_left() -
-                _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 300))
-        found = [n for n in found if (n.get("extra") or {}).get("kind") != "entity-profile"]
-        if found:
-            results = fuse([found, results])
-        if recall_window:
-            results = focus_relative_results(results, question, recall_window)
-        if balanced:
-            results = history_order(results)
-        if source_order:
-            results = prefer_source_witnesses(results, source_candidates, question, reread_budget, expansions,
-                                              diverse=diverse_sources, focused=focused_sources)
-        reread_results = (summary_coverage_nodes(results, informative_terms(words, results),
-                                                methods_first=cfg.large_summary_methods)
-                          if cfg.large_summary_coverage else results)
-        if witness_jobs:
-            witnesses = quoted_history_nodes(store, witness_jobs, min(6000, reread_budget // 2),
-                                              literal_denials=cfg.large_claim_scan)
-            witness_ids = {n["id"] for n in witnesses}
-            reread_results = witnesses + [n for n in reread_results if n["id"] not in witness_ids]
-        if portfolio:
-            reread_results = large_evidence_pack(
-                store, reread_results, [question, *gaps], reread_budget, window=window,
-                sequence=cfg.large_topic_sequence)
-        if inventory:
-            refs = {n["id"]: f"r{i + 1}" for i, n in enumerate(reread_results)}
-        wider = assemble(reread_results, standing_directives(store), reread_budget, team,
-                         note_omitted=False, label=(lambda n: refs[n["id"]]) if inventory else None,
-                         profiles=question_profiles(store, question) if cfg.profiles and wants_profile(question, intent)
-                         else None, terms=None, history_coverage=balanced, date_anchors=cfg.date_anchors,
-                         exchange_context=cfg.exchange_context, fact_tiers=cfg.fact_tiers if complete else 0,
-                         user_turns=cfg.user_turns, source_order=source_order or bool(witness_jobs) or portfolio,
-                         witness_first=diverse_sources or portfolio)
-        if dialogue_sessions and (cfg.dialogue_archive or cfg.dialogue_sessions):
-            capacity = _input_left() - _prompt_cost(system, empty) - 300
-            replacement = dialogue_source_assembly(
-                store, dialogue_sessions, reread_results, [question, *gaps], directives,
-                reread_budget, capacity, cfg, team,
-                question_profiles(store, question) if cfg.profiles and wants_profile(question, intent) else None,
-                fact_tiers=cfg.fact_tiers if complete else 0)
-            if replacement is not None:
-                wider = replacement
-        again = None if reread_budget < 500 else draft_answer(
-            client, config, answer_prompt(question, wider.text, intent, as_of=as_of,
-                                                           readings=cfg.readings, details=cfg.details,
-                                                           count_readings=cfg.count_readings, options=cfg),
-                             ledger, intent, complete,
-                             effort=effort if cfg.effort_route else cfg.hard_effort or "high",
-                             inventory_sources={refs[nid]: line for nid, line in wider.witnesses.items()}
-                             if inventory else None,
-                             ledger_context=wider if (cfg.large_order_ledger or cfg.large_span_ledger) else None,
-                             ledger_question=question)
-        if again:
-            final, assembly = again, wider
+        try:
+            # The draft says the evidence lacks the answer. The excerpts may have
+            # cut the line that holds it: read the same results again whole, with
+            # a larger budget and more reasoning.
+            # New searches for what the draft says is missing, ahead of the old results.
+            gaps = gap_searches(client, config, question, final, ledger, as_of)
+            found = gather(store, gaps, cfg.top_k)
+            if cfg.large_gap_retry and cfg.max_input_tokens:
+                # Gap planning has now spent its actual input; size the last call again.
+                reread_budget = max(0, min(reread_budget, _input_left() -
+                    _prompt_cost(system, empty, INVENTORY_SCHEMA if inventory else None) - 300))
+            found = [n for n in found if (n.get("extra") or {}).get("kind") != "entity-profile"]
+            if found:
+                results = fuse([found, results])
+            if recall_window:
+                results = focus_relative_results(results, question, recall_window)
+            if balanced:
+                results = history_order(results)
+            if source_order:
+                results = prefer_source_witnesses(results, source_candidates, question, reread_budget, expansions,
+                                                  diverse=diverse_sources, focused=focused_sources)
+            reread_results = (summary_coverage_nodes(results, informative_terms(words, results),
+                                                    methods_first=cfg.large_summary_methods)
+                              if cfg.large_summary_coverage else results)
+            if witness_jobs:
+                witnesses = quoted_history_nodes(store, witness_jobs, min(6000, reread_budget // 2),
+                                                  literal_denials=cfg.large_claim_scan)
+                witness_ids = {n["id"] for n in witnesses}
+                reread_results = witnesses + [n for n in reread_results if n["id"] not in witness_ids]
+            if portfolio:
+                reread_results = large_evidence_pack(
+                    store, reread_results, [question, *gaps], reread_budget, window=window,
+                    sequence=cfg.large_topic_sequence)
+            if inventory:
+                refs = {n["id"]: f"r{i + 1}" for i, n in enumerate(reread_results)}
+            wider = assemble(reread_results, standing_directives(store), reread_budget, team,
+                             note_omitted=False, label=(lambda n: refs[n["id"]]) if inventory else None,
+                             profiles=question_profiles(store, question) if cfg.profiles and wants_profile(question, intent)
+                             else None, terms=None, history_coverage=balanced, date_anchors=cfg.date_anchors,
+                             exchange_context=cfg.exchange_context, fact_tiers=cfg.fact_tiers if complete else 0,
+                             user_turns=cfg.user_turns, source_order=source_order or bool(witness_jobs) or portfolio,
+                             witness_first=diverse_sources or portfolio)
+            if dialogue_sessions and (cfg.dialogue_archive or cfg.dialogue_sessions):
+                capacity = _input_left() - _prompt_cost(system, empty) - 300
+                replacement = dialogue_source_assembly(
+                    store, dialogue_sessions, reread_results, [question, *gaps], directives,
+                    reread_budget, capacity, cfg, team,
+                    question_profiles(store, question) if cfg.profiles and wants_profile(question, intent) else None,
+                    fact_tiers=cfg.fact_tiers if complete else 0)
+                if replacement is not None:
+                    wider = replacement
+            again = None if reread_budget < 500 else draft_answer(
+                client, config, answer_prompt(question, wider.text, intent, as_of=as_of,
+                                                               readings=cfg.readings, details=cfg.details,
+                                                               count_readings=cfg.count_readings, options=cfg),
+                                 ledger, intent, complete,
+                                 effort=effort if cfg.effort_route else cfg.hard_effort or "high",
+                                 inventory_sources={refs[nid]: line for nid, line in wider.witnesses.items()}
+                                 if inventory else None,
+                                 ledger_context=wider if (cfg.large_order_ledger or cfg.large_span_ledger) else None,
+                                 ledger_question=question)
+            if again:
+                final, assembly = again, wider
+        except Exception:
+            pass  # the second reading is optional: its failure keeps the completed first draft
     if cfg.large_day_arithmetic:
         final = large_day_arithmetic(question, final)
     if on_text and (cfg.reread or cfg.large_gap_retry or cfg.large_day_arithmetic):
