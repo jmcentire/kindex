@@ -75,7 +75,7 @@ def test_ask_drafts_an_answer_only_when_asked(kayak, monkeypatch):
     assert "[2024/03/10 (Sun) 09:00]" in out.split("---", 1)[1]
     prompt = calls[-1]["messages"][0]["content"]
     assert prompt.startswith("Today's date: 2024-03-15") and "with Sam" in prompt
-    assert calls[-1]["system"] == answer.answer_system("temporal")
+    assert calls[-1]["system"] == answer.answer_system("temporal", False, options=cfg.ask)
 
 
 def test_ask_for_an_answer_without_an_llm_returns_the_evidence(kayak, monkeypatch):

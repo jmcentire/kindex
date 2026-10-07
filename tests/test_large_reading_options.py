@@ -9,6 +9,8 @@ from kindex import answer as a
 from kindex.config import Config, LLMConfig
 from kindex.store import Store
 
+from ask_baseline import PRE_F25_ASK
+
 
 OPTIONS = a.LARGE_READING_OPTIONS
 QUESTIONS = (
@@ -44,7 +46,7 @@ def test_options_and_dependencies_are_disabled_outside_large_chats(
     monkeypatch.setattr(a, "memory_scale", lambda s: scale)
     monkeypatch.setattr(a, "named_memory", lambda s: named)
     cfg = Config()
-    cfg.ask = cfg.ask.model_copy(update={option: True})
+    cfg.ask = cfg.ask.model_copy(update={**PRE_F25_ASK, option: True})
     normalized = a.large_memory_config(store, question, cfg)
     assert not any(getattr(normalized.ask, name) for name in OPTIONS)
     assert not normalized.ask.large_claim_witnesses

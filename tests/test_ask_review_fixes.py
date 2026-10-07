@@ -35,8 +35,8 @@ def _config(tmp_path, **ask):
 
 
 def test_input_cap_is_the_lower_nonzero_limit():
-    assert answer_mod.input_cap(AskConfig()) is None
-    assert answer_mod.input_cap(AskConfig(max_input_tokens=20000)) == 20000
+    assert answer_mod.input_cap(AskConfig()) == 20000  # the default (F25) cap
+    assert answer_mod.input_cap(AskConfig(max_input_tokens=0)) is None
     assert answer_mod.input_cap(AskConfig(verify=True, verify_input_tokens=20000)) == 20000
     assert answer_mod.input_cap(AskConfig(verify=True, max_input_tokens=4000, verify_input_tokens=20000)) == 4000
     assert answer_mod.input_cap(AskConfig(verify=False, max_input_tokens=0, verify_input_tokens=9000)) is None

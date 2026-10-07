@@ -10,6 +10,8 @@ from kindex import answer as answer_mod
 from kindex.config import Config, LLMConfig
 from kindex.store import Store
 
+from ask_baseline import F25_ASK, PRE_F25_ASK
+
 
 class FakeMessages:
     """Records calls; replies with a plan to the planner and numbered answers otherwise."""
@@ -43,8 +45,9 @@ def store(tmp_path):
 
 
 def _config(tmp_path, **ask):
+    """The pre-F25 baseline plus the options a test turns on (see ask_baseline)."""
     cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
-    cfg.ask = cfg.ask.model_copy(update=ask)
+    cfg.ask = cfg.ask.model_copy(update={**PRE_F25_ASK, **ask})
     return cfg
 
 
@@ -975,8 +978,14 @@ def test_a_provider_that_does_not_stream_is_printed_whole(store, tmp_path, monke
     fake = FakeMessages()
     monkeypatch.setattr(answer_mod, "get_client", lambda config, **kw: SimpleNamespace(messages=fake))
     cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="anthropic", model="m"))
+    cfg.ask = cfg.ask.model_copy(update=PRE_F25_ASK)
     result = answer_mod.answer_question(store, "kayak trips?", cfg, on_text=lambda t: None)
     assert result.streamed is False and result.answer
+    # By default a second reading is possible, so the final answer is shown whole once it is settled.
+    shown = []
+    default = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="anthropic", model="m"))
+    result = answer_mod.answer_question(store, "kayak trips?", default, on_text=shown.append)
+    assert result.streamed is True and shown == [result.answer]
 
 
 def test_expired_or_archived_profiles_stay_out(store):
@@ -3278,3 +3287,10 @@ def test_round14_changes_only_the_existing_answer_call(store, tmp_path, monkeypa
 ])
 def test_round14_does_not_route_inferences_or_other_count_units(question, intent):
     assert not any(answer_mod.round14_scope(question, intent, named=True).values())
+
+
+def test_the_default_ask_configuration_is_f25():
+    from kindex.config import AskConfig
+
+    defaults = AskConfig()
+    assert {name: getattr(defaults, name) for name in F25_ASK} == F25_ASK
