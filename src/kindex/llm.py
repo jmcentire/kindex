@@ -182,6 +182,37 @@ def is_configured(config: Config) -> bool:
     return bool(api_key)
 
 
+# Reasoning efforts, highest first. Models differ in which they take (gpt-5 and
+# o4-mini reject "xhigh"; gpt-4o and gpt-4.1 take no effort at all): a rejected
+# effort is retried one step lower, or without one, and the model's limit is
+# remembered so later calls start from what it accepts.
+_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+_EFFORT_LIMITS: dict[str, str | None] = {}  # model -> highest accepted effort; None: takes none
+
+
+def _effort_for(model: str, effort: str | None) -> str | None:
+    if not effort or model not in _EFFORT_LIMITS:
+        return effort
+    limit = _EFFORT_LIMITS[model]
+    if limit is None:
+        return None
+    if effort in _EFFORTS and limit in _EFFORTS and _EFFORTS.index(effort) < _EFFORTS.index(limit):
+        return limit
+    return effort
+
+
+def _effort_rejection(exc: urllib.error.HTTPError) -> str | None:
+    """"value" when the model rejects this effort, "parameter" when it takes none, else None.
+    Only the error's param and code are read; the body is never shown."""
+    try:
+        error = json.loads(exc.read().decode("utf-8") or "{}").get("error") or {}
+    except Exception:
+        return None
+    if not isinstance(error, dict) or error.get("param") != "reasoning.effort":
+        return None
+    return {"unsupported_value": "value", "unsupported_parameter": "parameter"}.get(error.get("code"))
+
+
 class _OpenAIResponsesMessages:
     """Small adapter that exposes the Anthropic-like messages.create shape."""
 
@@ -225,6 +256,7 @@ class _OpenAIResponsesMessages:
         }
         if system:
             payload["instructions"] = redact_text(system)
+        reasoning_effort = _effort_for(model, reasoning_effort)
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
         if json_schema:
@@ -236,19 +268,23 @@ class _OpenAIResponsesMessages:
             # Requests sharing a prefix and this key are routed to the same
             # prompt cache, so the shared prefix is read, not processed again.
             payload["prompt_cache_key"] = cache_key
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        def build(body: dict) -> urllib.request.Request:
+            return urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+
+        request = build(payload)
         # Rate limits and server errors are transient: a caller that asked for
         # retries gets them with backoff, all inside its deadline when it set one.
         stop = None if self.deadline is None else time.monotonic() + self.deadline
-        for attempt in range(self.retries + 1):
+        attempt = 0
+        while True:
             wait = self.timeout
             if stop is not None:
                 wait = min(wait, stop - time.monotonic())
@@ -262,9 +298,23 @@ class _OpenAIResponsesMessages:
                         data = _read_stream(response, on_text)
                 break
             except urllib.error.HTTPError as exc:
+                rejected = _effort_rejection(exc) if exc.code == 400 and "reasoning" in payload else None
+                if rejected:
+                    # The model does not take this effort: one step lower, or none.
+                    current = payload["reasoning"]["effort"]
+                    lower = (_EFFORTS[_EFFORTS.index(current) + 1]
+                             if rejected == "value" and current in _EFFORTS[:-1] else None)
+                    _EFFORT_LIMITS[model] = lower
+                    if lower:
+                        payload["reasoning"] = {"effort": lower}
+                    else:
+                        payload.pop("reasoning")
+                    request = build(payload)
+                    continue
                 pause = 5 * (attempt + 1)
                 if ((exc.code == 429 or exc.code >= 500) and attempt < self.retries
                         and (stop is None or time.monotonic() + pause < stop)):
+                    attempt += 1
                     time.sleep(pause)
                     continue
                 # Provider response bodies can echo prompts or authorization data.

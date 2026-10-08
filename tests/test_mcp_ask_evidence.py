@@ -75,7 +75,7 @@ def test_ask_drafts_an_answer_only_when_asked(kayak, monkeypatch):
     assert "[2024/03/10 (Sun) 09:00]" in out.split("---", 1)[1]
     prompt = calls[-1]["messages"][0]["content"]
     assert prompt.startswith("Today's date: 2024-03-15") and "with Sam" in prompt
-    assert calls[-1]["system"] == answer.answer_system("temporal")
+    assert calls[-1]["system"] == answer.answer_system("temporal", False, options=cfg.ask)
 
 
 def test_ask_for_an_answer_without_an_llm_returns_the_evidence(kayak, monkeypatch):
@@ -162,3 +162,14 @@ def test_a_small_explicit_budget_is_honoured(kayak, monkeypatch):
     out = server.ask("When did I go kayaking?", max_tokens=120)
     evidence = out.split("\n\n", 1)[1]
     assert _estimate_tokens(evidence) <= 120
+
+
+def test_round5_options_do_not_make_evidence_only_ask_call_a_model(kayak, monkeypatch):
+    server, _, cfg = kayak
+    _no_llm(monkeypatch)
+    cfg.ask.plan = True
+    for option in ("count_inventory", "plan_route", "effort_route", "recall_relation", "archive_clock"):
+        setattr(cfg.ask, option, True)
+    out = server.ask("How many kayak trips did I take?", max_tokens=600)
+    assert "Today's date: 2024-03-15" in out and "lake with Sam" in out
+    assert "instance_inventory" not in out
