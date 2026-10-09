@@ -97,3 +97,15 @@ def test_leading_first_puts_the_task_first_and_the_question_last():
         answer._HINTS.reset(token)
     assert prompt.index(answer.LEAD_HEADER) < prompt.index("EVIDENCE")
     assert prompt.endswith(f"{answer.LEAD_AGAIN}Summarize my project.")
+
+
+def test_leading_both_puts_the_task_around_the_evidence():
+    options = AskConfig(hint_mode="lead_both")
+    token = answer._HINTS.set(("Say there is no record if it is absent.",))
+    try:
+        prompt = answer.answer_prompt("What did I pay?", "EVIDENCE", "fact", options=options)
+    finally:
+        answer._HINTS.reset(token)
+    first, second = (i for i in range(len(prompt)) if prompt.startswith(answer.LEAD_HEADER, i))
+    assert first < prompt.index("EVIDENCE") < second
+    assert prompt.endswith(f"{answer.LEAD_AGAIN}What did I pay?")
