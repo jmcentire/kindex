@@ -183,3 +183,78 @@ def test_adapter_flag_overrides_config_off(tmp_path, local_only, store):
     )
     assert result.errors == []
     assert "Assets/Player.prefab" not in _modules(store)
+
+
+def _make_vendored_unity_repo(tmp_path):
+    """A Unity repo with a vendored Licensed/ tree, a material, a prefab,
+    and files the built-in excludes already drop (tests/, Library/)."""
+    repo = _make_unity_repo(tmp_path)
+    (repo / "Assets" / "Licensed" / "Vendor").mkdir(parents=True)
+    (repo / "Assets" / "Licensed" / "Vendor" / "Rock.asset").write_text(_UNITY_YAML)
+    (repo / "Assets" / "Licensed" / "Vendor" / "Rock.cs").write_text("class Rock {}\n")
+    (repo / "Assets" / "Stone.mat").write_text(_UNITY_YAML)
+    (repo / "Assets" / "Keep.asset").write_text(_UNITY_YAML)
+    (repo / "Library").mkdir()
+    (repo / "Library" / "cache.asset").write_text(_UNITY_YAML)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "helper.cs").write_text("class Helper {}\n")
+    return repo
+
+
+_VENDORED_EXCLUDES = "code_ingest:\n  unity: true\n  exclude:\n" \
+    "    - 'Assets/Licensed/*'\n    - '*.mat'\n    - '*.prefab'\n"
+
+
+def test_kin_config_exclude_drops_licensed_materials_and_prefabs(
+        tmp_path, local_only, store):
+    repo = _make_vendored_unity_repo(tmp_path)
+    (repo / ".kin").mkdir()
+    (repo / ".kin" / "config").write_text(_VENDORED_EXCLUDES)
+
+    result = code.adapter.ingest(store, directory=str(repo))
+    assert result.errors == []
+    # Additive: the config patterns drop Licensed/, .mat and .prefab, and the
+    # built-in (tests/) and Unity (Library/) excludes still apply.
+    assert set(_modules(store)) == {"Assets/Keep.asset", "Scripts/main.cs"}
+
+
+def test_loaded_config_exclude_reaches_the_adapter(tmp_path, local_only, store):
+    repo = _make_vendored_unity_repo(tmp_path)
+    cfg = Config(
+        data_dir=str(tmp_path / "kindex"),
+        code_ingest={"unity": True, "exclude": ["*.mat", "*/Licensed/*"]},
+    )
+
+    result = code.adapter.ingest(store, directory=str(repo), _config=cfg)
+    assert result.errors == []
+    assert set(_modules(store)) == {
+        "Assets/Keep.asset", "Assets/Player.prefab", "Scripts/main.cs",
+    }
+
+
+def _git_init(path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+
+
+@pytest.mark.parametrize("subdir", ["", "client"])
+def test_config_exclude_is_relative_to_the_repo_root(
+        tmp_path, local_only, store, subdir):
+    # The same pattern must mean the same files whether `kin ingest code`
+    # targets the repo root or a subdirectory of it.
+    repo = tmp_path / "mono"
+    client = repo / "client"
+    (client / "Assets" / "Licensed").mkdir(parents=True)
+    (client / "Assets" / "Licensed" / "Rock.asset").write_text(_UNITY_YAML)
+    (client / "Assets" / "Keep.asset").write_text(_UNITY_YAML)
+    (repo / ".kin").mkdir()
+    (repo / ".kin" / "config").write_text(
+        "code_ingest:\n  unity: true\n  exclude:\n    - 'client/Assets/Licensed/*'\n"
+    )
+    _git_init(repo)
+
+    target = repo / subdir if subdir else repo
+    result = code.adapter.ingest(store, directory=str(target))
+    assert result.errors == []
+    assert set(_modules(store)) == {"client/Assets/Keep.asset"}

@@ -793,10 +793,25 @@ class CodeIngestConfig(BaseModel):
     (.unity/.prefab/.asset/...) and attach .meta GUIDs to module nodes.
     include_extensions: generic escape hatch mapping extra extensions to
     language labels, e.g. {".shader": "Unity Shader"}.
+    exclude: fnmatch globs for files to leave out, e.g. ["*.mat",
+    "client/Assets/Licensed/*"]. They add to the built-in excludes rather
+    than replace them, and match the file's path relative to the git
+    repository root (the ingested directory when it is not in a repo), so
+    a pattern means the same files whether the ingest targets the root or
+    a subdirectory. '*' crosses '/'. Files a new pattern covers are
+    retired on the next full ingest.
     """
 
     unity: bool = False
     include_extensions: dict[str, str] = Field(default_factory=dict)
+    exclude: list[str] = Field(default_factory=list)
+
+    @field_validator("exclude", mode="before")
+    @classmethod
+    def _one_pattern_is_a_list(cls, value: Any) -> Any:
+        # A bare string is one pattern. Failing validation here would make
+        # the adapter fall back past the whole section, unity included.
+        return [value] if isinstance(value, str) else value
 
 
 class Config(BaseModel):
