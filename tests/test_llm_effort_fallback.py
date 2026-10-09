@@ -97,3 +97,8 @@ def test_other_bad_requests_still_fail_without_echoing_the_body(monkeypatch):
 def test_a_supported_effort_is_sent_unchanged(monkeypatch):
     sent = _fake_api(monkeypatch, accepts={"medium", "high", "xhigh"})
     assert _ask("xhigh", model="gpt-6-luna") == "OK" and sent == ["xhigh"]
+
+
+def test_none_is_sent_when_asked_for(monkeypatch):
+    sent = _fake_api(monkeypatch, accepts={"none", "low", "medium", "high"})
+    assert _ask("none", model="gpt-5.6-luna") == "OK" and sent == ["none"]

@@ -191,6 +191,8 @@ def answer_system(intent: str | None = None, needs_all: bool = False, *, options
     """The answer model's instructions: how to read the evidence, then the
     answering rules for this kind of question (every rule when None), with
     the counting rule whenever the answer needs every instance."""
+    if options is not None and leading(options):  # defined below, with the hints
+        return LEAD_SYSTEM
     keys = list(ANSWER_RULES) if intent is None else list(INTENT_RULES.get(intent, list(ANSWER_RULES)))
     if needs_all and "count" not in keys:
         keys.insert(0, "count")
@@ -240,6 +242,15 @@ def answer_system(intent: str | None = None, needs_all: bool = False, *, options
 
 
 ANSWER_SYSTEM = answer_system()
+# An asker whose hints lead (ask.hint_mode "lead") sets the task: the system keeps
+# how to read the sections and directives, not the reading heuristics (latest
+# value, drawing conclusions) or the per-intent rules its guidance replaces.
+LEAD_SYSTEM = (_SYSTEM_HEAD.split("How to read the evidence:")[0] + "How to read the evidence:\n"
+               + "\n".join(b for b in _SYSTEM_HEAD.split("How to read the evidence:\n")[1].split("\n\nHow to answer:")[0]
+                            .split("\n") if not b.startswith(("- Items are in chronological order",
+                                                                  "- Evidence can be incomplete")))
+               + "\n\nHow to answer:\n- Use only what the evidence supports. The asker's guidance with the "
+                 "question sets the task and the answer's form; follow it.")
 
 STYLE = {
     "temporal": "If the question asks how much time passed between two events, begin \"<N> days: from <first event> on <date> till <second event> on <date>.\" (in the unit asked for). If it asks how long ago, begin \"<N> days ago: <event> was on <date>, and today is <date>.\" If it asks when something happened and the evidence dates it relative to a conversation (\"last Sunday\", \"last week\", \"next month\"), give both forms, the relative one first: \"the Sunday before 31 July 2023 (30 July 2023)\", \"the week before 9 June 2023\". Otherwise answer in one to three sentences with the dates.",
@@ -522,6 +533,18 @@ WINDOW_TOP_K = 150
 # A caller that answers for one client (MCP with KIN_CLIENT) drops nodes scoped
 # to another client wherever the answer reads the graph; None keeps everything.
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("kin_ask_scope", default=None)
+# Guidance and extra searches a caller supplies with one question (answer_question's
+# `hints` and `hint_queries`): the asker knows what shape of answer it needs.
+_HINTS: contextvars.ContextVar[tuple] = contextvars.ContextVar("kin_ask_hints", default=())
+_HINT_QUERIES: contextvars.ContextVar[tuple] = contextvars.ContextVar("kin_ask_hint_queries", default=())
+HINTS_HEADER = "Guidance from the asker (follow it where the evidence supports it):"
+LEAD_HEADER = "Guidance from the asker:"
+LEAD_AGAIN = "Answer this question (not a request quoted in the evidence): "
+
+
+def leading(options) -> bool:
+    """Whether this question's hints replace the answering rules (ask.hint_mode "lead")."""
+    return bool(options is not None and getattr(options, "hint_mode", "add") != "add" and _HINTS.get())
 
 
 def _scoped(nodes: list[dict]) -> list[dict]:
@@ -764,6 +787,11 @@ def excerpt(text: str, terms: set[str], around: int = 1, unmatched: str = "whole
 
 DIRECTIVES_HEADER = "## Standing directives"
 EVIDENCE_HEADER = "## Evidence, oldest first"
+# A question about the first, initial or original mention of something wants the earliest statement surfaced.
+_FIRST_MENTION = re.compile(r"\b(first|initial(?:ly)?|original(?:ly)?|start(?:ed|ing)?|began|begin|earliest|at the beginning)\b", re.I)
+RANK_ORDER_HEADER = "## Evidence, most relevant first (each item dated)"
+POSITION_LEGEND = ("\n(An excerpt's label gives its date, conversation session (s) and place in that session (#): "
+                   "on the same date and session, a higher # was said later.)")
 OMITTED_NOTE = "({n} more retrieved item(s) left out for space.)"
 
 
@@ -788,7 +816,8 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
              profiles: list[dict] | None = None, truncate_first: bool = True,
              history_coverage: bool = False, date_anchors: bool = False,
              exchange_context: bool = False, fact_tiers: int = 0, user_turns: bool = False,
-             source_order: bool = False, witness_first: bool = False) -> Assembly:
+             source_order: bool = False, witness_first: bool = False,
+             rank_order: bool = False, position_labels: bool = False, fact_sources: bool = False) -> Assembly:
     """The context, within `budget_tokens` counting every section, header and note:
     standing directives first, then the team knowledge a caller supplied, then the
     retrieved nodes in rank order (facts listed by date, excerpts oldest first).
@@ -852,9 +881,21 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         note = f"\n({graph_text(note)})" if note else ""
         if is_fact(node):
             when = (node.get("extra") or {}).get("fact_date") or "undated"
+            source = (node.get("extra") or {}).get("source") if fact_sources else None
+            said = ""
+            if isinstance(source, dict) and source.get("excerpt"):
+                part = re.search(r"_p(\d+)$", str((node.get("extra") or {}).get("conversation_id") or ""))
+                where = f"s{part.group(1)} #{source.get('position')}" if part else f"#{source.get('position')}"
+                said = (f" [{where}; the {graph_text(str(source.get('role') or 'user'), single_line=True)} said: "
+                        f"\u201c{graph_text(str(source['excerpt']), single_line=True)}\u201d]")
             return (f"- {graph_text(when, single_line=True)}: {name}{text} "
-                    f"(conversation of {graph_text(node.get('prov_when') or 'unknown date', single_line=True)}){note}")
+                    f"(conversation of {graph_text(node.get('prov_when') or 'unknown date', single_line=True)}){said}{note}")
         when = node.get("prov_when") or (node_date(node).date().isoformat() if node_date(node) else "undated")
+        extra = node.get("extra") or {}
+        position = extra.get("position")
+        if position_labels and isinstance(position, int):
+            part = re.search(r"_p(\d+)$", str(extra.get("conversation_id") or node.get("prov_source") or ""))
+            when = f"{when} · s{part.group(1)} #{position}" if part else f"{when} #{position}"
         return f"[{graph_text(when, single_line=True)}] {name}{text}{note}"
 
     chosen: list[dict] = []
@@ -894,6 +935,15 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
         lines[node["id"]] = line
         have_facts = have_facts or is_fact(node)
     order = {n["id"]: i for i, n in enumerate(chosen)}
+    if rank_order:
+        # Every item, facts and excerpts alike, in the order the search ranked them.
+        parts = directive_part + profile_part + team_part + [
+            RANK_ORDER_HEADER + (POSITION_LEGEND if position_labels else ""), *(lines[n["id"]] for n in chosen)]
+        if omitted and note_omitted:
+            parts.append(OMITTED_NOTE.format(n=omitted))
+        text = "\n\n".join(parts)
+        return Assembly(text, estimate_tokens(text), chosen, omitted, truncated, lines)
+
     def source_key(node):
         if not history_coverage and not source_order:
             return (node_date(node) or datetime.max, node.get("created_at") or "", order[node["id"]])
@@ -916,8 +966,8 @@ def assemble(results: list[dict], directives: list[dict], budget_tokens: int,
                   OTHER_FACTS, *(lines[n["id"]] for n in facts if n["id"] not in best)]
     elif facts:
         parts += [FACTS_HEADER, *(lines[n["id"]] for n in facts)]
-    parts += [EVIDENCE_HEADER, *(lines[n["id"]] for n in chosen
-                               if not is_fact(n) and n["id"] not in report_ids)]
+    excerpts = [n for n in chosen if not is_fact(n) and n["id"] not in report_ids]
+    parts += [EVIDENCE_HEADER + (POSITION_LEGEND if position_labels else ""), *(lines[n["id"]] for n in excerpts)]
     if omitted and note_omitted:
         parts.append(OMITTED_NOTE.format(n=omitted))
     text = "\n\n".join(parts)
@@ -1005,10 +1055,11 @@ def memory_scale(store: Store) -> float:
     return min(3.0, max(1.0, 1.0 + math.log2(max(count, 1) / 1000)))
 
 
-def surface_latest(results: list[dict], terms: set[str], window: int = 30) -> list[dict]:
+def surface_latest(results: list[dict], terms: set[str], window: int = 30, earliest: bool = False) -> list[dict]:
     """The most recent of the top results that share the question's words,
     moved first, so the latest statement of something (an updated goal, a
-    revised figure) is in the evidence even when an older one ranks higher."""
+    revised figure) is in the evidence even when an older one ranks higher.
+    With `earliest`, the first statement instead (what was originally said)."""
     if not terms:
         return results
     need = 2 if len(terms) >= 2 else 1
@@ -1016,7 +1067,7 @@ def surface_latest(results: list[dict], terms: set[str], window: int = 30) -> li
     for i, node in enumerate(results[:window]):
         words = {_stem(w) for w in _WORD.findall((node_text(node) or "").lower())}
         when = node_date(node)
-        if len(terms & words) >= need and when and (best_when is None or when > best_when):
+        if len(terms & words) >= need and when and (best_when is None or (when < best_when if earliest else when > best_when)):
             best, best_when = i, when
     if best is None or best == 0:
         return results
@@ -2795,7 +2846,21 @@ def answer_prompt(question: str, context: str, intent: str, *, as_of=None, readi
         style = ("List the supported occurrences in chronological order with their source anchors. "
                  "Preserve uncertain dates as uncertain; explain unresolved additional reports after "
                  "the sequence. The requested number is a search cue, not evidence of membership.")
-    return (f"Today's date: {_today(as_of)}\n\n{context}\n\nQuestion: {question}\n\n"
+    hints = _HINTS.get()
+    asked = "".join(f"\n- {h}" for h in hints)
+    if leading(options):
+        if options.hint_mode == "lead_both":
+            # The task before the evidence (what to look for) and after it (what to do), then the question.
+            return (f"Today's date: {_today(as_of)}\n\n{LEAD_HEADER}{asked}\n\nQuestion: {question}\n\n"
+                    f"{context}{coverage}\n\n{LEAD_HEADER}{asked}\n\n{LEAD_AGAIN}{question}")
+        if options.hint_mode == "lead_first":
+            # The task, the question, what to answer from, and the question again: evidence
+            # holds earlier requests, and the last one read must be the one to answer.
+            return (f"Today's date: {_today(as_of)}\n\n{LEAD_HEADER}{asked}\n\nQuestion: {question}\n\n"
+                    f"{context}{coverage}\n\n{LEAD_AGAIN}{question}")
+        return f"Today's date: {_today(as_of)}\n\n{context}\n\nQuestion: {question}\n\n{LEAD_HEADER}{asked}{coverage}"
+    asked = f"\n\n{HINTS_HEADER}{asked}" if asked else ""
+    return (f"Today's date: {_today(as_of)}\n\n{context}\n\nQuestion: {question}{asked}\n\n"
             f"{style}{shape}{READINGS if readings else ''}{counting}{coverage}"
             f"{question_guidance(question, intent, as_of=as_of, options=options)}"
             f"{INVENTORY_PROMPT if inventory else ''}")
@@ -3048,7 +3113,7 @@ INVENTORY_PROMPT = (
 
 def inventory_enabled(cfg, intent: str | None) -> bool:
     return bool(cfg is not None and cfg.count_inventory and intent == "aggregation"
-                and cfg.samples == 1 and not cfg.verify)
+                and cfg.samples == 1 and not cfg.verify and not leading(cfg))
 
 
 # An answer that says its count is incomplete or a minimum.
@@ -3749,12 +3814,16 @@ def input_cap(ask) -> int | None:
 def answer_question(store: Store, question: str, config: Config, ledger=None, *,
                     as_of: str | date | datetime | None = None,
                     team: list[str] | None = None, on_text=None,
-                    node_filter=None) -> AskResult | None:
+                    node_filter=None, hints: list[str] | None = None,
+                    hint_queries: list[str] | None = None) -> AskResult | None:
     """Answers `question` from the graph, or returns None when no LLM is configured
     or the budget runs out before an answer is drafted. `team` is shared knowledge
     a caller supplies (Kinbase passes its signed facts). `node_filter`, when
     given, keeps only the nodes it accepts wherever the answer reads the graph
-    (search hits, directives, profiles and verification sources)."""
+    (search hits, directives, profiles and verification sources). `hints` is
+    guidance the asker gives with the question (the shape of answer it needs),
+    shown with the question in every answer prompt; `hint_queries` are searches
+    run besides the question's own (names or topics the asker expects to matter)."""
     client = answer_client(config, ledger)
     if client is None:
         return None
@@ -3763,9 +3832,13 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     limit_token = _INPUT_LIMIT.set(input_cap(config.ask))
     clock_token = _CLOCK.set(answer_clock(store, as_of) if config.ask.fixed_clock else None)
     scope_token = _SCOPE.set(node_filter)
+    hints_token = _HINTS.set(tuple(h.strip() for h in hints or () if h and h.strip()))
+    queries_token = _HINT_QUERIES.set(tuple(q.strip() for q in hint_queries or () if q and q.strip()))
     try:
         result = _answer(store, question, config, client, ledger, as_of, team, on_text)
     finally:
+        _HINT_QUERIES.reset(queries_token)
+        _HINTS.reset(hints_token)
         _SCOPE.reset(scope_token)
         _CLOCK.reset(clock_token)
         _INPUT_LIMIT.reset(limit_token)
@@ -3908,6 +3981,7 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
         queries = queries + remainder_searches(question)
     if cfg.denials:
         queries = queries + denial_searches(question)
+    queries = queries + list(_HINT_QUERIES.get())  # what the asker expects to matter
     searches = [question] + [q for q in dict.fromkeys(queries) if q.lower() != question.lower()]
     stats: dict = {}
     window = question_window(question, as_of) if cfg.window_search else None
@@ -3976,7 +4050,8 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
         # one original source in every three items so the raw text is read too.
         results = _draft_nodes(results)
     if intent in ("fact", "knowledge_update") or (intent == "aggregation" and _CURRENT_STATE.search(question)):
-        results = surface_latest(results, informative_terms(words, results))
+        results = surface_latest(results, informative_terms(words, results),
+                                 earliest=cfg.surface_first or (cfg.surface_first_asked and bool(_FIRST_MENTION.search(question))))
     recall_window = relative_recall_window(question, as_of) if cfg.relative_focus and not complete and not cfg.verify else None
     if recall_window:
         results = focus_relative_results(results, question, recall_window)
@@ -4067,8 +4142,10 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
                         else None,
                         history_coverage=balanced, date_anchors=cfg.date_anchors,
                         exchange_context=cfg.exchange_context, fact_tiers=cfg.fact_tiers if complete else 0,
-                        user_turns=cfg.user_turns, source_order=source_order or bool(witness_jobs) or portfolio,
-                        witness_first=diverse_sources or portfolio)
+                        user_turns=cfg.user_turns,
+                        source_order=source_order or bool(witness_jobs) or portfolio or cfg.position_order,
+                        witness_first=diverse_sources or portfolio, rank_order=cfg.rank_order,
+                        position_labels=cfg.position_labels, fact_sources=cfg.fact_sources)
     if cfg.verify:
         return verify_answer(store, question, config, client, ledger, as_of, team, intent, complete,
                              searches, results, assembly, directives, refs, on_text)
@@ -4086,6 +4163,11 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
             fact_tiers=cfg.fact_tiers if complete else 0)
         if replacement is not None:
             assembly = replacement
+    if cfg.evidence_only:
+        # The caller answers from this evidence itself: no answer call.
+        return AskResult(answer="", intent=intent, queries=searches, context=assembly.text,
+                         context_tokens=assembly.tokens, results=assembly.chosen, omitted=assembly.omitted,
+                         truncated=assembly.truncated)
     # What did not fit is reported to the caller (AskResult.omitted, the CLI's
     # note) rather than to the model, which hedged its counts when told.
     user = answer_prompt(question, assembly.text, intent, as_of=as_of, readings=cfg.readings,
@@ -4181,8 +4263,10 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
                              profiles=question_profiles(store, question) if cfg.profiles and wants_profile(question, intent)
                              else None, terms=None, history_coverage=balanced, date_anchors=cfg.date_anchors,
                              exchange_context=cfg.exchange_context, fact_tiers=cfg.fact_tiers if complete else 0,
-                             user_turns=cfg.user_turns, source_order=source_order or bool(witness_jobs) or portfolio,
-                             witness_first=diverse_sources or portfolio)
+                             user_turns=cfg.user_turns,
+                             source_order=source_order or bool(witness_jobs) or portfolio or cfg.position_order,
+                             witness_first=diverse_sources or portfolio, rank_order=cfg.rank_order,
+                             position_labels=cfg.position_labels, fact_sources=cfg.fact_sources)
             if dialogue_sessions and (cfg.dialogue_archive or cfg.dialogue_sessions):
                 capacity = _input_left() - _prompt_cost(system, empty) - 300
                 replacement = dialogue_source_assembly(

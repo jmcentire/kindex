@@ -185,8 +185,10 @@ def is_configured(config: Config) -> bool:
 # Reasoning efforts, highest first. Models differ in which they take (gpt-5 and
 # o4-mini reject "xhigh"; gpt-4o and gpt-4.1 take no effort at all): a rejected
 # effort is retried one step lower, or without one, and the model's limit is
-# remembered so later calls start from what it accepts.
-_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+# remembered so later calls start from what it accepts. "none" (no reasoning) is
+# sent only when asked for; a rejected "minimal" drops the effort instead.
+_LADDER = ("xhigh", "high", "medium", "low", "minimal")
+_EFFORTS = _LADDER + ("none",)
 _EFFORT_LIMITS: dict[str, str | None] = {}  # model -> highest accepted effort; None: takes none
 
 
@@ -302,8 +304,8 @@ class _OpenAIResponsesMessages:
                 if rejected:
                     # The model does not take this effort: one step lower, or none.
                     current = payload["reasoning"]["effort"]
-                    lower = (_EFFORTS[_EFFORTS.index(current) + 1]
-                             if rejected == "value" and current in _EFFORTS[:-1] else None)
+                    lower = (_LADDER[_LADDER.index(current) + 1]
+                             if rejected == "value" and current in _LADDER[:-1] else None)
                     _EFFORT_LIMITS[model] = lower
                     if lower:
                         payload["reasoning"] = {"effort": lower}
