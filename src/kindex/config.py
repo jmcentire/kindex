@@ -793,10 +793,25 @@ class CodeIngestConfig(BaseModel):
     (.unity/.prefab/.asset/...) and attach .meta GUIDs to module nodes.
     include_extensions: generic escape hatch mapping extra extensions to
     language labels, e.g. {".shader": "Unity Shader"}.
+    exclude: fnmatch globs for files to leave out, e.g. ["*.mat",
+    "client/Assets/Licensed/*"]. They add to the built-in excludes rather
+    than replace them, and match the file's path relative to the git
+    repository root (the ingested directory when it is not in a repo), so
+    a pattern means the same files whether the ingest targets the root or
+    a subdirectory. '*' crosses '/'. Files a new pattern covers are
+    retired on the next full ingest.
     """
 
     unity: bool = False
     include_extensions: dict[str, str] = Field(default_factory=dict)
+    exclude: list[str] = Field(default_factory=list)
+
+    @field_validator("exclude", mode="before")
+    @classmethod
+    def _one_pattern_is_a_list(cls, value: Any) -> Any:
+        # A bare string is one pattern. Failing validation here would make
+        # the adapter fall back past the whole section, unity included.
+        return [value] if isinstance(value, str) else value
 
 
 class Config(BaseModel):
@@ -1710,8 +1725,17 @@ def _merge_kin_chain(chain: list[dict]) -> dict:
     merged: dict = {}
     for layer in reversed(chain):
         clean = {k: v for k, v in layer.items() if not k.startswith("_") and k != "inherits"}
-        merged = _deep_merge_with_lists(merged, clean)
+        merged = _deep_merge_with_lists(merged, _normalize_kin_layer(clean))
     return merged
+
+
+def _normalize_kin_layer(layer: dict) -> dict:
+    # A bare-string code_ingest.exclude is one pattern. Listify it per layer
+    # so the merge unions it with another layer's list instead of replacing.
+    section = layer.get("code_ingest")
+    if isinstance(section, dict) and isinstance(section.get("exclude"), str):
+        layer = {**layer, "code_ingest": {**section, "exclude": [section["exclude"]]}}
+    return layer
 
 
 def _deep_merge_with_lists(base: dict, override: dict) -> dict:
