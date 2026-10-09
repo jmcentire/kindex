@@ -4,6 +4,11 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+### Fixed
+- Packaged Claude plugin hooks expand `${CLAUDE_PLUGIN_ROOT}`.  The generated
+  commands single-quoted it, so bash ran the literal path relative to the
+  session's cwd and every hook failed with "No such file or directory".
+
 ## [0.48.1] - 2026-10-06
 
 ### Fixed
