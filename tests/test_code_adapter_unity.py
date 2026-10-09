@@ -258,3 +258,26 @@ def test_config_exclude_is_relative_to_the_repo_root(
     result = code.adapter.ingest(store, directory=str(target))
     assert result.errors == []
     assert set(_modules(store)) == {"client/Assets/Keep.asset"}
+
+
+def test_target_config_excludes_include_inherited_patterns(
+        tmp_path, local_only, store):
+    # A child .kin/config with its own code_ingest section must not hide the
+    # excludes it inherits: the lists union, as they do in load_config.
+    org = tmp_path / "org" / ".kin"
+    org.mkdir(parents=True)
+    (org / "config").write_text(
+        "code_ingest:\n  exclude:\n    - 'Assets/Licensed/*'\n"
+    )
+    repo = _make_vendored_unity_repo(tmp_path)
+    (repo / ".kin").mkdir()
+    (repo / ".kin" / "config").write_text(
+        f"inherits:\n  - {org / 'config'}\n"
+        "code_ingest:\n  unity: true\n  exclude:\n    - '*.mat'\n"
+    )
+
+    result = code.adapter.ingest(store, directory=str(repo))
+    assert result.errors == []
+    assert set(_modules(store)) == {
+        "Assets/Keep.asset", "Assets/Player.prefab", "Scripts/main.cs",
+    }

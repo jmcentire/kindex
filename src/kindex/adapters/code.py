@@ -1681,13 +1681,12 @@ def _target_code_ingest(directory: str):
     The project-scoped Unity opt-in should follow the directory being
     ingested, not whatever project the caller's cwd resolves to. Reads
     only the target's git-tracked .kin/config (checked at the directory
-    itself, then at its git root) — no global config layering, so tests
+    itself, then at its git root) and the configs it ``inherits``, merged
+    as load_config merges them — no global config layering, so tests
     and cross-project ingests stay hermetic. Returns None when absent.
     """
     try:
-        import yaml
-
-        from ..config import CodeIngestConfig
+        from ..config import CodeIngestConfig, _load_kin_config_with_inheritance
 
         d = Path(directory).resolve()
         repo = _detect_repo(d)
@@ -1695,7 +1694,7 @@ def _target_code_ingest(directory: str):
         for root in dict.fromkeys(candidates):
             f = Path(root) / ".kin" / "config"
             if f.is_file():
-                data = yaml.safe_load(f.read_text()) or {}
+                data = _load_kin_config_with_inheritance(f)
                 section = data.get("code_ingest") if isinstance(data, dict) else None
                 if isinstance(section, dict):
                     return CodeIngestConfig(**section)
