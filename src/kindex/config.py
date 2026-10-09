@@ -330,9 +330,9 @@ class AskConfig(BaseModel):
     rules: Literal["intent", "all"] = "intent"  # answering rules: those for the kind of question, or all
     samples: int = Field(default=1, ge=1, le=9)  # independent answers; with more than one, an adjudication pass picks
     readings: bool = False           # answer each plausible reading when the answer depends on it
-    effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"  # reasoning effort, for providers that take one
-    plan_effort: Literal["minimal", "low", "medium", "high", "xhigh"] = "low"
-    hard_effort: Literal["", "medium", "high", "xhigh"] = "high"  # effort for counts, dates, orderings, updates, summaries ("" = effort)
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = "medium"  # reasoning effort, for providers that take one
+    plan_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = "low"
+    hard_effort: Literal["", "none", "medium", "high", "xhigh"] = "high"  # effort for counts, dates, orderings, updates, summaries ("" = effort)
     denials: bool = True             # "have I ever ...": also search for the user saying they never did it
     timeline: bool = True            # an ordering question reads conversation summaries first, as a summary does
     reread: bool = True             # a draft that says the evidence lacks the answer is redrafted from whole excerpts
@@ -427,6 +427,7 @@ class AskConfig(BaseModel):
     rank_order: bool = False         # evidence in ranked order (most relevant first) rather than by date
     position_labels: bool = False    # label each excerpt with its session and place in it, not only its date
     fact_sources: bool = False       # show a fact with the message it came from (where recorded)
+    hint_mode: Literal["add", "lead", "lead_first", "lead_both"] = "add"  # an asker's hints: added to the answering rules, or in their place (after, before, or around the evidence)
     max_input_tokens: int = Field(default=20000, ge=0, le=400000)  # cap on estimated input over all calls for one answer (0: none)
     details: bool = True            # a question asking for particulars is answered only from particulars stated
     verify: bool = False             # one cited draft, then a check against original source chunks

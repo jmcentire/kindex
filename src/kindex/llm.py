@@ -186,7 +186,7 @@ def is_configured(config: Config) -> bool:
 # o4-mini reject "xhigh"; gpt-4o and gpt-4.1 take no effort at all): a rejected
 # effort is retried one step lower, or without one, and the model's limit is
 # remembered so later calls start from what it accepts.
-_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+_EFFORTS = ("xhigh", "high", "medium", "low", "minimal", "none")
 _EFFORT_LIMITS: dict[str, str | None] = {}  # model -> highest accepted effort; None: takes none
 
 
