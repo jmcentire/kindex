@@ -1725,8 +1725,17 @@ def _merge_kin_chain(chain: list[dict]) -> dict:
     merged: dict = {}
     for layer in reversed(chain):
         clean = {k: v for k, v in layer.items() if not k.startswith("_") and k != "inherits"}
-        merged = _deep_merge_with_lists(merged, clean)
+        merged = _deep_merge_with_lists(merged, _normalize_kin_layer(clean))
     return merged
+
+
+def _normalize_kin_layer(layer: dict) -> dict:
+    # A bare-string code_ingest.exclude is one pattern. Listify it per layer
+    # so the merge unions it with another layer's list instead of replacing.
+    section = layer.get("code_ingest")
+    if isinstance(section, dict) and isinstance(section.get("exclude"), str):
+        layer = {**layer, "code_ingest": {**section, "exclude": [section["exclude"]]}}
+    return layer
 
 
 def _deep_merge_with_lists(base: dict, override: dict) -> dict:

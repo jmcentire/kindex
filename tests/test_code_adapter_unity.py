@@ -281,3 +281,28 @@ def test_target_config_excludes_include_inherited_patterns(
     assert set(_modules(store)) == {
         "Assets/Keep.asset", "Assets/Player.prefab", "Scripts/main.cs",
     }
+
+
+@pytest.mark.parametrize("parent_exclude, child_exclude", [
+    ("'Assets/Licensed/*'", "\n    - '*.mat'"),
+    ("\n    - 'Assets/Licensed/*'", "'*.mat'"),
+])
+def test_inherited_excludes_union_across_scalar_and_list_forms(
+        tmp_path, local_only, store, parent_exclude, child_exclude):
+    # A bare-string exclude is one pattern in any layer; it must union with
+    # a list in another layer instead of replacing it.
+    org = tmp_path / "org" / ".kin"
+    org.mkdir(parents=True)
+    (org / "config").write_text(f"code_ingest:\n  exclude: {parent_exclude}\n")
+    repo = _make_vendored_unity_repo(tmp_path)
+    (repo / ".kin").mkdir()
+    (repo / ".kin" / "config").write_text(
+        f"inherits:\n  - {org / 'config'}\n"
+        f"code_ingest:\n  unity: true\n  exclude: {child_exclude}\n"
+    )
+
+    result = code.adapter.ingest(store, directory=str(repo))
+    assert result.errors == []
+    assert set(_modules(store)) == {
+        "Assets/Keep.asset", "Assets/Player.prefab", "Scripts/main.cs",
+    }
