@@ -268,3 +268,36 @@ def test_next_recurring_occurrence_restarts_the_backoff(cycle):
                           reminder_type="recurring", schedule="FREQ=DAILY")
     reminders.advance_recurring(store, rid)
     assert "auto_snooze_streak" not in store.get_reminder(rid)["extra"]
+
+
+def test_auto_snooze_sized_from_a_stale_streak_is_skipped(cycle):
+    store, config, now, notify, run = cycle
+    config.reminders.action_enabled = False
+    rid = store.add_reminder("raced", now[0].isoformat())
+    reminders.check_and_fire(store, config)
+    # Another sweep snoozed it and it fired again after this one read streak 0.
+    store.update_reminder(rid, extra={"auto_snooze_streak": 1})
+    assert not store.snooze_reminder(rid, now[0].isoformat(), automatic=True,
+                                     expect_streak=0)
+    r = store.get_reminder(rid)
+    assert r["status"] == "fired"
+    assert r["extra"]["auto_snooze_streak"] == 1
+
+
+def test_manual_reset_beats_an_auto_snooze_sized_before_it(cycle):
+    store, config, now, notify, run = cycle
+    config.reminders.action_enabled = False
+    rid = store.add_reminder("reset", now[0].isoformat())
+    for _ in range(7):
+        fire_and_auto_snooze(store, config, now, rid)
+    reminders.check_and_fire(store, config)
+    stale_until = (now[0] + datetime.timedelta(days=1)).isoformat()
+    # The user snoozes and it fires again before the sized auto-snooze lands.
+    reminders.snooze_reminder(store, rid, duration_seconds=60)
+    now[0] += datetime.timedelta(seconds=60)
+    reminders.check_and_fire(store, config)
+    assert not store.snooze_reminder(rid, stale_until, automatic=True, expect_streak=7)
+    now[0] += datetime.timedelta(seconds=config.reminders.auto_snooze_timeout)
+    assert reminders.auto_snooze_stale(store, config) == 1
+    until = datetime.datetime.fromisoformat(store.get_reminder(rid)["snooze_until"])
+    assert until - now[0] == datetime.timedelta(seconds=config.reminders.snooze_duration)

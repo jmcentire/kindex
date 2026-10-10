@@ -953,7 +953,8 @@ def auto_snooze_stale(store: Store, config: Config) -> int:
         snooze_until = (now + datetime.timedelta(seconds=duration)).isoformat(
             timespec="seconds"
         )
-        if store.snooze_reminder(r["id"], snooze_until, automatic=True):
+        if store.snooze_reminder(r["id"], snooze_until, automatic=True,
+                                 expect_streak=streak):
             count += 1
 
     return count
