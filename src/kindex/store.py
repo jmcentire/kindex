@@ -4859,8 +4859,12 @@ class Store:
             extra = dict(r.get("extra") or {})
             if automatic:
                 extra.setdefault("action_snooze_until", r.get("snooze_until"))
+                extra["auto_snooze_streak"] = extra.get("auto_snooze_streak", 0) + 1
             else:
                 extra["action_snooze_until"] = snooze_until
+                # A deliberate snooze means the user has seen it: the next
+                # automatic snooze starts the backoff over.
+                extra.pop("auto_snooze_streak", None)
             fields["extra"] = extra
             if increment_count:
                 fields["snooze_count"] = r.get("snooze_count", 0) + 1
