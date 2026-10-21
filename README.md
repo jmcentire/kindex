@@ -163,7 +163,11 @@ require the launcher's `--allow-kinbase-submit`; `--no-kinbase` omits Kinbase en
 See [repository-bound MCP](docs/mcp-lite.md)
 for configuration and the isolation boundary.
 
-The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `stale_check`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
+The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `stale_check`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `query_context`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
+
+For explicitly scoped read-only query preparation and optional additive retained
+evidence, see [query context](docs/query-context.md). The supported pilot paths
+are `kin context-query` and full MCP `query_context`.
 
 For coding agents, install both the MCP server and the instruction file. The
 instruction file tells the model how to use kindex: start a session tag, read
@@ -317,6 +321,8 @@ Constraints block deploys. Directives encode preferences. Watches flag attention
 
 ### Answers from dated evidence
 `kin ask` answers in one model call from dated evidence: the matching nodes in chronological order with today's date and your standing directives, trimmed to the messages that bear on the question, within a small budget for a single fact and a wider one for counts, lists, orderings, summaries and advice. Conversation facts and per-person profiles written by `kin digest` let it answer from a few thousand tokens, and relative dates in the evidence arrive already resolved. With `conversations.claims: true` in your config, `kin digest` records turn-level claims instead of per-conversation facts, each tied to the message it came from (its place in the conversation and its words); `kin digest --claims` converts conversations digested earlier. In a terminal the answer streams as it is written. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
+
+Claim revisions include source expiry, so changing or removing an expiry refreshes derived claims on the next requested claims backfill. Retraction also clears that conversation's claim revision, allowing an identical re-import to regenerate claims. Older revision keys refresh once on the next explicit `kin digest --claims`, including conversations without expiry; this can use the configured model budget. Claims remain off by default, and upgrading does not start a backfill.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.

@@ -17,7 +17,10 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field as _QueryField
+
 from .privacy import redact, redact_serialized, safe_error, redacting_print as print
 
 #: How long a reduced Kinbase sync may run inside one MCP tool call.
@@ -890,6 +893,94 @@ def _node_detail(store, node: dict, *, graph: str = "project",
 
 
 # ── Tools ─────────────────────────────────────────────────────────────
+
+
+class _PracticalConfigError(ValueError):
+    """Safe configuration refusal for the explicit practical-memory tools."""
+
+
+def _practical_config():
+    """Resolve host configuration without the writable singleton initializer."""
+    scoped = _request_scope.get()
+    if scoped is not None:
+        return scoped.config
+    if _config is not None:
+        return _config
+    from .config import load_config
+    try:
+        return load_config()
+    except ValueError:
+        raise _PracticalConfigError("Configuration is unavailable") from None
+
+
+def _strict_practical_arguments(fn):
+    """Retain JSON types and reject extra arguments for these two tools only."""
+    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+    from pydantic import ConfigDict
+
+    tool = mcp._tool_manager.get_tool(fn.__name__)
+
+    class StrictArguments(tool.fn_metadata.arg_model):
+        model_config = ConfigDict(arbitrary_types_allowed=True, strict=True, extra="forbid")
+
+    class StrictMetadata(FuncMetadata):
+        def pre_parse_json(self, data):
+            if type(data) is not dict:
+                raise ValueError("Tool arguments must be a JSON object")
+            return data
+
+    previous = tool.fn_metadata
+    tool.fn_metadata = StrictMetadata(
+        arg_model=StrictArguments, output_schema=previous.output_schema,
+        output_model=previous.output_model, wrap_output=previous.wrap_output)
+    tool.parameters = StrictArguments.model_json_schema(by_alias=True)
+    return fn
+
+
+@_strict_practical_arguments
+@mcp.tool()
+def practical_memory(action: str, request_json: str) -> str:
+    """Explicit experimental prepare/audit/organize/persist/index/ack operation.
+
+    The strict JSON request follows practical-memory-contract-v1. No workflow
+    is enabled by calling a read. Persist/index/ack are explicit local writes;
+    a receipt does not prove model delivery or use. No provider is invoked.
+    """
+    from . import practical_memory as memory
+    from .practical_memory_host import run_practical_memory
+    try:
+        request = memory._loads(request_json)
+        result = run_practical_memory(_practical_config(), action, request)
+        return memory._c(result).decode("utf-8")
+    except memory.PracticalMemoryError as exc:
+        return memory._c({"error": {"code": exc.code, "message": exc.message}}).decode("utf-8")
+    except _PracticalConfigError:
+        return memory._c({"error": {"code": "scope_mismatch", "message": "Practical memory scope is unavailable"}}).decode("utf-8")
+    except (sqlite3.Error, OSError, RuntimeError):
+        return memory._c({"error": {"code": "unavailable", "message": "Practical memory storage is unavailable"}}).decode("utf-8")
+
+
+@_strict_practical_arguments
+@mcp.tool()
+def correction_references(operation: str, request_json: str,
+                          metadata_encoding: str = "full", incoming_later: bool = False) -> str:
+    """Explicit experimental reference/expand/correction_add/correction_retire/dream_import.
+
+    Host config and current session select the scope; JSON supplies no grants.
+    Packing and incoming navigation are opt-in. Correction and dream imports
+    are explicit local writes, not verification, truth or source replacement.
+    """
+    from . import correction_references as references
+    from .practical_memory_host import run_correction_references
+    try:
+        request = references._loads(request_json)
+        result = run_correction_references(_practical_config(), operation, request,
+            metadata_encoding=metadata_encoding, incoming_later=incoming_later, recorded_at=operation_now())
+        return references._j(result).decode("utf-8")
+    except references.ReferenceError as exc:
+        return references._j({"error": {"code": exc.code, "message": "Correction reference operation is unavailable"}}).decode("utf-8")
+    except (_PracticalConfigError, sqlite3.Error, OSError, RuntimeError):
+        return references._j({"error": {"code": "unavailable", "message": "Correction reference storage or host context is unavailable"}}).decode("utf-8")
 
 
 @_tool()
@@ -3242,8 +3333,151 @@ def tag_update(name: str = "", focus: str = "", description: str = "",
         return f"Error: {e}"
 
 
+def _readonly_query_tool(fn):
+    """Register one strict tool without legacy health/degraded write effects.
+
+    FastMCP's normal argument model ignores extras and preparses list strings.
+    Replace only this tool's metadata through the installed ToolManager/Tool
+    interface; all legacy registrations retain the framework's defaults.
+    """
+    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+    from mcp.types import ToolAnnotations
+    from pydantic import ConfigDict
+
+    wrapped = _safe_output(fn)
+    tool = mcp._tool_manager.add_tool(
+        wrapped, structured_output=False, annotations=ToolAnnotations(readOnlyHint=True))
+
+    class StrictArguments(tool.fn_metadata.arg_model):
+        model_config = ConfigDict(arbitrary_types_allowed=True, strict=True, extra="forbid")
+
+    class StrictMetadata(FuncMetadata):
+        def pre_parse_json(self, data):
+            # Preserve original JSON types before Pydantic. In particular a
+            # JSON-stringified list/bool is not the corresponding typed value.
+            if not isinstance(data, dict):
+                raise ValueError("Tool arguments must be a JSON object")
+            return data
+
+    previous = tool.fn_metadata
+    tool.fn_metadata = StrictMetadata(
+        arg_model=StrictArguments, output_schema=previous.output_schema,
+        output_model=previous.output_model, wrap_output=previous.wrap_output)
+    tool.parameters = StrictArguments.model_json_schema(by_alias=True)
+    return wrapped
+
+
+# The Field constraints are reflected in this tool's advertised schema as well
+# as the shared strict semantic request model. This does not alter old tools.
+@_readonly_query_tool
+def query_context(
+    query: Annotated[str, _QueryField(min_length=1)],
+    retrieval_max_bytes: Annotated[int, _QueryField(ge=0, le=16384)] = 8192,
+    top_k: Annotated[int, _QueryField(ge=1, le=10)] = 6,
+    evaluation_time: str | None = None,
+    include_handoff: bool = False,
+    evidence_session_id: Annotated[str | None, _QueryField(min_length=1)] = None,
+    handoff_selection: Literal["query_candidates", "explicit_selected"] = "query_candidates",
+    evidence_ids: Annotated[list[str] | None, _QueryField(max_length=12)] = None,
+    handoff_max_bytes: Annotated[int, _QueryField(ge=0, le=16384)] = 0,
+    action: str = "",
+) -> str:
+    """Prepare current stored-source context, optionally adding retained handoff.
+
+    Source and handoff byte caps are independent additional UTF-8 envelope
+    budgets. Server configuration binds project/client; tool arguments cannot
+    override either. Prepared context is not delivery, use or action permission.
+    """
+    from .config import load_config
+    from .query_context import (QueryContextRequest, open_query_store,
+                                prepare_query_context, resolve_client_scope)
+    from .sessions import normalize_project_path
+    store = None
+    try:
+        scoped = _request_scope.get()
+        config = scoped.config if scoped is not None else (_config if _config is not None else load_config())
+        project = normalize_project_path(str(
+            scoped.repo if scoped is not None else (config._project_path or _mcp_project_path())))
+        descriptor = resolve_client_scope(configured=(
+            os.environ.get("KIN_CLIENT"), os.environ.get("KINDEX_CLIENT")))
+        request = QueryContextRequest(query=query, project_path=project, client_scope=descriptor,
+            retrieval_max_bytes=retrieval_max_bytes, top_k=top_k, evaluation_time=evaluation_time,
+            include_handoff=include_handoff, evidence_session_id=evidence_session_id,
+            handoff_selection=handoff_selection, evidence_ids=evidence_ids,
+            handoff_max_bytes=handoff_max_bytes, action=action)
+        store = open_query_store(config)
+        arguments = {key: getattr(request, key) for key in QueryContextRequest.model_fields}
+        return _json(prepare_query_context(store, **arguments))
+    except (ValueError, sqlite3.Error):
+        raise ValueError("Query context is unavailable") from None
+    finally:
+        if store is not None:
+            store.close()
+
+
 @_tool()
-def tag_resume(name: str = "", tokens: int = 1500) -> str:
+def evidence_snapshot(node_id: str) -> str:
+    """Read selected-graph source bytes and metadata digests for explicit capture."""
+    from .evidence import source_snapshot
+    store, _ = _get_store()
+    try:
+        return _json(source_snapshot(store, node_id, project_path=_mcp_project_path()))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def evidence_retain(session_id: str, node_id: str, expected_source_sha256: str,
+                    expected_metadata_sha256: str, start_byte: int, end_byte: int,
+                    operation_id: str, cue: str = "", kind: str = "evidence",
+                    action: str = "") -> str:
+    """Persist an exact UTF-8 span; stored receipt does not attest delivery or use."""
+    from .evidence import retain_evidence, _selected_ref
+    from .sessions import normalize_project_path
+    store, _ = _get_store()
+    project = normalize_project_path(_mcp_project_path())
+    try:
+        return _json(retain_evidence(
+            store, session_id=session_id, project_path=project,
+            source_ref=_selected_ref(store, node_id, project),
+            expected_source_sha256=expected_source_sha256,
+            expected_metadata_sha256=expected_metadata_sha256,
+            start_byte=start_byte, end_byte=end_byte, operation_id=operation_id,
+            cue=cue, kind=kind, action=action,
+        ))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def evidence_inspect(session_id: str) -> str:
+    """Read historical captures and recompute current source admission."""
+    from .evidence import inspect_evidence
+    store, _ = _get_store()
+    try:
+        return _json(inspect_evidence(store, session_id=session_id,
+                                      project_path=_mcp_project_path()))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def evidence_project(session_id: str, action: str = "", max_aux_bytes: int = 4096) -> str:
+    """Prepare escaped current context under an additional exact byte ceiling."""
+    from .evidence import project_evidence
+    store, _ = _get_store()
+    try:
+        return _json(project_evidence(store, session_id=session_id,
+                                      project_path=_mcp_project_path(),
+                                      action=action, max_aux_bytes=max_aux_bytes))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def tag_resume(name: str = "", tokens: int = 1500, include_evidence: bool = False,
+               evidence_session_id: str | None = None, evidence_max_bytes: int = 4096,
+               evidence_action: str = "") -> str:
     """Resume a session tag — get full context for continuing work.
 
     Args:
@@ -3251,6 +3485,10 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
         tokens: Exact UTF-8 byte budget for the resume block. The argument name
             is retained for compatibility; provider-token guarantees require a
             direct library caller to supply that provider's exact counter.
+        include_evidence: Append explicit source-bound evidence (default false).
+        evidence_session_id: Stable session ID matching this tag and project.
+        evidence_max_bytes: Additional evidence UTF-8 ceiling, separate from tokens.
+        evidence_action: Exact advisory prerequisite action key.
     """
     store, _ = _get_store()
     from .sessions import format_resume_context, list_tags, resume_tag
@@ -3275,6 +3513,12 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
         return "\n".join(lines)
 
     try:
+        if include_evidence:
+            format_resume_context(
+                store, name, max_tokens=0, project_path=project_path,
+                include_evidence=True, evidence_session_id=evidence_session_id,
+                evidence_max_bytes=evidence_max_bytes, evidence_action=evidence_action,
+            )
         resume_tag(store, name, project_path=project_path)
         return format_resume_context(
             store,
@@ -3282,6 +3526,9 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
             max_tokens=tokens,
             evaluation_time=operation_now(),
             project_path=project_path,
+            include_evidence=include_evidence,
+            evidence_session_id=evidence_session_id,
+            evidence_max_bytes=evidence_max_bytes, evidence_action=evidence_action,
         )
     except ValueError as e:
         return f"Error: {e}"

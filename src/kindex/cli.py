@@ -6114,6 +6114,85 @@ def cmd_attention(args):
     store.close()
 
 
+def cmd_context_query(args):
+    """Prepare only from one explicitly selected read-only graph."""
+    from .query_context import (QueryContextRequest, open_query_store,
+                                prepare_query_context, resolve_client_scope)
+    from .sessions import normalize_project_path
+    store = None
+    try:
+        config = _config(args)
+        project = normalize_project_path(str(config._project_path or os.getcwd()))
+        descriptor = resolve_client_scope(explicit=args.client, configured=(
+            os.environ.get("KIN_CLIENT"), os.environ.get("KINDEX_CLIENT")))
+        request = QueryContextRequest(
+            query=args.query, project_path=project, client_scope=descriptor,
+            retrieval_max_bytes=args.source_bytes, top_k=args.top_k,
+            evaluation_time=args.at, include_handoff=args.include_handoff,
+            evidence_session_id=args.evidence_session_id,
+            handoff_selection=args.selection, evidence_ids=args.evidence_id,
+            handoff_max_bytes=args.handoff_bytes, action=args.action,
+        )
+        # Validate request before opening or searching any graph. The helper
+        # suppresses native stamping only while requiring the actual stamp.
+        store = open_query_store(config)
+        arguments = {key: getattr(request, key) for key in QueryContextRequest.model_fields}
+        print(_dumps(prepare_query_context(store, **arguments), ensure_ascii=True))
+    except sqlite3.Error:
+        print(_dumps({"error": "Query context is unavailable"}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    except ValueError as error:
+        print(_dumps({"error": safe_error(error)}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    finally:
+        if store is not None:
+            store.close()
+
+
+def cmd_evidence(args):
+    """Use only the graph selected by the existing CLI config adapter."""
+    from .evidence import (source_snapshot, retain_evidence, inspect_evidence,
+                           project_evidence, _selected_ref)
+    from .sessions import normalize_project_path
+    store = None
+    # Match native CLI session start/resume ownership, including subdirectories.
+    project = os.getcwd()
+    try:
+        store = _store(args)
+        action = args.evidence_command
+        if action == "snapshot":
+            result = source_snapshot(store, args.node, project_path=project)
+        elif action == "retain":
+            # The locator is selected locally; caller digests still detect races.
+            source_ref = _selected_ref(store, args.node, normalize_project_path(project))
+            result = retain_evidence(
+                store, session_id=args.session_id, project_path=project,
+                source_ref=source_ref,
+                expected_source_sha256=args.expected_source_sha256,
+                expected_metadata_sha256=args.expected_metadata_sha256,
+                start_byte=args.start_byte, end_byte=args.end_byte,
+                operation_id=args.operation_id, cue=args.cue, kind=args.kind,
+                action=args.action,
+            )
+        elif action == "inspect":
+            result = inspect_evidence(store, session_id=args.session_id, project_path=project)
+        else:
+            result = project_evidence(
+                store, session_id=args.session_id, project_path=project,
+                action=args.action, max_aux_bytes=args.max_aux_bytes,
+            )
+        print(_dumps(result, ensure_ascii=True))
+    except sqlite3.Error:
+        print(_dumps({"error": "Evidence is unavailable"}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    except (ValueError, KeyError, UnicodeError) as error:
+        print(_dumps({"error": str(error)}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    finally:
+        if store is not None:
+            store.close()
+
+
 def cmd_tag(args):
     """Session tag management — named work context handles."""
     store = _store(args)
@@ -6227,6 +6306,15 @@ def cmd_tag(args):
         if tokens is None:
             tokens = 1500
         try:
+            if getattr(args, "include_evidence", False):
+                # Validate the opt-in request before native resume changes state.
+                format_resume_context(
+                    store, tag_name, max_tokens=0, project_path=os.getcwd(),
+                    include_evidence=True,
+                    evidence_session_id=getattr(args, "evidence_session_id", None),
+                    evidence_max_bytes=getattr(args, "evidence_max_bytes", 4096),
+                    evidence_action=getattr(args, "evidence_action", ""),
+                )
             resume_tag(store, tag_name, project_path=os.getcwd())
             block = format_resume_context(
                 store,
@@ -6234,6 +6322,10 @@ def cmd_tag(args):
                 max_tokens=tokens,
                 evaluation_time=operation_now(),
                 project_path=os.getcwd(),
+                include_evidence=getattr(args, "include_evidence", False),
+                evidence_session_id=getattr(args, "evidence_session_id", None),
+                evidence_max_bytes=getattr(args, "evidence_max_bytes", 4096),
+                evidence_action=getattr(args, "evidence_action", ""),
             )
             print(block)
         except ValueError as e:
@@ -7188,6 +7280,57 @@ def _config_write(key: str, value: str, config_path: str | None = None,
 
 # ── parser ─────────────────────────────────────────────────────────────
 
+def cmd_practical_memory(args):
+    """Explicit practical-memory lane; read commands never open writable storage."""
+    from . import practical_memory
+    try:
+        request_path = Path(args.request_json)
+        if not request_path.is_absolute():
+            raise practical_memory.PracticalMemoryError("invalid_request")
+        try:
+            request = practical_memory._loads(request_path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeError):
+            raise practical_memory.PracticalMemoryError("invalid_request") from None
+        from .practical_memory_host import run_practical_memory
+        result = run_practical_memory(_config(args), args.practical_action, request,
+                                      project_path=getattr(args, "project_path", None))
+        print(practical_memory._c(result).decode("utf-8"))
+    except practical_memory.PracticalMemoryError as exc:
+        print(_dumps({"error": {"code": exc.code, "message": exc.message}}))
+        raise SystemExit(1 if exc.code == "unavailable" else 2) from None
+    except ConfigResolutionError:
+        print(_dumps({"error": {"code": "scope_mismatch", "message": "Practical memory scope is unavailable"}}))
+        raise SystemExit(2) from None
+    except (sqlite3.Error, OSError, RuntimeError):
+        print(_dumps({"error": {"code": "unavailable", "message": "Practical memory storage is unavailable"}}))
+        raise SystemExit(1) from None
+
+
+def cmd_correction_references(args):
+    """Explicit v8 host adapter; source/request data never supplies grants."""
+    from . import correction_references as references
+    try:
+        request_path = Path(args.request_json)
+        if not request_path.is_absolute():
+            raise references.ReferenceError("invalid_request")
+        try:
+            request = references._loads(request_path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeError):
+            raise references.ReferenceError("invalid_request") from None
+        from .practical_memory_host import run_correction_references
+        result = run_correction_references(_config(args), args.v8_operation, request,
+            project_path=getattr(args, "project_path", None),
+            metadata_encoding=getattr(args, "metadata_encoding", "full"),
+            incoming_later=getattr(args, "incoming_later", False), recorded_at=operation_now())
+        print(references._j(result).decode("utf-8"))
+    except references.ReferenceError as exc:
+        print(references._j({"error": {"code": exc.code, "message": "Correction reference operation is unavailable"}}).decode("utf-8"))
+        raise SystemExit(1 if exc.code == "unavailable" else 2) from None
+    except (ConfigResolutionError, sqlite3.Error, OSError, RuntimeError):
+        print(references._j({"error": {"code": "unavailable", "message": "Correction reference storage or host context is unavailable"}}).decode("utf-8"))
+        raise SystemExit(1) from None
+
+
 def _common(p):
     p.add_argument("--config", help="Explicit config file (bypasses layering)")
     p.add_argument("--data-dir", help="Override data directory")
@@ -7203,6 +7346,36 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="Knowledge graph that learns from your conversations")
     p.add_argument("--version", action="store_true")
     sub = p.add_subparsers(dest="command")
+
+    practical = sub.add_parser("practical-memory", help="Opt-in source-bound context and local receipts")
+    practical_sub = practical.add_subparsers(dest="practical_action", required=True)
+    for action in ("prepare", "persist", "index", "audit", "ack", "organize"):
+        command = practical_sub.add_parser(action)
+        command.add_argument("--request-json", required=True, help="Absolute path to a strict JSON request")
+        _common(command)
+        command.set_defaults(func=cmd_practical_memory)
+
+    for action in ("reference", "expand"):
+        command = practical_sub.add_parser(action, help="Opt-in scoped correction references")
+        command.add_argument("--request-json", required=True, help="Absolute path to strict JSON request")
+        command.add_argument("--incoming-later", action="store_true", help="Opt in to bounded incoming later notes")
+        if action == "expand":
+            command.add_argument("--metadata-encoding", choices=("full", "lossless_common"), default="full")
+        _common(command)
+        command.set_defaults(func=cmd_correction_references, v8_operation=action)
+    corrections = practical_sub.add_parser("correction", help="Explicit append-only correction declarations")
+    correction_sub = corrections.add_subparsers(dest="correction_action", required=True)
+    for action in ("add", "retire"):
+        command = correction_sub.add_parser(action)
+        command.add_argument("--request-json", required=True, help="Absolute path to strict JSON assertion/request")
+        _common(command)
+        command.set_defaults(func=cmd_correction_references, v8_operation="correction_"+action)
+    dream = practical_sub.add_parser("dream-index", help="Import a pre-query advisory index")
+    dream_sub = dream.add_subparsers(dest="dream_index_action", required=True)
+    command = dream_sub.add_parser("import")
+    command.add_argument("--request-json", required=True, help="Absolute path to strict compiled JSON index")
+    _common(command)
+    command.set_defaults(func=cmd_correction_references, v8_operation="dream_import")
 
     k = sub.add_parser("kinbase", help="Read Kinbase evidence or submit repository observations")
     ks = k.add_subparsers(dest="kinbase_action", required=True)
@@ -8049,6 +8222,47 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_watch)
 
+    # Additive query context is an explicit readonly operation; old search,
+    # resume, hooks and their defaults retain their existing behavior.
+    s = sub.add_parser("context-query", help="Prepare scoped query context with optional additive handoff")
+    s.add_argument("query", help="Literal query (quote multiword queries)")
+    s.add_argument("--source-bytes", type=int, required=True, help="Independent serialized source UTF-8 ceiling (0..16384)")
+    s.add_argument("--top-k", type=int, default=6, help="Native RRF candidates (1..10)")
+    s.add_argument("--client", help="Explicit local operator client choice; must agree with configured client")
+    s.add_argument("--include-handoff", action="store_true")
+    s.add_argument("--evidence-session-id", help="Original stable session ID")
+    s.add_argument("--handoff-bytes", type=int, default=0, help="Additional serialized handoff UTF-8 ceiling (0..16384)")
+    s.add_argument("--selection", choices=("query_candidates", "explicit_selected"), default="query_candidates")
+    s.add_argument("--evidence-id", action="append", help="Canonical UUID; repeat to narrow original captures")
+    s.add_argument("--action", default="", help="Exact prerequisite context action key")
+    s.add_argument("--at", help="One timezone-aware RFC3339 evaluation instant")
+    _common(s)
+    s.set_defaults(func=cmd_context_query)
+
+    # Explicit source-bound evidence, with no alternate database locator input.
+    evidence = sub.add_parser("evidence", help="Retain and inspect session evidence")
+    evidence_sub = evidence.add_subparsers(dest="evidence_command", required=True)
+    for command in ("snapshot", "retain", "inspect", "project"):
+        ep = evidence_sub.add_parser(command)
+        _common(ep)
+        ep.set_defaults(func=cmd_evidence)
+        if command in ("snapshot", "retain"):
+            ep.add_argument("--node", required=True)
+        if command != "snapshot":
+            ep.add_argument("--session-id", required=True)
+        if command == "retain":
+            ep.add_argument("--expected-source-sha256", required=True)
+            ep.add_argument("--expected-metadata-sha256", required=True)
+            ep.add_argument("--start-byte", required=True, type=int)
+            ep.add_argument("--end-byte", required=True, type=int)
+            ep.add_argument("--operation-id", required=True)
+            ep.add_argument("--cue", default="")
+            ep.add_argument("--kind", default="evidence", choices=("evidence", "prerequisite_context"))
+        if command in ("retain", "project"):
+            ep.add_argument("--action", default="")
+        if command == "project":
+            ep.add_argument("--max-aux-bytes", type=int, default=4096)
+
     # tag (session tags)
     s = sub.add_parser("tag", help="Session tag management (start, update, resume, etc.)")
     s.add_argument("tag_action",
@@ -8064,6 +8278,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--done", help="Mark items as done / remove from remaining (comma-separated)")
     s.add_argument("--status", help="Filter by status (for list: active/paused/completed)")
     s.add_argument("--project", action="store_true", help="Filter by current project (for list)")
+    s.add_argument("--include-evidence", action="store_true", help="Append explicit session evidence")
+    s.add_argument("--evidence-session-id", help="Stable session ID required for evidence")
+    s.add_argument("--evidence-max-bytes", type=int, default=4096, help="Additional evidence UTF-8 byte ceiling")
+    s.add_argument("--evidence-action", default="", help="Exact prerequisite context action key")
     s.add_argument(
         "--tokens",
         type=int,

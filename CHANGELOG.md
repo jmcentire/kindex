@@ -5,6 +5,19 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 ## [Unreleased]
 
 ### Added
+- Explicit read-only source preparation through `kin context-query` and MCP
+  `query_context`, with independently budgeted retained handoff. Session evidence
+  capture, inspection and projection preserve exact source bindings; resume
+  includes evidence only with `--include-evidence` and its original session ID.
+  Ordinary search, resume and hooks retain their defaults.
+- Experimental practical-memory and correction-reference CLI/MCP operations for
+  explicit source-span indexes, retained evidence, exact references and selective
+  expansion. Practical-memory features require explicit request flags; optional
+  handoff and incoming-note navigation remain off, and metadata encoding defaults
+  to `full`. `lossless_common` is an explicit encoding option. No automatic
+  capture, dreaming scheduler, provider call or human beta is activated. Packing
+  can reduce serialized bytes; the fresh comparison found no recall improvement,
+  and organizer effectiveness remains unproven.
 - `kindex-remote` serves the graph to agents on other machines over streamable
   HTTP behind Cloudflare Access (extra `kindex[remote]`). It binds loopback
   only, verifies the Access JWT on every request, refuses a foreign Host
@@ -12,6 +25,17 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   command, reads a host path or ingests from the host is reachable.
 
 ### Fixed
+- Conversation claim revisions now include source expiry, and retraction clears
+  that conversation's claim bookkeeping so identical re-imports can regenerate
+  claims. Legacy revision keys refresh once on the next explicit claims backfill,
+  which may use the configured model budget; claims remain off by default.
+- Query handoff now rejects an entire selection containing an unknown evidence
+  ID, including mixed valid/unknown selections, without returning retained text.
+  The independent source baseline remains available, with bounded missing-ID
+  omissions in the empty handoff.
+- Session evidence rejects durable locators with mismatched selected project or
+  profile. New source-context/evidence CLI commands report SQLite failures as
+  generic unavailable errors instead of exposing traceback or SQL details.
 - Attention no longer treats a mutating `git` command as pure read-only
   inspection. The read-only list named subcommands, so `git stash`, `git tag
   v1`, `git branch feature`, `git config key value`, `git remote add` and
