@@ -18,6 +18,9 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal
+
+from pydantic import Field as _QueryField
+
 from .privacy import redact, redact_serialized, safe_error, redacting_print as print
 
 #: How long a reduced Kinbase sync may run inside one MCP tool call.
@@ -3366,9 +3369,6 @@ def _readonly_query_tool(fn):
 
 # The Field constraints are reflected in this tool's advertised schema as well
 # as the shared strict semantic request model. This does not alter old tools.
-from pydantic import Field as _QueryField
-
-
 @_readonly_query_tool
 def query_context(
     query: Annotated[str, _QueryField(min_length=1)],

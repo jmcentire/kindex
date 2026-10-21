@@ -21,7 +21,13 @@ select the graph. The new CLI operation uses canonical configuration
 `_project_path` when present, otherwise canonical real cwd. Exact source and
 original session project ownership must match. A native session started in a
 different exact subdirectory does not silently become repository-root-owned;
-select its exact project rather than rewriting its historical owner.
+query-context adapters do not support selecting that nested owner when native
+configuration discovery selects the repository root. `--project-path` controls
+configuration lookup; it does not override the resulting query-context owner.
+The native `kin evidence` and `kin tag` commands instead use their exact current
+working directory for session ownership, even with `--project-path`. Run those
+commands from the owning directory. Do not rewrite historical owners to make a
+root-scoped query accept them.
 
 A matching preexisting profile stamp, persisted graph identity and current
 schema are required. The adapters open the selected Store with `read_only=True`,
@@ -46,6 +52,11 @@ checked before text or identifying diagnostics. Original session ownership and
 every current pin source use the same filter, including explicitly selected
 pins. Current client descriptor and normalized/raw scope-tag hashes are bound
 separately; old capture metadata never claimed to bind historical client tags.
+Sources must have explicit, nonempty `extra.project_path` metadata matching the
+selected project and pass native current verification, status, time and trust
+checks. Client tags must be a list of strings; provenance authors, when present,
+must also have the declared list shape. Legacy unscoped sources and malformed
+scalar fields are not automatically repaired or admitted by this operation.
 
 The library interface is:
 
@@ -78,10 +89,15 @@ with stale byte counts, offsets or hashes. This check applies to library output
 as well, keeping adapter behavior consistent. Native redaction patterns may also
 match harmless text; those false-positive matches can cause the same explicit
 refusal. The operation does not weaken the privacy policy to avoid them.
+The MCP handler intentionally reports a generic unavailable tool error for
+request/preparation refusals; it does not return private database paths, SQL or
+source details in diagnostics. Strict framework argument errors remain distinct.
 
 A query is nonempty and at most 4096 UTF-8 bytes. `top_k` / `--top-k` is a strict
 integer from 1 through 10 (default 6). Both byte ceilings are strict integers
-from 0 through 16384. Boolean or coerced numeric inputs are rejected. Evidence
+from 0 through 16384. Boolean or coerced numeric inputs are rejected.
+CLI `--source-bytes` is intentionally required so the caller chooses a source
+budget; the library and MCP defaults remain 8192 bytes. Evidence
 IDs are canonical UUID strings, unique and limited to twelve. A handoff always
 requires the original stable session ID, even with zero handoff bytes. Unknown
 MCP arguments, JSON-stringified lists and coerced primitive values are rejected
@@ -121,6 +137,10 @@ overlap never truncates a retained pin. Corrupt or unavailable handoff, unknown
 IDs and wrong session ownership retain the prepared baseline and expose a typed
 handoff disposition without historical contents. Denied scope details are
 counts, or a generic reason for an explicitly requested evidence ID.
+If a requested ID list mixes valid and unknown IDs, the entire handoff is empty
+and unavailable. Only bounded omissions for the requested unknown IDs are
+returned; valid retained spans are not partially delivered. The independently
+prepared source baseline remains unchanged.
 
 Both components count their complete canonical escaped JSON envelopes, including
 warning, scope, full metadata, source/span hashes, separators and literals. No

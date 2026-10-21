@@ -506,6 +506,8 @@ def _handoff(store, request, graph, evaluation, scope, baseline, candidates):
     for item_id in request.evidence_ids or []:
         if item_id in missing:
             _add_omission(omissions, "missing_evidence_id", evidence_id=item_id)
+    if missing:
+        return dict(_component("", [], omissions, route), status="unavailable")
     selected = []
     for inspected_entry in inspected["entries"]:
         record = inspected_entry["record"]
@@ -516,7 +518,7 @@ def _handoff(store, request, graph, evaluation, scope, baseline, candidates):
         # Scope filtering precedes identity-bearing diagnostics, even for pins
         # outside the current native query candidates or caller ID filter.
         if not scope_allowed:
-            _add_omission(omissions, "client_scope_denied" if reason == "client_scope_denied" else reason,
+            _add_omission(omissions, reason,
                           evidence_id=item_id if wanted is not None and item_id in wanted else None)
             continue
         if wanted is not None and item_id not in wanted:
@@ -564,7 +566,7 @@ def _handoff(store, request, graph, evaluation, scope, baseline, candidates):
             text = candidate
         else:
             _add_omission(omissions, "budget", evidence_id=record["evidence_id"])
-    status = "unavailable" if missing else ("partial" if omissions else "prepared")
+    status = "partial" if omissions else "prepared"
     return dict(_component(text, included, omissions, route), status=status)
 
 
