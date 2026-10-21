@@ -209,6 +209,10 @@ def retract_conversation(store: Store, conversation_id: str) -> int:
     if conversation_id in done:
         del done[conversation_id]
         store.set_meta("conversation_digests", json.dumps(done, sort_keys=True))
+    claims = _claims_record(store)
+    if conversation_id in claims:
+        del claims[conversation_id]
+        _record_claims(store, claims)
     return removed
 
 
@@ -522,7 +526,10 @@ def _write_claims(store: Store, conversation_id: str, pairs: list[tuple[dict, di
 
 def _claims_key(chunks: list[dict]) -> str:
     """What a conversation's claims were read from: a changed key means read them again."""
-    return hashlib.sha256(json.dumps([[c["content"], c["when"]] for c in chunks]).encode()).hexdigest()[:24]
+    # Chunk expiry is copied to each derived claim. Its removal is a revision,
+    # too, even when the conversation text and provenance date are unchanged.
+    revision = [[c["content"], c["when"], c.get("expires")] for c in chunks]
+    return hashlib.sha256(json.dumps(revision).encode()).hexdigest()[:24]
 
 
 def _record_claims(store: Store, done: dict[str, str]) -> None:
